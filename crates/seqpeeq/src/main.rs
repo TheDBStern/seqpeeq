@@ -1,5 +1,8 @@
 //! The `seqpeeq` command: interactive viewer, `replay` and `run`.
 
+mod app;
+mod ui;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

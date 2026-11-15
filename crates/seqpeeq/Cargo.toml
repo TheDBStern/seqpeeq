@@ -9,6 +9,7 @@ seqpeeq-core.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 jiff.workspace = true
+ratatui.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
