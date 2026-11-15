@@ -1,0 +1,13 @@
+[package]
+name = "seqpeeq-core"
+version.workspace = true
+edition.workspace = true
+description = "Data models, command language, session log and replay for seqpeeq"
+
+[dependencies]
+clap.workspace = true
+shlex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
