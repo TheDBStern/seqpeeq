@@ -1,0 +1,16 @@
+---
+source: crates/seqpeeq/src/ui.rs
+expression: terminal.backend()
+---
+" aln.fa                                                     "
+"                                                            "
+" tests/data/aln.fa                                          "
+" msa, 30 bytes                                              "
+" viewer not built yet                                       "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+":open x                                                     "

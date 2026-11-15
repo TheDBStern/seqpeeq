@@ -130,17 +130,26 @@ mod tests {
     fn parses_open() {
         assert_eq!(
             Command::parse_line("open aln.fa").unwrap(),
-            Command::Open { path: "aln.fa".into(), kind: None }
+            Command::Open {
+                path: "aln.fa".into(),
+                kind: None
+            }
         );
         assert_eq!(
             Command::parse_line("open data.txt --kind tree").unwrap(),
-            Command::Open { path: "data.txt".into(), kind: Some(Kind::Tree) }
+            Command::Open {
+                path: "data.txt".into(),
+                kind: Some(Kind::Tree)
+            }
         );
     }
 
     #[test]
     fn canonical_text() {
-        let c = |p: &str, k| Command::Open { path: p.into(), kind: k };
+        let c = |p: &str, k| Command::Open {
+            path: p.into(),
+            kind: k,
+        };
         assert_eq!(c("aln.fa", None).to_line().unwrap(), "open aln.fa");
         assert_eq!(
             c("data.txt", Some(Kind::Msa)).to_line().unwrap(),
@@ -148,14 +157,21 @@ mod tests {
         );
         assert_eq!(c("-odd.fa", None).to_line().unwrap(), "open -- -odd.fa");
         assert_eq!(
-            c("my file's \"aln\".fa", None).to_line().unwrap().lines().count(),
+            c("my file's \"aln\".fa", None)
+                .to_line()
+                .unwrap()
+                .lines()
+                .count(),
             1
         );
     }
 
     #[test]
     fn refuses_unloggable() {
-        let c = Command::Open { path: "a\nb.fa".into(), kind: None };
+        let c = Command::Open {
+            path: "a\nb.fa".into(),
+            kind: None,
+        };
         assert!(matches!(c.to_line(), Err(Error::Unloggable)));
     }
 
@@ -165,7 +181,10 @@ mod tests {
             let Err(Error::Parse(m)) = Command::parse_line(bad) else {
                 panic!("{bad}")
             };
-            assert!(!m.contains('\n') && !m.starts_with("error:") && !m.is_empty(), "{bad}: {m:?}");
+            assert!(
+                !m.contains('\n') && !m.starts_with("error:") && !m.is_empty(),
+                "{bad}: {m:?}"
+            );
         }
     }
 

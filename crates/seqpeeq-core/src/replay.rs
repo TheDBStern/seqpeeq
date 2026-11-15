@@ -113,7 +113,8 @@ mod tests {
         let r = replay(&text, &mut s).unwrap();
         assert_eq!(r.warnings.len(), 1);
         assert!(
-            r.warnings[0].starts_with("line 1: ") && r.warnings[0].contains("is 4 bytes but was 999"),
+            r.warnings[0].starts_with("line 1: ")
+                && r.warnings[0].contains("is 4 bytes but was 999"),
             "{}",
             r.warnings[0]
         );
@@ -123,7 +124,11 @@ mod tests {
     fn matching_input_size_gives_no_warning() {
         let (_dir, a, _b) = setup();
         let mut s = Session::new(None);
-        let text = format!("open {}\n# input {} size=4 mtime=x\n", a.display(), a.display());
+        let text = format!(
+            "open {}\n# input {} size=4 mtime=x\n",
+            a.display(),
+            a.display()
+        );
         assert!(replay(&text, &mut s).unwrap().warnings.is_empty());
     }
 }

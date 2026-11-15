@@ -1,0 +1,16 @@
+---
+source: crates/seqpeeq/src/ui.rs
+expression: "render(&app, 60, 12).backend()"
+---
+" aln.fa                                                     "
+"                                                            "
+" tests/data/aln.fa                                          "
+" msa, 30 bytes                                              "
+" viewer not built yet                                       "
+"┌log───────────────────────────────────────────────────────┐"
+"│open tests/data/aln.fa                                    │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
+"opened tests/data/aln.fa (msa, 30 bytes)                    "

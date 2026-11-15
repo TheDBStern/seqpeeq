@@ -100,7 +100,11 @@ impl Session {
                     .unwrap_or_else(|| "unknown".to_string());
                 let size = meta.len();
                 let note = format!("input {} size={size} mtime={modified}", absolute.display());
-                let message = format!("opened {} ({}, {size} bytes)", path.display(), kind.as_str());
+                let message = format!(
+                    "opened {} ({}, {size} bytes)",
+                    path.display(),
+                    kind.as_str()
+                );
                 self.datasets.push(Dataset { path, kind, size });
                 Ok((Outcome { message }, Some(note)))
             }
@@ -126,7 +130,10 @@ mod tests {
     }
 
     fn open(path: &Path) -> Command {
-        Command::Open { path: path.to_path_buf(), kind: None }
+        Command::Open {
+            path: path.to_path_buf(),
+            kind: None,
+        }
     }
 
     #[test]
@@ -147,7 +154,11 @@ mod tests {
         assert!(lines[2].starts_with("# cwd /"), "{}", lines[2]);
         assert_eq!(lines[3], "# 2026-11-15T16:05:03-08:00");
         assert_eq!(lines[4], format!("open {}", fa.display()));
-        assert!(lines[5].starts_with("# input /") && lines[5].contains(" size=4 mtime="), "{}", lines[5]);
+        assert!(
+            lines[5].starts_with("# input /") && lines[5].contains(" size=4 mtime="),
+            "{}",
+            lines[5]
+        );
         assert_eq!(lines.len(), 6);
     }
 
@@ -201,7 +212,11 @@ mod tests {
         let mut s = Session::new(None);
         let err = s.execute(open(&notes)).unwrap_err();
         assert!(matches!(err, Error::UnknownKind(_)), "{err}");
-        s.execute(Command::Open { path: notes, kind: Some(Kind::Tree) }).unwrap();
+        s.execute(Command::Open {
+            path: notes,
+            kind: Some(Kind::Tree),
+        })
+        .unwrap();
         assert_eq!(s.datasets()[0].kind, Kind::Tree);
     }
 
@@ -213,7 +228,10 @@ mod tests {
         let err = s.execute(open(&fa)).unwrap_err();
         assert!(matches!(err, Error::Log { .. }), "{err}");
         let text = err.to_string();
-        assert!(text.contains("--log PATH") && text.contains("--no-log"), "{text}");
+        assert!(
+            text.contains("--log PATH") && text.contains("--no-log"),
+            "{text}"
+        );
         assert!(s.datasets().is_empty());
         assert!(s.history().is_empty());
     }

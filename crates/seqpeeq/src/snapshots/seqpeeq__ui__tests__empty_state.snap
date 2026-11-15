@@ -1,0 +1,16 @@
+---
+source: crates/seqpeeq/src/ui.rs
+expression: "render(&app, 60, 12).backend()"
+---
+" seqpeeq                                                    "
+"                                                            "
+" No files open. :open <path> to open one, ? for help        "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "

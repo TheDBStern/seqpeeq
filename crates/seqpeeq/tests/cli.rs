@@ -51,7 +51,10 @@ fn log_files(dir: &Path) -> Vec<String> {
 #[test]
 fn run_then_replay_reproduces_the_log() {
     let dir = setup();
-    let out = seqpeeq(dir.path(), &["run", "open a.fa", "open t.nwk", "--log", "one.log"]);
+    let out = seqpeeq(
+        dir.path(),
+        &["run", "open a.fa", "open t.nwk", "--log", "one.log"],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
     let out = seqpeeq(dir.path(), &["replay", "one.log", "--log", "two.log"]);
@@ -93,7 +96,11 @@ fn replay_reports_line_number() {
 #[test]
 fn replay_prints_size_warnings() {
     let dir = setup();
-    fs::write(dir.path().join("old.log"), "open a.fa\n# input /x/a.fa size=999 mtime=x\n").unwrap();
+    fs::write(
+        dir.path().join("old.log"),
+        "open a.fa\n# input /x/a.fa size=999 mtime=x\n",
+    )
+    .unwrap();
     let out = seqpeeq(dir.path(), &["replay", "old.log"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(stderr(&out).contains("but was 999"), "{}", stderr(&out));
@@ -106,5 +113,26 @@ fn missing_file_argument_fails_before_ui() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).starts_with("seqpeeq: "), "{}", stderr(&out));
     assert!(!stdout(&out).contains('\x1b'));
-    assert!(log_files(dir.path()).is_empty(), "a failed start must not leave a log behind");
+    assert!(
+        log_files(dir.path()).is_empty(),
+        "a failed start must not leave a log behind"
+    );
+}
+
+#[test]
+fn interface_without_a_terminal_fails_cleanly() {
+    // The test harness captures stdout, so it is not a terminal here.
+    let dir = setup();
+    let out = seqpeeq(dir.path(), &["a.fa"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("needs a terminal"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(stdout(&out), "");
+    assert!(
+        log_files(dir.path()).is_empty(),
+        "nothing ran, so there is nothing to log"
+    );
 }

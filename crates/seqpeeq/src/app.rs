@@ -193,7 +193,11 @@ mod tests {
         let (mut app, ..) = setup();
         type_str(&mut app, ":bogus");
         enter(&mut app);
-        assert!(app.status.starts_with("error: ") && !app.status.contains('\n'), "{}", app.status);
+        assert!(
+            app.status.starts_with("error: ") && !app.status.contains('\n'),
+            "{}",
+            app.status
+        );
         assert!(app.session.history().is_empty());
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -215,7 +219,10 @@ mod tests {
 
         let (mut app, ..) = setup();
         type_str(&mut app, ":open");
-        app.handle_event(&Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        app.handle_event(&Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
         assert!(app.quit);
     }
 

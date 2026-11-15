@@ -1,12 +1,14 @@
 //! The `seqpeeq` command: interactive viewer, `replay` and `run`.
 
 mod app;
+mod term;
 mod ui;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
 use seqpeeq_core::{Command, Session, SessionLog, replay};
@@ -62,7 +64,11 @@ fn run(cli: Cli) -> Result<()> {
             for warning in &report.warnings {
                 eprintln!("seqpeeq: warning: {warning}");
             }
-            let noun = if report.commands == 1 { "command" } else { "commands" };
+            let noun = if report.commands == 1 {
+                "command"
+            } else {
+                "commands"
+            };
             println!("replayed {} {noun}", report.commands);
         }
         Some(Sub::Run { commands }) => {
@@ -73,6 +79,12 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         None => {
+            // Checked before anything runs, so a failed start changes nothing.
+            if !std::io::stdout().is_terminal() {
+                bail!(
+                    "the interface needs a terminal; use `seqpeeq run` or `seqpeeq replay` in scripts"
+                );
+            }
             let log = if cli.no_log {
                 None
             } else {
@@ -86,7 +98,7 @@ fn run(cli: Cli) -> Result<()> {
             for path in cli.files {
                 session.execute(Command::Open { path, kind: None })?;
             }
-            println!("interface not built yet");
+            term::run(&mut app::App::new(session)).context("the interface stopped")?;
         }
     }
     Ok(())
