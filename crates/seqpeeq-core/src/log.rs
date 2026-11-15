@@ -20,12 +20,28 @@ pub(crate) fn stamp(time: &Zoned) -> String {
 pub struct SessionLog {
     path: PathBuf,
     file: Option<File>,
+    /// Command lines written so far.
+    commands: usize,
+}
+
+/// A log that was created but never recorded a command (every command failed)
+/// holds only a header, so it is removed rather than left as clutter.
+impl Drop for SessionLog {
+    fn drop(&mut self) {
+        if self.file.take().is_some() && self.commands == 0 {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl SessionLog {
     /// A log that will be written to `path`. Nothing is touched on disk yet.
     pub fn new(path: PathBuf) -> SessionLog {
-        SessionLog { path, file: None }
+        SessionLog {
+            path,
+            file: None,
+            commands: 0,
+        }
     }
 
     /// `dir/seqpeeq-YYYYMMDD-HHMMSS.log`
@@ -60,7 +76,9 @@ impl SessionLog {
     /// Record one executed command, preceded by a timestamp comment.
     pub fn append(&mut self, line: &str, now: &Zoned) -> Result<()> {
         self.ensure_open(now)?;
-        self.write(&format!("# {}\n{line}\n", stamp(now)))
+        self.write(&format!("# {}\n{line}\n", stamp(now)))?;
+        self.commands += 1;
+        Ok(())
     }
 
     /// Write a `# text` comment line.

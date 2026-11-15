@@ -114,7 +114,7 @@ mod tests {
     use crate::log::tests::fixed;
     use crate::{Command, Error, Kind, SessionLog};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     /// A temp dir holding a 4-byte `aln.fa`.
@@ -125,8 +125,8 @@ mod tests {
         (dir, fa)
     }
 
-    fn open(path: &PathBuf) -> Command {
-        Command::Open { path: path.clone(), kind: None }
+    fn open(path: &Path) -> Command {
+        Command::Open { path: path.to_path_buf(), kind: None }
     }
 
     #[test]
@@ -170,6 +170,27 @@ mod tests {
         assert!(s.datasets().is_empty());
         assert!(s.history().is_empty());
         assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 3);
+    }
+
+    #[test]
+    fn log_with_no_commands_is_removed_when_session_ends() {
+        let (dir, _fa) = setup();
+        let log = dir.path().join("s.log");
+        let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+        s.execute(open(&dir.path().join("missing.fa"))).unwrap_err();
+        assert!(log.exists());
+        drop(s);
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn log_with_commands_survives_session_end() {
+        let (dir, fa) = setup();
+        let log = dir.path().join("s.log");
+        let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+        s.execute(open(&fa)).unwrap();
+        drop(s);
+        assert!(log.exists());
     }
 
     #[test]
