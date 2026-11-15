@@ -5,6 +5,10 @@
 
 pub mod command;
 pub mod error;
+pub mod log;
+pub mod session;
 
 pub use command::{Command, Kind};
 pub use error::{Error, Result};
+pub use log::SessionLog;
+pub use session::{Dataset, Outcome, Session};

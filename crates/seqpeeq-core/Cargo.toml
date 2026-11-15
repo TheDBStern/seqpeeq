@@ -6,8 +6,10 @@ description = "Data models, command language, session log and replay for seqpeeq
 
 [dependencies]
 clap.workspace = true
+jiff.workspace = true
 shlex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true
