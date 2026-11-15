@@ -136,3 +136,20 @@ fn interface_without_a_terminal_fails_cleanly() {
         "nothing ran, so there is nothing to log"
     );
 }
+
+#[test]
+fn an_error_states_its_cause_once() {
+    let dir = setup();
+    let out = seqpeeq(dir.path(), &["run", "open missing.fa"]);
+    assert_eq!(
+        stderr(&out),
+        "seqpeeq: missing.fa: No such file or directory (os error 2)\n"
+    );
+
+    fs::write(dir.path().join("bad.log"), "open a.fa\nopen missing.fa\n").unwrap();
+    let out = seqpeeq(dir.path(), &["replay", "bad.log"]);
+    assert_eq!(
+        stderr(&out),
+        "seqpeeq: line 2: missing.fa: No such file or directory (os error 2)\n"
+    );
+}

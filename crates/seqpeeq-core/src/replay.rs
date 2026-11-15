@@ -28,9 +28,9 @@ pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
             continue;
         }
         let number = index + 1;
-        let at_line = |source| Error::Replay {
+        let at_line = |cause| Error::Replay {
             line: number,
-            source: Box::new(source),
+            cause: Box::new(cause),
         };
         let cmd = Command::parse_line(line).map_err(at_line)?;
         let opened_before = session.datasets().len();

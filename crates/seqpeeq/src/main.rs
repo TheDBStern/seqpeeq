@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
-use seqpeeq_core::{Command, Session, SessionLog, replay};
+use seqpeeq_core::{Command, Kind, Session, SessionLog, replay};
 
 /// View and edit alignments, trees and mapped reads in the terminal.
 #[derive(Parser)]
@@ -22,6 +22,10 @@ struct Cli {
 
     /// Files to open (FASTA alignment, Newick tree, BAM)
     files: Vec<PathBuf>,
+
+    /// Treat the files as this kind instead of going by their extensions
+    #[arg(long, value_enum)]
+    kind: Option<Kind>,
 
     /// Write the session log here instead of seqpeeq-YYYYMMDD-HHMMSS.log
     #[arg(long, global = true, value_name = "PATH")]
@@ -95,11 +99,54 @@ fn run(cli: Cli) -> Result<()> {
                 Some(SessionLog::new(path))
             };
             let mut session = Session::new(log);
-            for path in cli.files {
-                session.execute(Command::Open { path, kind: None })?;
+            for command in open_commands(cli.files, cli.kind) {
+                session.execute(command)?;
             }
             term::run(&mut app::App::new(session)).context("the interface stopped")?;
         }
     }
     Ok(())
+}
+
+/// The `open` command for each file named on the command line.
+fn open_commands(files: Vec<PathBuf>, kind: Option<Kind>) -> Vec<Command> {
+    files
+        .into_iter()
+        .map(|path| Command::Open { path, kind })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_flag_applies_to_files_given_at_start() {
+        let cli = Cli::try_parse_from(["seqpeeq", "x.txt", "--kind", "tree"]).unwrap();
+        assert_eq!(
+            open_commands(cli.files, cli.kind),
+            [Command::Open {
+                path: "x.txt".into(),
+                kind: Some(Kind::Tree)
+            }]
+        );
+    }
+
+    #[test]
+    fn files_without_kind_flag_are_detected_by_extension() {
+        let cli = Cli::try_parse_from(["seqpeeq", "a.fa", "t.nwk"]).unwrap();
+        assert_eq!(
+            open_commands(cli.files, cli.kind),
+            [
+                Command::Open {
+                    path: "a.fa".into(),
+                    kind: None
+                },
+                Command::Open {
+                    path: "t.nwk".into(),
+                    kind: None
+                },
+            ]
+        );
+    }
 }

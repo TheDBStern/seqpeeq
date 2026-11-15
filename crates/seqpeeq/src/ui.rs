@@ -7,36 +7,49 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Mode};
 
 /// Rows the log pane takes when shown, borders included.
 const LOG_HEIGHT: u16 = 6;
 
+/// The most rows a long status message may take at the bottom.
+const MAX_STATUS_ROWS: u16 = 4;
+
 /// Draw the whole interface for the current state.
 ///
 /// Rows are handed out by priority, so a small terminal drops pieces instead
 /// of overlapping them: bottom line first, then the tab bar, then the body,
-/// and the log pane only when the body keeps at least one row.
+/// and the log pane only when the body keeps at least one row. A status
+/// message too long for one row wraps onto up to [`MAX_STATUS_ROWS`], because
+/// the end of an error message is where the remedy is.
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if area.is_empty() {
         return;
     }
+    let status = match app.mode {
+        Mode::Command(_) => Vec::new(),
+        _ => wrap_columns(&app.status, area.width as usize),
+    };
+    let bottom_height = (status.len() as u16)
+        .clamp(1, MAX_STATUS_ROWS)
+        .min(area.height.saturating_sub(2).max(1));
     let bottom = Rect {
-        y: area.bottom() - 1,
-        height: 1,
+        y: area.bottom() - bottom_height,
+        height: bottom_height,
         ..area
     };
-    draw_bottom(frame, app, bottom);
+    draw_bottom(frame, app, &status, bottom);
 
-    if area.height >= 2 {
+    if area.height > bottom_height {
         draw_tabs(frame, app, Rect { height: 1, ..area });
     }
-    if area.height >= 3 {
+    if area.height > bottom_height + 1 {
         let middle = Rect {
             y: area.y + 1,
-            height: area.height - 2,
+            height: area.height - 1 - bottom_height,
             ..area
         };
         let log_height = if app.show_log && middle.height > LOG_HEIGHT {
@@ -50,20 +63,47 @@ pub fn draw(frame: &mut Frame, app: &App) {
         };
         draw_body(frame, app, body);
         if log_height > 0 {
-            draw_log(
-                frame,
-                app,
-                Rect {
-                    y: body.bottom(),
-                    height: log_height,
-                    ..middle
-                },
-            );
+            let log = Rect {
+                y: body.bottom(),
+                height: log_height,
+                ..middle
+            };
+            draw_log(frame, app, log);
         }
     }
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
     }
+}
+
+/// Break text into rows of at most `width` display columns.
+fn wrap_columns(text: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for c in text.chars() {
+        let columns = c.width().unwrap_or(0);
+        if used + columns > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        rows.last_mut().expect("rows is never empty").push(c);
+        used += columns;
+    }
+    rows
+}
+
+/// The longest end of `text` that fits in `width` display columns.
+fn tail_columns(text: &str, width: usize) -> &str {
+    let mut used = 0;
+    let mut start = text.len();
+    for (index, c) in text.char_indices().rev() {
+        used += c.width().unwrap_or(0);
+        if used > width {
+            break;
+        }
+        start = index;
+    }
+    &text[start..]
 }
 
 fn dim() -> Style {
@@ -122,24 +162,32 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
-    match &app.mode {
-        Mode::Command(buffer) => {
-            let line = Line::from(format!(":{buffer}"));
-            // Keep the cursor on screen when the text is wider than the terminal.
-            let column = (line.width() as u16).min(area.width - 1);
-            frame.render_widget(Paragraph::new(line), area);
-            frame.set_cursor_position(Position::new(area.x + column, area.y));
-        }
-        _ => {
-            let style = if app.status.starts_with("error:") {
-                Style::new().fg(Color::Red)
-            } else {
-                Style::new()
-            };
-            frame.render_widget(Paragraph::new(app.status.as_str()).style(style), area);
-        }
+fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
+    if let Mode::Command(buffer) = &app.mode {
+        // Show the end of a long line, where the typing happens, and keep one
+        // column free for the cursor.
+        let text = format!(":{buffer}");
+        let visible = tail_columns(&text, area.width as usize - 1);
+        let cursor = area.x + visible.width() as u16;
+        frame.render_widget(Paragraph::new(visible), area);
+        frame.set_cursor_position(Position::new(cursor, area.y));
+        return;
     }
+    let shown = status.len().min(area.height as usize);
+    let mut lines: Vec<String> = status[..shown].to_vec();
+    if shown < status.len()
+        && let Some(last) = lines.last_mut()
+    {
+        last.pop();
+        last.push('…');
+    }
+    let style = if app.status.starts_with("error:") {
+        Style::new().fg(Color::Red)
+    } else {
+        Style::new()
+    };
+    let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    frame.render_widget(Paragraph::new(lines).style(style), area);
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
@@ -193,7 +241,7 @@ pub fn tab_ranges(titles: &[String]) -> Vec<Range<u16>> {
     titles
         .iter()
         .map(|title| {
-            let width = Span::raw(title.as_str()).width() as u16 + 2;
+            let width = title.width() as u16 + 2;
             let range = start..start.saturating_add(width);
             start = range.end.saturating_add(1);
             range
@@ -262,6 +310,60 @@ mod tests {
         let mut app = with_dataset();
         app.mode = Mode::Help;
         insta::assert_snapshot!(render(&app, 60, 12).backend());
+    }
+
+    /// The text of each screen row, trailing spaces removed.
+    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn long_status_wraps_so_the_end_is_readable() {
+        let mut app = with_dataset();
+        app.status = format!(
+            "error: cannot write session log {}: Permission denied; use --log PATH or --no-log",
+            "/data/project/run".repeat(3)
+        );
+        let screen = rows(&render(&app, 40, 10));
+        let bottom = screen[6..].concat();
+        assert!(
+            bottom.starts_with("error: cannot write") && bottom.ends_with("or --no-log"),
+            "{screen:#?}"
+        );
+        assert_eq!(
+            screen[4], " viewer not built yet",
+            "the body keeps its rows above the status"
+        );
+    }
+
+    #[test]
+    fn status_never_takes_more_than_four_rows() {
+        let mut app = with_dataset();
+        app.status = "x".repeat(1000);
+        let screen = rows(&render(&app, 40, 12));
+        assert_eq!(screen.iter().filter(|r| r.starts_with("xxxx")).count(), 4);
+        assert_eq!(screen[0], " aln.fa");
+    }
+
+    #[test]
+    fn long_command_line_shows_its_end() {
+        let mut app = with_dataset();
+        app.mode = Mode::Command(format!("open {}END", "/long/path".repeat(5)));
+        let mut terminal = render(&app, 20, 6);
+        let screen = rows(&terminal);
+        assert!(screen[5].ends_with("END"), "{screen:#?}");
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(19, 5)
+        );
     }
 
     #[test]

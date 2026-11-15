@@ -25,8 +25,10 @@ impl Kind {
         let name = path.file_name()?.to_str()?.to_ascii_lowercase();
         let name = name.strip_suffix(".gz").unwrap_or(&name);
         match name.rsplit_once('.')?.1 {
-            "fa" | "fasta" | "fna" | "faa" | "aln" | "afa" => Some(Kind::Msa),
-            "nwk" | "newick" | "tree" | "tre" | "treefile" => Some(Kind::Tree),
+            "fa" | "fasta" | "fas" | "fsa" | "mfa" | "fna" | "faa" | "aln" | "afa" => {
+                Some(Kind::Msa)
+            }
+            "nwk" | "newick" | "nw" | "tree" | "tre" | "treefile" | "contree" => Some(Kind::Tree),
             "bam" => Some(Kind::Bam),
             _ => None,
         }
@@ -123,6 +125,12 @@ mod tests {
         assert_eq!(Kind::from_path(Path::new("a.aln.gz")), Some(Kind::Msa));
         assert_eq!(Kind::from_path(Path::new("x.treefile")), Some(Kind::Tree));
         assert_eq!(Kind::from_path(Path::new("r.bam")), Some(Kind::Bam));
+        for name in ["a.fas", "a.fsa", "a.mfa", "a.FAS.gz"] {
+            assert_eq!(Kind::from_path(Path::new(name)), Some(Kind::Msa), "{name}");
+        }
+        for name in ["x.contree", "x.nw"] {
+            assert_eq!(Kind::from_path(Path::new(name)), Some(Kind::Tree), "{name}");
+        }
         assert_eq!(Kind::from_path(Path::new("notes.txt")), None);
     }
 

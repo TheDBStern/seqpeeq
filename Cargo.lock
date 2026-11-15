@@ -1550,6 +1550,7 @@ dependencies = [
  "ratatui",
  "seqpeeq-core",
  "tempfile",
+ "unicode-width",
 ]
 
 [[package]]

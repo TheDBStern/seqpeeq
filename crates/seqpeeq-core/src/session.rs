@@ -54,14 +54,17 @@ impl Session {
         if let Some(log) = &mut self.log {
             log.ensure_open(&now)?;
         }
+        let datasets_before = self.datasets.len();
         let (outcome, note) = self.apply(cmd, &now)?;
-        self.history.push(line.clone());
-        if let Some(log) = &mut self.log {
-            log.append(&line, &now)?;
-            if let Some(note) = note {
-                log.comment(&note)?;
-            }
+        if let Some(log) = &mut self.log
+            && let Err(error) = log.record(&line, note.as_deref(), &now)
+        {
+            // A change that is not in the log must not stand: undo it. The
+            // log is now marked incomplete, so later commands are refused.
+            self.datasets.truncate(datasets_before);
+            return Err(error);
         }
+        self.history.push(line);
         Ok(outcome)
     }
 
@@ -86,9 +89,9 @@ impl Session {
                 let kind = kind
                     .or_else(|| Kind::from_path(&path))
                     .ok_or_else(|| Error::UnknownKind(path.clone()))?;
-                let io = |source| Error::Io {
+                let io = |cause| Error::Io {
                     path: path.clone(),
-                    source,
+                    cause,
                 };
                 let meta = std::fs::metadata(&path).map_err(io)?;
                 let absolute = std::fs::canonicalize(&path).map_err(io)?;
@@ -115,7 +118,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::tests::fixed;
+    use crate::log::tests::{fixed, limited_log};
     use crate::{Command, Error, Kind, SessionLog};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -202,6 +205,49 @@ mod tests {
         s.execute(open(&fa)).unwrap();
         drop(s);
         assert!(log.exists());
+    }
+
+    #[test]
+    fn log_write_failure_undoes_the_command_and_refuses_later_ones() {
+        let (_dir, fa) = setup();
+        // Room for the header but not for a command record.
+        let (log, buffer) = limited_log(160);
+        let mut s = Session::with_clock(Some(log), fixed);
+        let err = s.execute(open(&fa)).unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert!(s.datasets().is_empty(), "the open must be rolled back");
+        assert!(s.history().is_empty());
+        let after_first = buffer.lock().unwrap().clone();
+        assert!(
+            !String::from_utf8(after_first.clone())
+                .unwrap()
+                .contains("open ")
+        );
+
+        let err = s.execute(open(&fa)).unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert!(s.datasets().is_empty());
+        assert_eq!(*buffer.lock().unwrap(), after_first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn line_break_in_a_resolved_path_does_not_corrupt_the_log() {
+        let (dir, _fa) = setup();
+        let odd = dir.path().join("a\nopen evil.fa");
+        fs::write(&odd, ">a\nA").unwrap();
+        let link = dir.path().join("link.fa");
+        std::os::unix::fs::symlink(&odd, &link).unwrap();
+        let log = dir.path().join("s.log");
+        let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+        s.execute(open(&link)).unwrap();
+        let text = fs::read_to_string(&log).unwrap();
+        assert_eq!(text.lines().count(), 6, "{text}");
+
+        let mut again = Session::new(None);
+        let report = crate::replay(&text, &mut again).unwrap();
+        assert_eq!((report.commands, again.datasets().len()), (1, 1));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
     #[test]
