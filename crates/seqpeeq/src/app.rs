@@ -232,7 +232,11 @@ impl App {
         let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
             return;
         };
-        if view.scale.rows <= 1 || !alignment.is_aligned() {
+        // Drawn from at every level of the overview: a line's score, or a
+        // cell of many columns, read straight from the file costs the
+        // whole row on every frame.
+        let too_many = summary_block(alignment.rows(), alignment.cols()).is_none();
+        if view.zoom == 0 || !alignment.is_aligned() || too_many {
             return;
         }
         let (id, revision) = (dataset.id, alignment.revision());
@@ -394,6 +398,9 @@ impl App {
             KeyCode::Char('z') => 0,
             _ => view.zoom.saturating_sub(1),
         };
+        if zoom == view.zoom {
+            return;
+        }
         if let Some(view) = self.view_mut() {
             view.zoom = zoom;
         }
@@ -403,6 +410,16 @@ impl App {
         };
         if let Some(view) = self.view_mut() {
             view.centre(screen, aln);
+        }
+    }
+
+    /// Ask every job running in the background to stop.
+    pub fn cancel_jobs(&self) {
+        if let Some(busy) = &self.busy {
+            busy.progress.cancel();
+        }
+        for (_, _, progress) in [&self.counting, &self.summarising].into_iter().flatten() {
+            progress.cancel();
         }
     }
 
@@ -737,7 +754,13 @@ impl App {
                 revision: alignment.revision(),
             })
         };
-        let row = view.cursor.row;
+        // Step from the match last gone to while the cursor is still on
+        // its line, so that `n` moves on past it.
+        let line = view.cursor.row..view.cursor.row + view.scale.rows;
+        let row = match view.found {
+            Some(at) if fresh.is_none() && line.contains(&at) => at,
+            _ => view.cursor.row,
+        };
         let Some(view) = self.view_mut() else {
             return;
         };
@@ -772,6 +795,7 @@ impl App {
         );
         if let Some(view) = self.view_mut() {
             view.move_to(Some(row), None, aln);
+            view.found = Some(row);
         }
         self.reveal();
     }
@@ -993,6 +1017,17 @@ impl App {
         if !carries_on {
             self.commit_typed();
         }
+        // Removing a gap that only gaps follow up to the next residue
+        // changes nothing: logged, it would still take an undo step.
+        if let Pending::Remove {
+            row, col, count: 1, ..
+        } = next
+            && !carries_on
+            && self.removes_nothing(row, col)
+        {
+            self.status = "error: nothing to remove: the row would stay the same".to_string();
+            return;
+        }
         // An insert needing columns the alignment does not have yet is made
         // at once, so that the preview never shows columns that do not
         // exist. Planned after the run before it is made.
@@ -1010,6 +1045,18 @@ impl App {
             self.commit_typed();
         }
         self.reveal();
+    }
+
+    /// Whether removing the cell of `row` at `col` leaves the row as it is.
+    fn removes_nothing(&self, row: usize, col: usize) -> bool {
+        let Some((alignment, _)) = self.alignment() else {
+            return true;
+        };
+        let view = alignment.view();
+        let shift = view.plan_remove(row, col, 1);
+        let mut now = Vec::with_capacity(shift.bytes.len());
+        view.residues(row, col..col + shift.bytes.len(), &mut now);
+        now == shift.bytes
     }
 
     /// Turn what has been typed into one command. If the command is
@@ -2858,6 +2905,92 @@ mod tests {
         settle(&mut app);
         assert!(app.session.datasets().is_empty());
         assert!(app.summaries.is_empty() && app.summarising.is_none());
+    }
+
+    #[test]
+    fn n_and_shift_n_visit_every_match_in_the_overview() {
+        let (mut app, _dir) = with_text(&tall());
+        type_str(&mut app, "z");
+        settle(&mut app);
+        assert!(view(&app).scale.rows > 1, "lines hold several sequences");
+        type_str(&mut app, "/n1");
+        enter(&mut app);
+        let mut seen = vec![app.status.clone()];
+        for _ in 0..3 {
+            type_str(&mut app, "n");
+            seen.push(app.status.clone());
+        }
+        assert_eq!(
+            seen,
+            [
+                "match 1 of 11: n1",
+                "match 2 of 11: n10",
+                "match 3 of 11: n11",
+                "match 4 of 11: n12"
+            ]
+        );
+        type_str(&mut app, "N");
+        assert_eq!(app.status, "match 3 of 11: n11");
+    }
+
+    #[test]
+    fn the_overview_is_summarised_at_one_sequence_per_line_too() {
+        // Drawing a line's score or a wide cell straight from the file
+        // reads the whole row, every frame.
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-");
+        settle(&mut app);
+        assert_eq!(view(&app).scale.rows, 1);
+        let summary = app.summary().expect("summarised");
+        assert_eq!(
+            summary.row(3).score(),
+            Some(25),
+            "all T: every fourth column"
+        );
+    }
+
+    #[test]
+    fn a_zoom_key_that_changes_no_level_leaves_the_view_where_it_is() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, &"l".repeat(120));
+        let left = view(&app).left;
+        assert!(left > 0);
+        type_str(&mut app, "+");
+        assert_eq!(view(&app).left, left, "+ at the grid");
+        type_str(&mut app, "z");
+        let (zoom, left) = (view(&app).zoom, view(&app).left);
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, view(&app).left),
+            (zoom, left),
+            "- at the last level"
+        );
+    }
+
+    #[test]
+    fn quitting_cancels_every_background_job() {
+        let (mut app, _dir) = with_text(TRIO);
+        let jobs: Vec<_> = (0..2).map(|_| Arc::new(Progress::new())).collect();
+        app.counting = Some((1, 1, Arc::clone(&jobs[0])));
+        app.summarising = Some((1, 1, Arc::clone(&jobs[1])));
+        app.cancel_jobs();
+        assert!(jobs.iter().all(|job| job.is_cancelled()));
+    }
+
+    #[test]
+    fn a_delete_that_would_change_nothing_is_refused_and_logs_nothing() {
+        let (mut app, _dir) = with_text(TRIO);
+        type_str(&mut app, "fN");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "i");
+        for _ in 0..5 {
+            app.handle_event(&press(KeyCode::Delete));
+        }
+        assert!(app.status.contains("nothing to remove"), "{}", app.status);
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(shown(&app, 0), "NCGT-ACGT-");
+        type_str(&mut app, "uu");
+        assert_eq!(shown(&app, 0), "ACGT-ACGTA", "two undos reach the fill");
     }
 
     #[test]

@@ -75,12 +75,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, signals: &Signals) 
     let mut worker = Worker::new();
     let result = turns(terminal, app, signals, &mut worker);
     // Do not leave a thread writing a file behind: ask it to stop, and wait.
-    if let Some(busy) = &app.busy {
-        busy.progress.cancel();
-    }
-    if let Some((_, _, progress)) = &app.counting {
-        progress.cancel();
-    }
+    app.cancel_jobs();
     worker.join();
     result
 }

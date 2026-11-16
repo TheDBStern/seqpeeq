@@ -35,12 +35,10 @@ pub fn draw_overview(
     let (per_line, per_cell) = (view.scale.rows, view.scale.cols);
     let conserved = conserved.filter(|found| found.cols() == aln.cols);
     let counted = conserved.is_some();
-    let summary = summary.filter(|summary| {
-        per_line > 1
-            && summary.rows() == aln.rows
-            && summary.cols() == aln.cols
-            && per_cell.is_multiple_of(summary.block())
-    });
+    let summary =
+        summary.filter(|summary| summary.rows() == aln.rows && summary.cols() == aln.cols);
+    // Cells are drawn from the summary when they hold whole blocks of it.
+    let blocks = summary.filter(|summary| per_cell.is_multiple_of(summary.block()));
     let selected = view.region(aln);
     let is_selected = |cell: Cell| {
         selected
@@ -102,7 +100,7 @@ pub fn draw_overview(
                 fit(alignment.name(first), room) + &more
             };
             let found = view.search.as_ref().is_some_and(|search| {
-                search.revision == alignment.revision() && search.is_match(first)
+                search.revision == alignment.revision() && search.any_in(first..last)
             });
             let style = if found {
                 Style::new().add_modifier(Modifier::UNDERLINED)
@@ -152,7 +150,7 @@ pub fn draw_overview(
         }
 
         let on_screen = view.left..view.left + cells.width as usize * per_cell;
-        if summary.is_none() {
+        if blocks.is_none() {
             alignment
                 .view()
                 .row_tallies(first, on_screen, per_cell, conserved, &mut tallies);
@@ -162,7 +160,7 @@ pub fn draw_overview(
             if col >= aln.cols {
                 break;
             }
-            let tally = match summary {
+            let tally = match blocks {
                 Some(summary) => {
                     let block = summary.block();
                     let from = col / block;

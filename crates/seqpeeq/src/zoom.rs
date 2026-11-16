@@ -19,8 +19,8 @@ impl Scale {
 /// lines and cells, from the grid outwards. Columns are shrunk first, by
 /// doubling, until they all fit; then rows, until they all fit too, with
 /// at least `block` columns per cell (the summary's block, which lines of
-/// several sequences are drawn from).
-pub fn levels(aln: Shape, screen: Shape, block: usize) -> Vec<Scale> {
+/// several sequences are drawn from). Without a summary, rows never shrink.
+pub fn levels(aln: Shape, screen: Shape, block: Option<usize>) -> Vec<Scale> {
     let mut levels = vec![Scale::ONE];
     if screen.rows == 0 || screen.cols == 0 {
         return levels;
@@ -30,6 +30,9 @@ pub fn levels(aln: Shape, screen: Shape, block: usize) -> Vec<Scale> {
         cols *= 2;
         levels.push(Scale { rows: 1, cols });
     }
+    let Some(block) = block else {
+        return levels;
+    };
     let per_cell = cols.max(block);
     let mut rows = 1;
     while rows * screen.rows < aln.rows {
@@ -61,7 +64,7 @@ mod tests {
                 rows: 30,
                 cols: 150,
             },
-            256,
+            Some(256),
         );
         assert_eq!(big.len(), 21);
         assert_eq!(&big[..3], [Scale::ONE, s(1, 2), s(1, 4)]);
@@ -72,7 +75,10 @@ mod tests {
     #[test]
     fn only_what_does_not_fit_is_shrunk() {
         let screen = Shape { rows: 20, cols: 50 };
-        assert_eq!(levels(Shape { rows: 3, cols: 10 }, screen, 1), [Scale::ONE]);
+        assert_eq!(
+            levels(Shape { rows: 3, cols: 10 }, screen, Some(1)),
+            [Scale::ONE]
+        );
         assert_eq!(
             levels(
                 Shape {
@@ -80,7 +86,7 @@ mod tests {
                     cols: 10
                 },
                 screen,
-                1
+                Some(1)
             ),
             [Scale::ONE, s(2, 1), s(4, 1), s(8, 1), s(16, 1), s(32, 1)]
         );
@@ -91,7 +97,7 @@ mod tests {
                     cols: 1000
                 },
                 screen,
-                1
+                Some(1)
             )
             .last(),
             Some(&s(1, 32))
@@ -108,14 +114,29 @@ mod tests {
                     cols: 100
                 },
                 wide_screen,
-                4
+                Some(4)
             )
             .last(),
             Some(&s(64, 4))
         );
         assert_eq!(
-            levels(Shape { rows: 9, cols: 9 }, Shape { rows: 0, cols: 0 }, 1),
+            levels(
+                Shape { rows: 9, cols: 9 },
+                Shape { rows: 0, cols: 0 },
+                Some(1)
+            ),
             [Scale::ONE]
         );
+    }
+
+    #[test]
+    fn without_a_summary_only_columns_shrink() {
+        let tall = Shape {
+            rows: 13_000_000,
+            cols: 1000,
+        };
+        let screen = Shape { rows: 20, cols: 50 };
+        let found = levels(tall, screen, None);
+        assert_eq!(found.last(), Some(&s(1, 32)));
     }
 }

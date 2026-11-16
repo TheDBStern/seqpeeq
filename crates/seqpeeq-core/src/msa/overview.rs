@@ -44,13 +44,22 @@ pub const SUMMARY_BYTES: usize = 48 << 20;
 
 /// The columns per stored block of a summary of `rows` x `cols`: the
 /// smallest power of two that keeps its tables within [`SUMMARY_BYTES`].
-pub fn summary_block(rows: usize, cols: usize) -> usize {
-    let bytes = |block: usize| (rows as u128) * (cols.div_ceil(block) as u128) * 4;
-    let mut block = 1;
+/// `None` when even one block per sequence would not: there are too many
+/// sequences to summarise.
+pub fn summary_block(rows: usize, cols: usize) -> Option<usize> {
+    let bytes = |block: usize| {
+        (rows as u128)
+            .saturating_mul(cols.div_ceil(block) as u128)
+            .saturating_mul(4)
+    };
+    let mut block = 1usize;
     while bytes(block) > SUMMARY_BYTES as u128 {
-        block *= 2;
+        if block >= cols {
+            return None;
+        }
+        block = block.checked_mul(2)?;
     }
-    block
+    Some(block)
 }
 
 /// Tallies of every row of an alignment, in blocks of columns, for the
@@ -164,7 +173,8 @@ impl View {
     /// cancelled through `progress`, if the sequences differ in length, or
     /// if `conserved` is not as wide as the alignment.
     pub fn summary(&self, conserved: &Conservation, progress: &Progress) -> Option<Summary> {
-        self.summary_in_blocks(conserved, progress, summary_block(self.rows(), self.cols()))
+        let block = summary_block(self.rows(), self.cols())?;
+        self.summary_in_blocks(conserved, progress, block)
     }
 
     /// [`View::summary`], in blocks of `block` columns.
@@ -274,10 +284,13 @@ mod tests {
 
     #[test]
     fn the_summary_block_keeps_the_tables_within_budget() {
-        assert_eq!(summary_block(3, 10), 1);
-        assert_eq!(summary_block(100_000, 30_000), 256);
+        assert_eq!(summary_block(3, 10), Some(1));
+        assert_eq!(summary_block(100_000, 30_000), Some(256));
+        // Even one block per sequence is over budget: no summary at all.
+        assert_eq!(summary_block(13_000_000, 100), None);
+        assert_eq!(summary_block(usize::MAX, usize::MAX), None);
         for (rows, cols) in [(100_000, 30_000), (1_000, 1_000_000), (1, 1)] {
-            let b = summary_block(rows, cols);
+            let b = summary_block(rows, cols).unwrap();
             assert!(
                 rows * cols.div_ceil(b) * 4 <= SUMMARY_BYTES,
                 "{rows} x {cols}"

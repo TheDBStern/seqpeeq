@@ -227,6 +227,12 @@ impl Search {
         Some((index, self.matches[index]))
     }
 
+    /// Whether any row of `rows` matches.
+    pub fn any_in(&self, rows: std::ops::Range<usize>) -> bool {
+        let first = self.matches.partition_point(|&at| at < rows.start);
+        self.matches.get(first).is_some_and(|&at| at < rows.end)
+    }
+
     pub fn is_match(&self, row: usize) -> bool {
         self.matches.binary_search(&row).is_ok()
     }
@@ -253,6 +259,9 @@ pub struct MsaView {
     pub append: bool,
     /// The last search of the names.
     pub search: Option<Search>,
+    /// The row of the match last gone to. Lines of the overview hold
+    /// several rows, so the cursor alone does not say which it was.
+    pub found: Option<usize>,
     /// The zoom level, an index into the app's levels; 0 is the grid.
     pub zoom: usize,
     /// Sequences per line and columns per cell at that level, set by the
@@ -272,6 +281,7 @@ impl MsaView {
             typed: None,
             append: false,
             search: None,
+            found: None,
             zoom: 0,
             scale: Scale::ONE,
         }
@@ -797,6 +807,8 @@ mod tests {
         assert_eq!(search.step(2, false, false), Some((2, 9)));
         assert_eq!(search.step(7, false, false), Some((1, 5)));
         assert!(search.is_match(5) && !search.is_match(6));
+        assert!(search.any_in(3..6) && search.any_in(9..10));
+        assert!(!search.any_in(6..9) && !search.any_in(3..3));
         let none = Search {
             pattern: "x".into(),
             matches: vec![],
