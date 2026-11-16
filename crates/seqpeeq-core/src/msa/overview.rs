@@ -190,15 +190,27 @@ impl View {
             }
             residues.clear();
             self.residues(row, 0..cols, &mut residues);
-            let mut total = Tally::default();
-            for (index, chunk) in residues.chunks(block).enumerate() {
-                let mut tally = Tally::default();
-                for (offset, &residue) in chunk.iter().enumerate() {
-                    count(&mut tally, index * block + offset, residue, Some(conserved));
+            let mut total = Tally {
+                cells: cols as u64,
+                ..Tally::default()
+            };
+            // The hot loop of the pass: every residue of the alignment
+            // goes through it once.
+            for (chunk, majority) in residues
+                .chunks(block)
+                .zip(conserved.majorities().chunks(block))
+            {
+                let (mut found, mut matched) = (0u32, 0u32);
+                for (&residue, &letter) in chunk.iter().zip(majority) {
+                    found += u32::from(!is_gap(residue));
+                    // `letter` is an upper-case letter or 0; clearing the
+                    // case bit maps only that letter, in either case, to it.
+                    matched += u32::from(letter != 0 && residue & !0x20 == letter);
                 }
-                let narrow = |n: u64| u16::try_from(n).unwrap_or(u16::MAX);
-                cells.push([narrow(tally.residues), narrow(tally.matches)]);
-                total.add(tally);
+                let narrow = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+                cells.push([narrow(found), narrow(matched)]);
+                total.residues += u64::from(found);
+                total.matches += u64::from(matched);
             }
             totals.push(total);
             progress.add(1);

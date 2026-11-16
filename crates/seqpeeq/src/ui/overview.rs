@@ -179,3 +179,69 @@ pub fn draw_overview(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zoom::levels;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use seqpeeq_core::{Progress, summary_block};
+    use std::time::Instant;
+
+    /// Run with `SEQPEEQ_BIG=<a 100,000 x 30,000 alignment> cargo test
+    /// --release -p seqpeeq -- --ignored a_level_step`.
+    #[test]
+    #[ignore = "needs a large alignment named by SEQPEEQ_BIG"]
+    fn a_level_step_on_the_largest_alignment_draws_quickly() {
+        let path = std::env::var("SEQPEEQ_BIG").expect("SEQPEEQ_BIG names the file");
+        let started = Instant::now();
+        let alignment = Alignment::load(std::path::Path::new(&path)).unwrap();
+        eprintln!("opened in {:?}", started.elapsed());
+        let started = Instant::now();
+        let conserved = alignment.view().conservation(&Progress::new()).unwrap();
+        eprintln!("counted in {:?}", started.elapsed());
+        let started = Instant::now();
+        let summary = alignment
+            .view()
+            .summary(&conserved, &Progress::new())
+            .unwrap();
+        eprintln!(
+            "summarised in {:?}, {} MB",
+            started.elapsed(),
+            summary.bytes() >> 20
+        );
+
+        let area = Rect::new(0, 0, 120, 40);
+        let aln = Shape::of(&alignment);
+        let mut view = MsaView::new();
+        let cells = grid_layout(area, aln.rows, view.name_width, SCORE_WIDTH).cells;
+        let screen = Shape {
+            rows: cells.height as usize,
+            cols: cells.width as usize,
+        };
+        let levels = levels(aln, screen, summary_block(aln.rows, aln.cols));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for (zoom, scale) in levels.iter().enumerate().skip(1) {
+            view.zoom = zoom;
+            view.scale = *scale;
+            view.snap();
+            let started = Instant::now();
+            terminal
+                .draw(|frame| {
+                    draw_overview(
+                        frame,
+                        &alignment,
+                        &view,
+                        Some(&conserved),
+                        Some(&summary),
+                        area,
+                    )
+                })
+                .unwrap();
+            let took = started.elapsed();
+            eprintln!("level {zoom} {scale:?}: {took:?}");
+            assert!(took.as_millis() < 100, "level {zoom} took {took:?}");
+        }
+    }
+}

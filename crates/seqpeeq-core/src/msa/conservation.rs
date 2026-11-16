@@ -35,6 +35,11 @@ impl Conservation {
             .filter(|&letter| letter != 0)
     }
 
+    /// The conserved residue of every column, in upper case; 0 where none.
+    pub(crate) fn majorities(&self) -> &[u8] {
+        &self.majority
+    }
+
     /// Whether `residue`, in either case, is the conserved one of `col`.
     /// False past the last column.
     pub fn matches(&self, col: usize, residue: u8) -> bool {
