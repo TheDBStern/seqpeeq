@@ -213,6 +213,28 @@ fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
     };
     let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
     frame.render_widget(Paragraph::new(lines).style(style), area);
+
+    // What is running in the background, at the right of the first row.
+    if let Some(busy) = &app.busy {
+        let text = job_text(&busy.label, busy.progress.fraction());
+        let width = (text.width() as u16 + 1).min(area.width);
+        let right = Rect {
+            x: area.right() - width,
+            width,
+            height: 1,
+            ..area
+        };
+        frame.render_widget(Clear, right);
+        frame.render_widget(Paragraph::new(format!(" {text}")).style(dim()), right);
+    }
+}
+
+/// `opening big.fa 42%`, or the label alone while the total is not known.
+pub fn job_text(label: &str, fraction: Option<f64>) -> String {
+    match fraction {
+        Some(fraction) => format!("{label} {:.0}%", (fraction * 100.0).floor()),
+        None => label.to_string(),
+    }
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {

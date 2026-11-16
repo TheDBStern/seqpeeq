@@ -11,8 +11,11 @@ anyhow.workspace = true
 jiff.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
+signal-hook.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
 tempfile.workspace = true
 insta.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true

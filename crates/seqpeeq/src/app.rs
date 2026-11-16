@@ -3,9 +3,12 @@
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use seqpeeq_core::{Command, MsaCmd, Session};
+use ratatui::layout::Size;
+use seqpeeq_core::{Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
 
 use crate::line::{History, LineEdit};
 use crate::ui;
@@ -37,6 +40,28 @@ impl PromptKind {
     }
 }
 
+/// Work for the event loop to hand to a worker thread.
+pub enum Request {
+    /// The slow part of a command.
+    Run(Job),
+}
+
+/// Work that a worker thread has finished.
+pub enum Done {
+    Command(Finished),
+}
+
+/// The command that is running in the background.
+pub struct Busy {
+    /// What it is doing, such as `opening a.fa`.
+    pub label: String,
+    pub progress: Arc<Progress>,
+    /// Whether the visible tab should move to the current file when it ends.
+    follow: bool,
+    /// Whether it came from the queue rather than from the user just now.
+    queued: bool,
+}
+
 pub struct App {
     pub session: Session,
     pub mode: Mode,
@@ -46,6 +71,15 @@ pub struct App {
     pub active: usize,
     pub show_log: bool,
     pub quit: bool,
+    /// The command running in the background, if any. Until it ends, every
+    /// other command is refused.
+    pub busy: Option<Busy>,
+    /// Work waiting for the event loop to hand to a thread.
+    pub outbox: Vec<Request>,
+    /// Commands waiting for the session to be free, oldest first.
+    pub queue: VecDeque<Command>,
+    /// The size of the terminal.
+    pub screen: Size,
     /// Lines entered on the command line.
     history: History,
 }
@@ -59,7 +93,79 @@ impl App {
             active: 0,
             show_log: false,
             quit: false,
+            busy: None,
+            outbox: Vec::new(),
+            queue: VecDeque::new(),
+            screen: Size::new(80, 24),
             history: History::default(),
+        }
+    }
+
+    /// Add a command to run when the session is free.
+    pub fn enqueue(&mut self, cmd: Command) {
+        self.queue.push_back(cmd);
+    }
+
+    /// Called once per turn of the event loop: start queued commands while
+    /// nothing is running.
+    pub fn pump(&mut self) {
+        while self.busy.is_none() {
+            let Some(cmd) = self.queue.pop_front() else {
+                break;
+            };
+            let ran = self.run_command(cmd);
+            if let Some(busy) = &mut self.busy {
+                busy.queued = true;
+            }
+            self.report(ran, true);
+        }
+    }
+
+    /// Take in work a thread has finished.
+    pub fn handle_done(&mut self, done: Done) {
+        match done {
+            Done::Command(finished) => {
+                let Some(busy) = self.busy.take() else {
+                    return;
+                };
+                let ended = self.session.finish(finished);
+                if ended.is_ok()
+                    && busy.follow
+                    && let Some(current) = self.session.current()
+                {
+                    self.active = current;
+                }
+                self.report(ended.map(|outcome| Some(outcome.message)), busy.queued);
+            }
+        }
+    }
+
+    pub fn resize(&mut self, size: Size) {
+        self.screen = size;
+    }
+
+    /// Background work is running, so the screen should be redrawn soon to
+    /// show progress.
+    pub fn wants_tick(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    /// Show how a command went. `None` means it is running in the
+    /// background. A queued command never replaces an error on screen:
+    /// several run in a row at start-up, and a failure among them must
+    /// still be there to read when they are done.
+    fn report(&mut self, ran: seqpeeq_core::Result<Option<String>>, queued: bool) {
+        let text = match ran {
+            Ok(Some(message)) => message,
+            Ok(None) => match &self.busy {
+                Some(busy) => format!("{}…", busy.label),
+                None => return,
+            },
+            Err(Error::Cancelled) => "cancelled".to_string(),
+            Err(error) => format!("error: {error}"),
+        };
+        if !(queued && self.status.starts_with("error:")) {
+            self.status = text;
         }
     }
 
@@ -81,6 +187,12 @@ impl App {
         match &mut self.mode {
             Mode::Normal if ctrl => {}
             Mode::Normal => match key.code {
+                KeyCode::Esc => {
+                    if let Some(busy) = &self.busy {
+                        busy.progress.cancel();
+                        self.status = "cancelling…".to_string();
+                    }
+                }
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char(':') => self.open_prompt(PromptKind::Command, ""),
                 KeyCode::Char('?') => self.mode = Mode::Help,
@@ -171,8 +283,18 @@ impl App {
         }
     }
 
-    /// Execute a command on behalf of the user looking at the visible tab.
-    fn run_command(&mut self, cmd: Command) -> seqpeeq_core::Result<String> {
+    /// Run a command on behalf of the user looking at the visible tab. Every
+    /// change to the data goes through here.
+    ///
+    /// Returns the outcome's message, or `None` if the command is slow and
+    /// is now running in the background ([`App::busy`] says what it is).
+    pub(crate) fn run_command(&mut self, cmd: Command) -> seqpeeq_core::Result<Option<String>> {
+        if let Some(busy) = &self.busy {
+            return Err(Error::Invalid(format!(
+                "still busy: {} (Esc cancels)",
+                busy.label
+            )));
+        }
         let chooses_file = matches!(cmd, Command::Open { .. } | Command::Use { .. });
         // Data commands apply to the session's current file. If that is not
         // the tab on screen, say so first, so the log shows which file each
@@ -185,11 +307,25 @@ impl App {
                 dataset: self.active + 1,
             })?;
         }
-        let outcome = self.session.execute(cmd)?;
-        if chooses_file && let Some(current) = self.session.current() {
-            self.active = current;
+        let follow = chooses_file || cmd == Command::Close;
+        match self.session.start(cmd)? {
+            Started::Done(outcome) => {
+                if follow {
+                    self.active = self.session.current().unwrap_or(0);
+                }
+                Ok(Some(outcome.message))
+            }
+            Started::Running(job) => {
+                self.busy = Some(Busy {
+                    label: job.label().to_string(),
+                    progress: job.progress(),
+                    follow,
+                    queued: false,
+                });
+                self.outbox.push(Request::Run(job));
+                Ok(None)
+            }
         }
-        Ok(outcome.message)
     }
 
     /// Run one line typed on the command line.
@@ -207,10 +343,7 @@ impl App {
         let ran = Command::parse_line(line)
             .map(|cmd| expand_home(cmd, home.as_deref()))
             .and_then(|cmd| self.run_command(cmd));
-        self.status = match ran {
-            Ok(message) => message,
-            Err(error) => format!("error: {error}"),
-        };
+        self.report(ran, false);
     }
 }
 
@@ -276,8 +409,22 @@ mod tests {
         }
     }
 
+    /// Do, on this thread, the work the loop would hand to worker threads.
+    fn settle(app: &mut App) {
+        loop {
+            app.pump();
+            let Some(request) = app.outbox.pop() else {
+                break;
+            };
+            match request {
+                Request::Run(job) => app.handle_done(Done::Command(job.run())),
+            }
+        }
+    }
+
     fn enter(app: &mut App) {
         app.handle_event(&press(KeyCode::Enter));
+        settle(app);
     }
 
     fn click(column: u16, row: u16) -> Event {
@@ -601,5 +748,95 @@ mod tests {
             expand_home(extract, Some(home)).to_line().unwrap(),
             "msa extract --out /home/u/o.fa"
         );
+    }
+
+    #[test]
+    fn an_open_runs_in_the_background() {
+        let (mut app, _dir, fa, _) = setup();
+        type_str(&mut app, &format!(":open {}", fa.display()));
+        app.handle_event(&press(KeyCode::Enter));
+        assert_eq!(app.status, "opening a.fa…");
+        assert!(app.wants_tick() && app.session.datasets().is_empty());
+        assert_eq!(app.outbox.len(), 1);
+        settle(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        assert!(!app.wants_tick() && app.busy.is_none());
+        assert_eq!((app.session.datasets().len(), app.active), (1, 0));
+    }
+
+    #[test]
+    fn commands_are_refused_while_a_job_runs() {
+        let (mut app, dir) = with_two_alignments();
+        type_str(
+            &mut app,
+            &format!(":open {}", dir.path().join("a.fa").display()),
+        );
+        app.handle_event(&press(KeyCode::Enter));
+        let before = app.session.history().len();
+        type_str(&mut app, ":msa delete-cols --cols 1");
+        app.handle_event(&press(KeyCode::Enter));
+        assert_eq!(app.status, "error: still busy: opening a.fa (Esc cancels)");
+        assert_eq!(app.session.history().len(), before);
+        assert_eq!(
+            cols(&app, 1),
+            10,
+            "the refused command was not kept for later"
+        );
+        settle(&mut app);
+        assert_eq!(cols(&app, 1), 10);
+        assert_eq!(app.session.datasets().len(), 3);
+        assert_eq!(app.active, 2, "the file that was opened is shown");
+    }
+
+    #[test]
+    fn escape_cancels_the_running_job() {
+        let (mut app, _dir, fa, _) = setup();
+        type_str(&mut app, &format!(":open {}", fa.display()));
+        app.handle_event(&press(KeyCode::Enter));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(app.status, "cancelling…");
+        settle(&mut app);
+        assert_eq!(app.status, "cancelled");
+        assert!(app.session.datasets().is_empty() && app.busy.is_none());
+    }
+
+    #[test]
+    fn queued_opens_run_one_after_another_and_an_error_stays_visible() {
+        let (mut app, dir, fa, nwk) = setup();
+        let bad = dir.path().join("bad.fa");
+        fs::write(&bad, "this is not fasta").unwrap();
+        for path in [&fa, &bad, &nwk] {
+            app.enqueue(Command::Open {
+                path: path.clone(),
+                kind: None,
+            });
+        }
+        settle(&mut app);
+        assert_eq!(app.session.datasets().len(), 2);
+        assert!(
+            app.status.starts_with("error: ") && app.status.contains("bad.fa"),
+            "{}",
+            app.status
+        );
+        assert!(app.queue.is_empty());
+        // What the user does next is reported as usual.
+        type_str(&mut app, ":use 1");
+        enter(&mut app);
+        assert_eq!(app.status, "using 1: a.fa");
+    }
+
+    #[test]
+    fn a_tab_chosen_during_an_extract_stays_chosen() {
+        let (mut app, dir) = with_two_alignments();
+        type_str(
+            &mut app,
+            &format!(":msa extract --out {}", dir.path().join("o.fa").display()),
+        );
+        app.handle_event(&press(KeyCode::Enter));
+        assert_eq!(app.status, "writing o.fa…");
+        app.handle_event(&press(KeyCode::Tab));
+        settle(&mut app);
+        assert!(app.status.starts_with("wrote "), "{}", app.status);
+        assert_eq!(app.active, 0);
     }
 }

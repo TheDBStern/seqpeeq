@@ -296,3 +296,41 @@ fn close_makes_another_file_current_on_replay() {
         ">a\nACGT\n"
     );
 }
+
+#[test]
+fn run_reads_every_command_before_running_any() {
+    let dir = setup();
+    let out = seqpeeq(dir.path(), &["run", "--log", "s.log", "open a.fa", "bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "", "the first command did not run");
+    assert!(!dir.path().join("s.log").exists());
+}
+
+#[test]
+fn the_log_flag_may_come_before_the_subcommand() {
+    let dir = setup();
+    let out = seqpeeq(dir.path(), &["--log", "one.log", "run", "open a.fa"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(commands(&dir.path().join("one.log")), ["open a.fa"]);
+    let out = seqpeeq(dir.path(), &["--log", "two.log", "replay", "one.log"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(commands(&dir.path().join("two.log")), ["open a.fa"]);
+    // Files and a subcommand together are still an error, and nothing runs.
+    let mixed = seqpeeq(
+        dir.path(),
+        &["a.fa", "run", "--log", "three.log", "open a.fa"],
+    );
+    assert!(!mixed.status.success());
+    assert_eq!(stdout(&mixed), "");
+    assert!(!dir.path().join("three.log").exists());
+}
+
+#[test]
+fn an_unknown_kind_at_start_fails_before_the_interface() {
+    let dir = setup();
+    fs::write(dir.path().join("notes.txt"), "x").unwrap();
+    let out = seqpeeq(dir.path(), &["notes.txt"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("add --kind"), "{}", stderr(&out));
+    assert!(log_files(dir.path()).is_empty());
+}

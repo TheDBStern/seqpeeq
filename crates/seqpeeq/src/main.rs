@@ -4,6 +4,7 @@ mod app;
 mod line;
 mod term;
 mod ui;
+mod worker;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -12,11 +13,11 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
-use seqpeeq_core::{Command, Kind, Session, SessionLog, replay};
+use seqpeeq_core::{Command, Kind, Session, SessionLog, check_input, replay};
 
 /// View and edit alignments, trees and mapped reads in the terminal.
 #[derive(Parser)]
-#[command(name = "seqpeeq", version, args_conflicts_with_subcommands = true)]
+#[command(name = "seqpeeq", version)]
 struct Cli {
     #[command(subcommand)]
     sub: Option<Sub>,
@@ -60,6 +61,9 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if cli.sub.is_some() && (!cli.files.is_empty() || cli.kind.is_some() || cli.no_log) {
+        bail!("files, --kind and --no-log cannot be combined with run or replay");
+    }
     match cli.sub {
         Some(Sub::Replay { log_file }) => {
             let text = std::fs::read_to_string(&log_file)
@@ -77,13 +81,24 @@ fn run(cli: Cli) -> Result<()> {
             println!("replayed {} {noun}", report.commands);
         }
         Some(Sub::Run { commands }) => {
+            // Read every command before running any, so that a mistake in
+            // a later one does not leave the earlier ones half done.
+            let commands = commands
+                .iter()
+                .map(|line| Command::parse_line(line))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut session = Session::new(cli.log.map(SessionLog::new));
-            for line in &commands {
-                let outcome = session.execute(Command::parse_line(line)?)?;
+            for command in commands {
+                let outcome = session.execute(command)?;
                 println!("{}", outcome.message);
             }
         }
         None => {
+            // A file that is missing or of no known kind is reported here,
+            // before the screen is taken over and before any log exists.
+            for path in &cli.files {
+                check_input(path, cli.kind)?;
+            }
             // Checked before anything runs, so a failed start changes nothing.
             if !std::io::stdout().is_terminal() {
                 bail!(
@@ -99,11 +114,13 @@ fn run(cli: Cli) -> Result<()> {
                 };
                 Some(SessionLog::new(path))
             };
-            let mut session = Session::new(log);
+            // The files are read once the interface is up, in the
+            // background, so a large one does not delay it.
+            let mut app = app::App::new(Session::new(log));
             for command in open_commands(cli.files, cli.kind) {
-                session.execute(command)?;
+                app.enqueue(command);
             }
-            term::run(&mut app::App::new(session)).context("the interface stopped")?;
+            term::run(&mut app).context("the interface stopped")?;
         }
     }
     Ok(())
