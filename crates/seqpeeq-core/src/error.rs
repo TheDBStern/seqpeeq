@@ -25,6 +25,10 @@ pub enum Error {
         cause: std::io::Error,
     },
 
+    /// The file is not in the format it was opened as.
+    #[error("{}: {message}", .path.display())]
+    Format { path: PathBuf, message: String },
+
     #[error("cannot write session log {}: {cause}; use --log PATH or --no-log", .path.display())]
     Log {
         path: PathBuf,

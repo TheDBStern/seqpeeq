@@ -6,7 +6,11 @@ description = "Data models, command language, session log and replay for seqpeeq
 
 [dependencies]
 clap.workspace = true
+flate2.workspace = true
 jiff.workspace = true
+memchr.workspace = true
+memmap2.workspace = true
+regex.workspace = true
 shlex.workspace = true
 thiserror.workspace = true
 
