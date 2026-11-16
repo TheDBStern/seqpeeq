@@ -300,6 +300,8 @@ impl Alignment {
             MsaCmd::DeleteCols { cols } => self.delete_cols(cols),
             MsaCmd::Fill { rows, cols, with } => self.fill(rows, cols.as_ref(), *with),
             MsaCmd::Overwrite { row, col, seq } => self.overwrite(*row, *col, seq),
+            MsaCmd::Insert { row, col, seq } => self.insert(*row, *col, seq),
+            MsaCmd::Remove { row, col, count } => self.remove(*row, *col, *count),
             MsaCmd::Rename {
                 rows, to: Some(to), ..
             } => self.rename_one(rows, to),
@@ -521,6 +523,80 @@ impl Alignment {
         Ok(Applied::new(format!(
             "overwrote {} of row {row} from column {col}",
             count(seq.len(), "column")
+        )))
+    }
+
+    fn insert(&mut self, row: usize, col: usize, seq: &str) -> Result<Applied> {
+        if !self.is_aligned() {
+            return invalid(NOT_ALIGNED);
+        }
+        if row == 0 || col == 0 {
+            return invalid("positions start at 1");
+        }
+        if seq.is_empty() {
+            return invalid("--seq is empty");
+        }
+        if !seq.bytes().all(|b| b.is_ascii_graphic() && b != b'>') {
+            return invalid("--seq may hold only printable ASCII characters other than '>'");
+        }
+        if row > self.rows() {
+            return invalid(format!("row {row} is past the last row ({})", self.rows()));
+        }
+        if col > self.cols() + 1 {
+            return invalid(format!(
+                "column {col} is past the last column ({}); {} adds at the end",
+                self.cols(),
+                self.cols() + 1
+            ));
+        }
+        let shift = self.view.plan_insert(row - 1, col - 1, seq.as_bytes());
+        self.edit("insert", |layer, source| {
+            if shift.added > 0 {
+                layer.add_gap_cols(source, shift.added);
+            }
+            layer.overwrite(row - 1, col - 1, &shift.bytes);
+        });
+        let mut message = format!(
+            "inserted {} into row {row} at column {col}",
+            count(seq.len(), "character")
+        );
+        if shift.added > 0 {
+            message.push_str(&format!(
+                "; added {} at the end, now {}",
+                count(shift.added, "gap column"),
+                self.shape()
+            ));
+        }
+        Ok(Applied::new(message))
+    }
+
+    fn remove(&mut self, row: usize, col: usize, cells: usize) -> Result<Applied> {
+        if !self.is_aligned() {
+            return invalid(NOT_ALIGNED);
+        }
+        if row == 0 || col == 0 {
+            return invalid("positions start at 1");
+        }
+        if cells == 0 {
+            return invalid("--count must be at least 1");
+        }
+        if row > self.rows() {
+            return invalid(format!("row {row} is past the last row ({})", self.rows()));
+        }
+        let last = (col - 1).saturating_add(cells);
+        if last > self.cols() {
+            return invalid(format!(
+                "column {last} is past the last column ({})",
+                self.cols()
+            ));
+        }
+        let shift = self.view.plan_remove(row - 1, col - 1, cells);
+        self.edit("remove", |layer, _| {
+            layer.overwrite(row - 1, col - 1, &shift.bytes)
+        });
+        Ok(Applied::new(format!(
+            "removed {} from row {row} at column {col}",
+            count(cells, "character")
         )))
     }
 
@@ -997,6 +1073,103 @@ mod tests {
 
     fn seqs(aln: &Alignment) -> Vec<String> {
         grid(aln).into_iter().map(|(_, seq)| seq).collect()
+    }
+
+    #[test]
+    fn insert_shifts_up_to_the_next_gap() {
+        let mut aln = Alignment::from_text(TRIO);
+        let done = run(&mut aln, "insert --row 1 --col 2 --seq N").unwrap();
+        assert_eq!(done.message, "inserted 1 character into row 1 at column 2");
+        assert_eq!(seqs(&aln), ["ANCGTACGTA", "ACGTTACG-A", "AC--TACGTA"]);
+    }
+
+    #[test]
+    fn insert_without_enough_gaps_adds_gap_columns_in_one_step() {
+        let mut aln = Alignment::from_text(TRIO);
+        let done = run(&mut aln, "insert --row 2 --col 10 --seq GG").unwrap();
+        assert_eq!(
+            done.message,
+            "inserted 2 characters into row 2 at column 10; \
+             added 2 gap columns at the end, now 3 sequences x 12 columns"
+        );
+        assert_eq!(seqs(&aln), ["ACGT-ACGTA--", "ACGTTACG-GGA", "AC--TACGTA--"]);
+        run(&mut aln, "insert --row 1 --col 13 --seq T").unwrap(); // one past the end
+        assert_eq!(seqs(&aln)[0], "ACGT-ACGTA--T");
+        aln.undo().unwrap();
+        assert_eq!(
+            aln.undo().unwrap().message,
+            "undid insert; now 3 sequences x 10 columns"
+        );
+        assert_eq!(grid(&aln), grid(&Alignment::from_text(TRIO)));
+    }
+
+    #[test]
+    fn remove_pulls_the_stretch_up_to_the_next_gap() {
+        let mut aln = Alignment::from_text(TRIO);
+        let done = run(&mut aln, "remove --row 3 --col 5 --count 2").unwrap();
+        assert_eq!(done.message, "removed 2 characters from row 3 at column 5");
+        assert_eq!(seqs(&aln)[2], "AC--CGTA--");
+        assert_eq!(
+            aln.undo().unwrap().message,
+            "undid remove; now 3 sequences x 10 columns"
+        );
+    }
+
+    #[test]
+    fn a_shift_lands_on_the_columns_shown_after_earlier_edits() {
+        let mut aln = Alignment::from_text(TRIO);
+        run(&mut aln, "delete-cols --cols 2-3").unwrap(); // s1 = AT-ACGTA
+        run(&mut aln, "fill --rows 1 --cols 4 --with N").unwrap(); // s1 = AT-NCGTA
+        run(&mut aln, "insert --row 1 --col 2 --seq G").unwrap();
+        assert_eq!(seqs(&aln)[0], "AGTNCGTA");
+        run(&mut aln, "delete-cols --cols 1").unwrap();
+        assert_eq!(seqs(&aln)[0], "GTNCGTA");
+    }
+
+    #[test]
+    fn insert_and_remove_refusals_change_nothing() {
+        const BAD_SEQ: &str = "--seq may hold only printable ASCII characters other than '>'";
+        for (text, message) in [
+            (
+                "insert --row 1 --col 12 --seq A",
+                "column 12 is past the last column (10); 11 adds at the end",
+            ),
+            (
+                "insert --row 4 --col 1 --seq A",
+                "row 4 is past the last row (3)",
+            ),
+            ("insert --row 0 --col 1 --seq A", "positions start at 1"),
+            ("insert --row 1 --col 1 --seq ''", "--seq is empty"),
+            ("insert --row 1 --col 1 --seq 'A>'", BAD_SEQ),
+            (
+                "remove --row 1 --col 10 --count 2",
+                "column 11 is past the last column (10)",
+            ),
+            (
+                "remove --row 1 --col 1 --count 0",
+                "--count must be at least 1",
+            ),
+            ("remove --row 1 --col 0 --count 1", "positions start at 1"),
+        ] {
+            let mut aln = Alignment::from_text(TRIO);
+            assert_eq!(
+                run(&mut aln, text).unwrap_err().to_string(),
+                message,
+                "{text}"
+            );
+            assert_eq!(grid(&aln), grid(&Alignment::from_text(TRIO)), "{text}");
+            assert!(aln.undo().is_err(), "{text}");
+        }
+        let mut ragged = Alignment::from_text(">a\nAC\n>b\nACGT\n");
+        for text in [
+            "insert --row 1 --col 1 --seq A",
+            "remove --row 1 --col 1 --count 1",
+        ] {
+            assert_eq!(
+                run(&mut ragged, text).unwrap_err().to_string(),
+                "sequences differ in length, so columns cannot be selected"
+            );
+        }
     }
 
     #[test]

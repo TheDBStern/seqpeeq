@@ -63,7 +63,6 @@ pub(crate) struct Layer {
     /// How many gap columns have been added at the end, deleted or not.
     /// The next one added is file column `source.width() + added`, so a
     /// column is never handed out twice.
-    #[allow(dead_code)]
     added: u32,
     /// The number of this state, given by the alignment that owns it.
     pub(crate) revision: u64,
@@ -261,8 +260,6 @@ impl Layer {
     }
 
     /// Add `n` columns of gaps at the end. Aligned files only.
-    // Used by `msa insert`, next.
-    #[allow(dead_code)]
     pub(crate) fn add_gap_cols(&mut self, source: &Source, n: usize) {
         let first = source.width() as u32 + self.added;
         self.added += n as u32;
