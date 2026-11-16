@@ -7,7 +7,7 @@ use jiff::{Timestamp, Zoned};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied};
-use crate::{Command, Error, Kind, Result, SessionLog};
+use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog};
 
 /// What an open file holds.
 #[derive(Debug)]
@@ -21,6 +21,10 @@ pub enum Content {
 /// A file opened in the session.
 #[derive(Debug)]
 pub struct Dataset {
+    /// A number for this file within the session: 1, 2, 3 … in order of
+    /// opening. Unlike its position among the open files, it never changes
+    /// and is never given to another file.
+    pub id: u64,
     pub path: PathBuf,
     pub kind: Kind,
     /// The size of the file on disk when it was opened.
@@ -56,6 +60,8 @@ pub struct Session {
     datasets: Vec<Dataset>,
     /// The dataset that data commands apply to.
     current: Option<usize>,
+    /// The id the next opened file will get.
+    next_id: u64,
     history: Vec<String>,
     log: Option<SessionLog>,
     clock: fn() -> Zoned,
@@ -81,6 +87,7 @@ impl Session {
         Session {
             datasets: Vec::new(),
             current: None,
+            next_id: 1,
             history: Vec::new(),
             log,
             clock,
@@ -104,14 +111,26 @@ impl Session {
             log.ensure_open(&now)?;
         }
         let checkpoint = self.checkpoint(&cmd);
-        let applied = self.apply(cmd, &now)?;
+        let writes = matches!(cmd, Command::Msa(MsaCmd::Extract { .. }));
+        let mut closed = None;
+        let applied = match cmd {
+            Command::Close => {
+                let (applied, at, dataset) = self.close()?;
+                closed = Some((at, dataset));
+                applied
+            }
+            cmd => self.apply(cmd, &now)?,
+        };
         if let Some(log) = &mut self.log
             && let Err(error) = log.record(&line, applied.note.as_deref(), &now)
         {
             // A change that is not in the log must not stand: undo it. The
             // log is now marked incomplete, so later commands are refused.
-            self.roll_back(checkpoint, applied.created.as_deref());
+            self.roll_back(checkpoint, applied.created.as_deref(), closed);
             return Err(error);
+        }
+        if writes && let Ok(alignment) = self.current_alignment() {
+            alignment.mark_written();
         }
         self.history.push(line);
         Ok(Outcome {
@@ -151,11 +170,20 @@ impl Session {
         }
     }
 
-    /// Put the state back to `checkpoint` and remove a file the command
-    /// created. Undo history is not repaired: the log has failed, so no
-    /// further command, `undo` included, will be accepted.
-    fn roll_back(&mut self, checkpoint: Checkpoint, created: Option<&Path>) {
+    /// Put the state back to `checkpoint`: remove a file the command
+    /// created, and put back the file it closed at the position it had.
+    /// Undo history is not repaired: the log has failed, so no further
+    /// command, `undo` included, will be accepted.
+    fn roll_back(
+        &mut self,
+        checkpoint: Checkpoint,
+        created: Option<&Path>,
+        closed: Option<(usize, Dataset)>,
+    ) {
         self.datasets.truncate(checkpoint.datasets);
+        if let Some((at, dataset)) = closed {
+            self.datasets.insert(at, dataset);
+        }
         self.current = checkpoint.current;
         if let Some(layer) = checkpoint.layer
             && let Ok(alignment) = self.current_alignment()
@@ -180,6 +208,34 @@ impl Session {
                 "{name} is not an alignment; switch with use N"
             ))),
         }
+    }
+
+    /// Close the current file. Returns it with the position it had, so that
+    /// it can be put back if the command cannot be logged.
+    fn close(&mut self) -> Result<(Applied, usize, Dataset)> {
+        let Some(at) = self.current else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let dataset = self.datasets.remove(at);
+        // The file that moved into this position, else the last one.
+        self.current = match self.datasets.len() {
+            0 => None,
+            open => Some(at.min(open - 1)),
+        };
+        let mut message = format!("closed {}", dataset.file_name());
+        if let Some(index) = self.current {
+            message.push_str(&format!(
+                "; using {}: {}",
+                index + 1,
+                self.datasets[index].file_name()
+            ));
+        }
+        let applied = Applied {
+            message,
+            note: None,
+            created: None,
+        };
+        Ok((applied, at, dataset))
     }
 
     /// Apply a command to the session state.
@@ -211,7 +267,10 @@ impl Session {
                     Kind::Tree | Kind::Bam => (Content::Unloaded, format!("{size} bytes")),
                 };
                 let message = format!("opened {} ({}, {holds})", path.display(), kind.as_str());
+                let id = self.next_id;
+                self.next_id += 1;
                 self.datasets.push(Dataset {
+                    id,
                     path,
                     kind,
                     size,
@@ -248,6 +307,7 @@ impl Session {
                     created: None,
                 })
             }
+            Command::Close => unreachable!("execute closes files itself"),
             Command::Undo => self.current_alignment()?.undo(),
             Command::Redo => self.current_alignment()?.redo(),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
@@ -697,5 +757,77 @@ mod tests {
         assert!(error.starts_with("internal error: "), "{error}");
         assert_eq!(session.history().len(), 1);
         assert_eq!(session.datasets()[0].msa().unwrap().name(0), "s1");
+    }
+
+    fn modified(session: &Session) -> bool {
+        session.datasets()[0].msa().unwrap().is_modified()
+    }
+
+    #[test]
+    fn an_alignment_is_modified_until_it_is_written() {
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        assert!(!modified(&session));
+        ex(&mut session, "msa rename --rows 1 --to x").unwrap();
+        assert!(modified(&session));
+        ex(&mut session, "undo").unwrap();
+        assert!(!modified(&session), "back at the opened state");
+        ex(&mut session, "redo").unwrap();
+        let out = dir.join("o.fa");
+        ex(
+            &mut session,
+            &format!("msa extract --rows 1 --out {}", out.display()),
+        )
+        .unwrap();
+        assert!(!modified(&session), "any extract counts as written");
+        ex(&mut session, "undo").unwrap();
+        assert!(
+            modified(&session),
+            "the state now differs from the one written"
+        );
+    }
+
+    fn ids(session: &Session) -> Vec<u64> {
+        session.datasets().iter().map(|d| d.id).collect()
+    }
+
+    #[test]
+    fn close_removes_the_current_file() {
+        let (_keep, dir) = trio_dir();
+        fs::write(dir.join("c.fa"), TRIO).unwrap();
+        let mut session = opened(&dir, &["a.fa", "b.fa", "c.fa"]);
+        assert_eq!(ids(&session), [1, 2, 3]);
+        ex(&mut session, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut session, "close").unwrap().message,
+            "closed b.fa; using 2: c.fa"
+        );
+        assert_eq!(ids(&session), [1, 3]);
+        assert_eq!(session.current(), Some(1));
+        assert_eq!(
+            ex(&mut session, "close").unwrap().message,
+            "closed c.fa; using 1: a.fa"
+        );
+        assert_eq!(ex(&mut session, "close").unwrap().message, "closed a.fa");
+        assert_eq!((session.datasets().len(), session.current()), (0, None));
+        assert_eq!(
+            ex(&mut session, "close").unwrap_err().to_string(),
+            "no file is open"
+        );
+        assert_eq!(session.history().last().unwrap(), "close");
+        // Ids are never reused.
+        session.execute(open(&dir.join("a.fa"))).unwrap();
+        assert_eq!(ids(&session), [4]);
+    }
+
+    #[test]
+    fn a_close_that_cannot_be_logged_is_put_back() {
+        let (_keep, dir) = trio_dir();
+        let file = dir.join("a.fa");
+        let mut session = Session::with_clock(Some(log_full_after_open(&file)), fixed);
+        session.execute(open(&file)).unwrap();
+        assert!(matches!(ex(&mut session, "close"), Err(Error::Log { .. })));
+        assert_eq!((session.datasets().len(), session.current()), (1, Some(0)));
+        assert_eq!(ids(&session), [1]);
     }
 }

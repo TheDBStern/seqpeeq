@@ -62,6 +62,8 @@ pub enum Command {
     },
     /// Make the Nth open file (counting from 1) the one commands apply to.
     Use { dataset: usize },
+    /// Close the current file. Nothing is written.
+    Close,
     /// Take back the last change to the current file.
     Undo,
     /// Reapply the change that was last undone.
@@ -134,6 +136,7 @@ impl Command {
                 words.positional(dataset);
                 words
             }
+            Command::Close => Words::new("close"),
             Command::Undo => Words::new("undo"),
             Command::Redo => Words::new("redo"),
             Command::Msa(cmd) => {
@@ -296,6 +299,7 @@ mod tests {
 
     const CANONICAL: &[&str] = &[
         "use 2",
+        "close",
         "undo",
         "redo",
         "msa delete-rows --rows 3-7,12",
@@ -462,6 +466,7 @@ mod tests {
             any::<usize>().prop_map(|dataset| Command::Use { dataset }),
             Just(Command::Undo),
             Just(Command::Redo),
+            Just(Command::Close),
             msa_cmd().prop_map(Command::Msa),
         ]
     }

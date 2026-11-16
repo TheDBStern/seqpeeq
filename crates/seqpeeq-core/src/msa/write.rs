@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use super::Alignment;
+use super::View;
 use crate::ranges::Ranges;
 use crate::{Error, Result};
 
@@ -18,7 +18,7 @@ use crate::{Error, Result};
 /// An existing file is an error, never replaced. A name ending in `.gz` is
 /// written gzip-compressed.
 pub(crate) fn write_fasta(
-    aln: &Alignment,
+    aln: &View,
     rows: &[usize],
     cols: Option<&Ranges>,
     wrap: Option<usize>,
@@ -90,7 +90,7 @@ fn create_partial(out: &Path) -> io::Result<(PathBuf, File)> {
 }
 
 fn write_records(
-    aln: &Alignment,
+    aln: &View,
     rows: &[usize],
     cols: Option<&Ranges>,
     wrap: Option<usize>,
@@ -113,7 +113,7 @@ fn write_records(
 }
 
 fn records(
-    aln: &Alignment,
+    aln: &View,
     rows: &[usize],
     cols: Option<&Ranges>,
     wrap: Option<usize>,

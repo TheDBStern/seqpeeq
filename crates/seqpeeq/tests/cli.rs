@@ -280,3 +280,19 @@ fn overwrite_is_logged_and_replayed() {
     assert!(written.starts_with(">s1\n-nGT-ACGTA\n"), "{written}");
     assert_eq!(written, fs::read_to_string(a.join("o.fa")).unwrap());
 }
+
+#[test]
+fn close_makes_another_file_current_on_replay() {
+    let dir = setup();
+    fs::write(
+        dir.path().join("s.log"),
+        "open a.fa\nopen t.nwk\nclose\nmsa extract --out o.fa\n",
+    )
+    .unwrap();
+    let out = seqpeeq(dir.path(), &["replay", "s.log"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("o.fa")).unwrap(),
+        ">a\nACGT\n"
+    );
+}

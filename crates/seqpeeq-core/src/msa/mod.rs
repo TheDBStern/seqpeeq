@@ -28,13 +28,60 @@ pub enum Alphabet {
 /// so far. Rows and columns are counted from 0 here; commands and messages
 /// count from 1.
 pub struct Alignment {
-    source: Arc<Source>,
-    layer: Layer,
+    view: View,
     alphabet: Alphabet,
     /// Earlier states and the command that replaced each, oldest first.
     undo: Vec<(Layer, &'static str)>,
     /// States that were undone, most recently undone last.
     redo: Vec<(Layer, &'static str)>,
+    /// The number the next new state will get.
+    next_revision: u64,
+    /// The revision that was last written to a file, or opened.
+    written: u64,
+}
+
+/// An alignment at one moment: the file plus the edits made by then. Cheap
+/// to clone, and safe to read from another thread.
+#[derive(Clone)]
+pub struct View {
+    source: Arc<Source>,
+    layer: Layer,
+}
+
+impl View {
+    pub fn rows(&self) -> usize {
+        self.layer.rows()
+    }
+
+    /// The number of columns; for an unaligned file, the longest sequence.
+    pub fn cols(&self) -> usize {
+        self.layer.cols()
+    }
+
+    /// Whether every sequence has the same length.
+    pub fn is_aligned(&self) -> bool {
+        self.layer.is_aligned()
+    }
+
+    pub fn name(&self, row: usize) -> &str {
+        self.layer.name(&self.source, row)
+    }
+
+    /// The length of one row; the same as [`View::cols`] when aligned.
+    pub fn row_len(&self, row: usize) -> usize {
+        self.layer.row_len(&self.source, row)
+    }
+
+    /// Append the residues of `row` in columns `cols` to `out`. Columns past
+    /// the end of the row add nothing.
+    pub fn residues(&self, row: usize, cols: Range<usize>, out: &mut Vec<u8>) {
+        self.layer.read(&self.source, row, cols, out);
+    }
+
+    /// The number of this state; see [`Alignment::revision`].
+    pub fn revision(&self) -> u64 {
+        self.layer.revision
+    }
 }
 
 /// How many changes can be undone.
@@ -132,11 +179,15 @@ impl Alignment {
     fn new(source: Source) -> Alignment {
         let alphabet = guess_alphabet(&source);
         Alignment {
-            layer: Layer::new(&source),
-            source: Arc::new(source),
+            view: View {
+                layer: Layer::new(&source),
+                source: Arc::new(source),
+            },
             alphabet,
             undo: Vec::new(),
             redo: Vec::new(),
+            next_revision: 1,
+            written: 0,
         }
     }
 
@@ -145,18 +196,53 @@ impl Alignment {
         Alignment::new(Source::from_vec(text.into(), Path::new("test.fa")).unwrap())
     }
 
+    /// The alignment as it is now. Clone it to keep this state, or to read
+    /// it from another thread.
+    pub fn view(&self) -> &View {
+        &self.view
+    }
+
+    /// A number for the current state: 0 as opened, a new number after each
+    /// edit. Undo and redo bring back the number the state had.
+    pub fn revision(&self) -> u64 {
+        self.view.revision()
+    }
+
+    /// Whether the alignment differs from what was opened or last written
+    /// to a file.
+    pub fn is_modified(&self) -> bool {
+        self.revision() != self.written
+    }
+
+    /// Record that the current state has been written to a file.
+    pub(crate) fn mark_written(&mut self) {
+        self.written = self.revision();
+    }
+
+    /// The rows whose name matches `pattern`, a regular expression with
+    /// letter case ignored. Ascending; empty when nothing matches.
+    pub fn find_names(&self, pattern: &str) -> Result<Vec<usize>> {
+        let re = regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .or_else(|_| invalid(format!("bad regular expression '{pattern}'")))?;
+        Ok((0..self.rows())
+            .filter(|&row| re.is_match(self.name(row)))
+            .collect())
+    }
+
     pub fn rows(&self) -> usize {
-        self.layer.rows()
+        self.view.rows()
     }
 
     /// The number of columns; for an unaligned file, the longest sequence.
     pub fn cols(&self) -> usize {
-        self.layer.cols()
+        self.view.cols()
     }
 
     /// Whether every sequence has the same length.
     pub fn is_aligned(&self) -> bool {
-        self.layer.is_aligned()
+        self.view.is_aligned()
     }
 
     pub fn alphabet(&self) -> Alphabet {
@@ -164,18 +250,18 @@ impl Alignment {
     }
 
     pub fn name(&self, row: usize) -> &str {
-        self.layer.name(&self.source, row)
+        self.view.name(row)
     }
 
     /// The length of one row; the same as [`Alignment::cols`] when aligned.
     pub fn row_len(&self, row: usize) -> usize {
-        self.layer.row_len(&self.source, row)
+        self.view.row_len(row)
     }
 
     /// Append the residues of `row` in columns `cols` to `out`. Columns past
     /// the end of the row add nothing.
     pub fn residues(&self, row: usize, cols: Range<usize>, out: &mut Vec<u8>) {
-        self.layer.read(&self.source, row, cols, out);
+        self.view.residues(row, cols, out);
     }
 
     /// The size in words, such as `3 sequences x 10 columns`.
@@ -186,7 +272,7 @@ impl Alignment {
         } else {
             format!(
                 "{sequences}, not aligned (lengths {}-{})",
-                self.layer.min_len(),
+                self.view.layer.min_len(),
                 self.cols()
             )
         }
@@ -227,7 +313,7 @@ impl Alignment {
         let Some((layer, name)) = self.undo.pop() else {
             return invalid("nothing to undo");
         };
-        let undone = std::mem::replace(&mut self.layer, layer);
+        let undone = std::mem::replace(&mut self.view.layer, layer);
         self.redo.push((undone, name));
         Ok(Applied::new(format!("undid {name}; now {}", self.shape())))
     }
@@ -236,19 +322,19 @@ impl Alignment {
         let Some((layer, name)) = self.redo.pop() else {
             return invalid("nothing to redo");
         };
-        let before = std::mem::replace(&mut self.layer, layer);
+        let before = std::mem::replace(&mut self.view.layer, layer);
         self.undo.push((before, name));
         Ok(Applied::new(format!("redid {name}; now {}", self.shape())))
     }
 
     /// The edits as they are now, for putting back with [`Alignment::restore`].
     pub(crate) fn snapshot(&self) -> Layer {
-        self.layer.clone()
+        self.view.layer.clone()
     }
 
     /// Put back a snapshot. The undo history is left as it is.
     pub(crate) fn restore(&mut self, layer: Layer) {
-        self.layer = layer;
+        self.view.layer = layer;
     }
 
     /// The rows a selection names, counted from 0, ascending. An empty
@@ -307,8 +393,10 @@ impl Alignment {
 
     /// Change the layer, remembering the state before for undo.
     fn edit(&mut self, name: &'static str, change: impl FnOnce(&mut Layer, &Source)) {
-        let before = self.layer.clone();
-        change(&mut self.layer, &self.source);
+        let before = self.view.layer.clone();
+        change(&mut self.view.layer, &self.view.source);
+        self.view.layer.revision = self.next_revision;
+        self.next_revision += 1;
         self.undo.push((before, name));
         if self.undo.len() > UNDO_LEVELS {
             self.undo.remove(0);
@@ -515,7 +603,7 @@ impl Alignment {
         if let Some(cols) = cols {
             self.check_cols(cols)?;
         }
-        let size = write::write_fasta(self, &rows, cols, wrap, out)?;
+        let size = write::write_fasta(&self.view, &rows, cols, wrap, out)?;
         let sequences = count(rows.len(), "sequence");
         let shape = match cols {
             Some(cols) => format!("{sequences} x {}", count(cols.count(), "column")),
@@ -933,6 +1021,61 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "sequences differ in length, so columns cannot be selected"
+        );
+    }
+
+    #[test]
+    fn a_view_can_be_read_from_another_thread() {
+        let aln = Alignment::from_text(TRIO);
+        let view = aln.view().clone();
+        let read = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            view.residues(2, 0..4, &mut out);
+            (view.name(2).to_string(), out)
+        });
+        assert_eq!(
+            read.join().unwrap(),
+            ("s3 third one".to_string(), b"AC--".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_view_keeps_the_state_it_was_taken_from() {
+        let mut aln = Alignment::from_text(TRIO);
+        let before = aln.view().clone();
+        run(&mut aln, "delete-rows --rows 1").unwrap();
+        assert_eq!((before.rows(), aln.rows()), (3, 2));
+        assert_eq!(before.name(0), "s1");
+    }
+
+    #[test]
+    fn revisions_change_with_edits_and_come_back_with_undo() {
+        let mut aln = Alignment::from_text(TRIO);
+        assert_eq!(aln.revision(), 0);
+        run(&mut aln, "fill --cols 1 --with N").unwrap();
+        let first = aln.revision();
+        assert_ne!(first, 0);
+        aln.undo().unwrap();
+        assert_eq!(aln.revision(), 0);
+        aln.redo().unwrap();
+        assert_eq!((aln.revision(), aln.view().revision()), (first, first));
+        aln.undo().unwrap();
+        run(&mut aln, "fill --cols 2 --with N").unwrap();
+        assert!(
+            ![0, first].contains(&aln.revision()),
+            "a new state gets a number never used"
+        );
+    }
+
+    #[test]
+    fn find_names_ignores_case_and_reports_bad_patterns() {
+        let aln = Alignment::from_text(TRIO);
+        assert_eq!(aln.find_names("S[12]").unwrap(), [0, 1]);
+        assert_eq!(aln.find_names("third").unwrap(), [2]);
+        assert!(aln.find_names("zzz").unwrap().is_empty());
+        assert_eq!(
+            aln.find_names("(").unwrap_err().to_string(),
+            "bad regular expression '('"
         );
     }
 }

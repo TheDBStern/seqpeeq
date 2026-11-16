@@ -50,6 +50,8 @@ pub(crate) struct Layer {
     names: Arc<HashMap<u32, String>>,
     /// Overwritten blocks, oldest first.
     fills: Vec<Arc<Fill>>,
+    /// The number of this state, given by the alignment that owns it.
+    pub(crate) revision: u64,
 }
 
 impl Layer {
@@ -63,6 +65,7 @@ impl Layer {
             aligned: source.width() == source.min_len(),
             names: Arc::default(),
             fills: Vec::new(),
+            revision: 0,
         };
         if layer.aligned {
             layer.set_cols(whole(source.width()));
@@ -382,7 +385,9 @@ mod tests {
         let mut a = Alignment::from_text(">a\nACGT\n>b\nAC\n>c\nTTGA\n");
         assert_eq!((a.is_aligned(), a.cols(), a.row_len(1)), (false, 4, 2));
         assert_eq!(a.shape(), "3 sequences, not aligned (lengths 2-4)");
-        a.layer.delete_rows(&a.source, &"2".parse().unwrap());
+        a.view
+            .layer
+            .delete_rows(&a.view.source, &"2".parse().unwrap());
         assert_eq!(
             (a.is_aligned(), a.shape()),
             (true, "2 sequences x 4 columns".to_string())
