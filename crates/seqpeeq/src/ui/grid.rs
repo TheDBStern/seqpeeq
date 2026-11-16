@@ -245,6 +245,16 @@ pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body:
             } else {
                 palette::residue(alignment.alphabet(), residue)
             };
+            // A character typed and not yet made a command shows in place
+            // of the residue it will replace, marked as provisional.
+            let typed = view.typed.as_ref().and_then(|typed| typed.at(row, col));
+            let (residue, style) = match typed {
+                Some(typed) => (
+                    typed,
+                    style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ),
+                None => (residue, style),
+            };
             let shown = if residue.is_ascii_graphic() {
                 residue as char
             } else {

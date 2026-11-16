@@ -205,7 +205,7 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         grid::draw_grid(frame, alignment, view, area);
         // The terminal's own cursor marks the cursor cell.
         let layout = grid::grid_layout(area, alignment.rows(), view.name_width);
-        if matches!(app.mode, Mode::Normal)
+        if matches!(app.mode, Mode::Normal | Mode::Edit)
             && let Some(position) = grid::cursor_position(&layout, view)
         {
             frame.set_cursor_position(position);
@@ -268,6 +268,9 @@ pub fn info_text(app: &App) -> (String, String) {
         if alignment.is_modified() {
             right.push("unsaved".to_string());
         }
+    }
+    if matches!(app.mode, Mode::Edit) {
+        right.push("EDIT".to_string());
     }
     (left, right.join(" · "))
 }
@@ -836,6 +839,30 @@ mod tests {
         assert_eq!(
             screen[8],
             "grid.fa has edits not written to a file. Close it anyway? (y/n)"
+        );
+    }
+
+    #[test]
+    fn typed_characters_show_before_they_are_logged() {
+        use crate::msa_view::Typed;
+        let mut app = with_file("tests/data/grid.fa");
+        app.mode = Mode::Edit;
+        view_mut(&mut app).typed = Some(Typed {
+            row: 0,
+            start: 2,
+            bytes: b"nn".to_vec(),
+        });
+        let mut terminal = render(&app, 70, 9);
+        let screen = rows(&terminal);
+        assert_eq!(&screen[2][27..33], "ACnnTG");
+        assert!(screen[7].ends_with("EDIT"), "{}", screen[7]);
+        let buffer = terminal.backend().buffer();
+        assert!(buffer[(29, 2)].modifier.contains(Modifier::UNDERLINED));
+        assert!(!buffer[(28, 2)].modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(27, 2),
+            "the cursor is shown while typing"
         );
     }
 }

@@ -11,7 +11,7 @@ use ratatui::layout::Size;
 use seqpeeq_core::{Alignment, Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
 
 use crate::line::{History, LineEdit};
-use crate::msa_view::{Cell, MsaView, Region, SelKind, Select, Shape, parse_goto};
+use crate::msa_view::{Cell, MsaView, Region, SelKind, Select, Shape, Typed, parse_goto};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 
@@ -19,6 +19,8 @@ pub enum Mode {
     Normal,
     /// Typing one line at the bottom of the screen.
     Prompt(Prompt),
+    /// Typing over residues: letters are text, not commands.
+    Edit,
     /// `f` was pressed: the next key is the character to fill with.
     FillChar,
     /// Waiting for `y` or anything else in answer to a question.
@@ -318,6 +320,8 @@ impl App {
                     prompt.line.key(key);
                 }
             },
+            Mode::Edit if ctrl => {}
+            Mode::Edit => self.edit_key(key),
             Mode::FillChar => {
                 self.mode = Mode::Normal;
                 if let (KeyCode::Char(with), false) = (key.code, ctrl) {
@@ -365,6 +369,94 @@ impl App {
         let ran = self.run_command(cmd);
         self.report(ran, false);
         self.reveal();
+    }
+
+    /// `i`: start typing over residues.
+    fn start_typing(&mut self) {
+        let Some((alignment, _)) = self.alignment() else {
+            return;
+        };
+        // Refused here, rather than when the first run is entered, so that
+        // nothing is typed only to be thrown away.
+        let refusal = if !alignment.is_aligned() {
+            Some("sequences differ in length, so columns cannot be selected".to_string())
+        } else {
+            self.busy
+                .as_ref()
+                .map(|busy| format!("still busy: {} (Esc cancels)", busy.label))
+        };
+        if let Some(refusal) = refusal {
+            self.status = format!("error: {refusal}");
+            return;
+        }
+        if let Some(view) = self.view_mut() {
+            view.select = None;
+        }
+        self.mode = Mode::Edit;
+    }
+
+    /// A key while typing over residues.
+    fn edit_key(&mut self, key: &KeyEvent) {
+        let Some(aln) = self.shape() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let Some(Cell { row, col }) = self.view_mut().map(|view| view.cursor) else {
+            return;
+        };
+        // What to put where, and where the cursor goes then.
+        let last = aln.cols.saturating_sub(1);
+        let (at, byte, next) = match key.code {
+            KeyCode::Esc => {
+                self.commit_typed();
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Char('>') => {
+                self.status = "error: '>' cannot be typed into a sequence".to_string();
+                return;
+            }
+            KeyCode::Char(c) if c.is_ascii_graphic() => (col, c as u8, (col + 1).min(last)),
+            KeyCode::Delete => (col, b'-', (col + 1).min(last)),
+            KeyCode::Backspace if col > 0 => (col - 1, b'-', col - 1),
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => {
+                // Moving away ends the run; the same keys then move as usual.
+                self.commit_typed();
+                self.grid_key(key);
+                return;
+            }
+            _ => return,
+        };
+        if self
+            .view_mut()
+            .and_then(|view| view.typed.as_mut())
+            .is_none_or(|typed| typed.row != row || !typed.put(at, byte))
+        {
+            // Not beside what was typed so far: that run is finished.
+            self.commit_typed();
+            if let Some(view) = self.view_mut() {
+                view.typed = Some(Typed::new(row, at, byte));
+            }
+        }
+        if let Some(view) = self.view_mut() {
+            view.cursor.col = next;
+        }
+        self.reveal();
+    }
+
+    /// Turn what has been typed into one command. If the command is
+    /// refused, the typed characters are dropped and the reason is shown.
+    fn commit_typed(&mut self) {
+        if let Some(typed) = self.view_mut().and_then(|view| view.typed.take()) {
+            self.act(Command::Msa(typed.command()));
+        }
     }
 
     /// `d`: delete the selected sequences or columns; a block, or with no
@@ -451,6 +543,7 @@ impl App {
         };
         match key.code {
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
+            KeyCode::Char('i') => return self.start_typing(),
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => return self.delete(),
             KeyCode::Char('f') => return self.mode = Mode::FillChar,
             KeyCode::Char('e') => return self.start_extract(),
@@ -595,6 +688,22 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) {
+        if matches!(self.mode, Mode::Edit) {
+            self.wheel(mouse);
+            // A press ends the run being typed and puts the cursor there.
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.commit_typed();
+                let (Some(layout), Some(aln)) = (ui::grid_of(self), self.shape()) else {
+                    return;
+                };
+                if let Some(view) = self.view_mut()
+                    && let Hit::Cell(cell) = grid::hit(&layout, view, aln, mouse.column, mouse.row)
+                {
+                    view.cursor = cell;
+                }
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
@@ -1869,5 +1978,127 @@ mod tests {
         type_str(&mut app, "d");
         app.handle_event(&ctrl('c'));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn typing_overwrites_and_is_logged_as_one_command() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jllli");
+        assert!(matches!(app.mode, Mode::Edit));
+        let before = app.session.history().len();
+        type_str(&mut app, "NN");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(view(&app).cursor, Cell { row: 1, col: 5 });
+        app.handle_event(&press(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(last(&app), "msa overwrite --row 2 --col 4 --seq NN");
+        assert_eq!(seq(&app, 1), "ACGNNACG-A");
+        type_str(&mut app, "u");
+        assert_eq!(
+            seq(&app, 1),
+            "ACGTTACG-A",
+            "one step of undo takes back the whole run"
+        );
+    }
+
+    #[test]
+    fn backspace_and_delete_put_gaps() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "llllli");
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 3);
+        type_str(&mut app, "A");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa overwrite --row 1 --col 4 --seq A-");
+
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "i");
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Delete));
+        app.handle_event(&press(KeyCode::Delete));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa overwrite --row 1 --col 1 --seq=--");
+    }
+
+    #[test]
+    fn moving_away_ends_the_run() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "iA");
+        app.handle_event(&press(KeyCode::Down));
+        type_str(&mut app, "C");
+        app.handle_event(&press(KeyCode::Esc));
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa overwrite --row 1 --col 1 --seq A",
+                "msa overwrite --row 2 --col 2 --seq C",
+            ]
+        );
+        // A click ends it too, and moves the cursor.
+        type_str(&mut app, "iG");
+        let to = at(&app, 2, 7);
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), to, NONE));
+        assert_eq!(last(&app), "msa overwrite --row 2 --col 3 --seq G");
+        assert_eq!(view(&app).cursor, Cell { row: 2, col: 7 });
+        assert!(matches!(app.mode, Mode::Edit));
+    }
+
+    #[test]
+    fn letters_are_text_while_typing_and_nothing_typed_logs_nothing() {
+        let (mut app, _dir) = with_trio();
+        let before = app.session.history().len();
+        type_str(&mut app, "i");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(app.session.history().len(), before);
+        type_str(&mut app, "idquvf:");
+        assert!(!app.quit && matches!(app.mode, Mode::Edit));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa overwrite --row 1 --col 1 --seq dquvf:");
+        type_str(&mut app, "i>");
+        assert_eq!(app.status, "error: '>' cannot be typed into a sequence");
+        app.handle_event(&paste("ACGT"));
+        assert_eq!(view(&app).typed, None, "a paste never reaches the grid");
+        app.handle_event(&ctrl('c'));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn typing_at_the_last_column_stays_there() {
+        let (mut app, _dir) = with_trio();
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "iAC");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa overwrite --row 1 --col 10 --seq C");
+    }
+
+    #[test]
+    fn typing_is_refused_where_it_cannot_work() {
+        let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
+        type_str(&mut app, "i");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(
+            app.status,
+            "error: sequences differ in length, so columns cannot be selected"
+        );
+
+        let (mut app, dir) = with_trio();
+        type_str(
+            &mut app,
+            &format!(":msa extract --out {}", dir.path().join("o.fa").display()),
+        );
+        app.handle_event(&press(KeyCode::Enter));
+        type_str(&mut app, "i");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "error: still busy: writing o.fa (Esc cancels)");
+        settle(&mut app);
+    }
+
+    #[test]
+    fn typing_starts_without_a_selection() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "Vi");
+        assert_eq!(view(&app).select, None);
     }
 }

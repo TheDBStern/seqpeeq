@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use seqpeeq_core::{Ranges, RowSel};
+use seqpeeq_core::{MsaCmd, Ranges, RowSel};
 
 /// One residue's place: a row and a column, counted from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -75,6 +75,58 @@ impl Region {
     }
 }
 
+/// Characters typed over one row and not yet turned into a command. They
+/// are always side by side, so the run is a start and the bytes from there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Typed {
+    pub row: usize,
+    /// The column of the first typed character.
+    pub start: usize,
+    pub bytes: Vec<u8>,
+}
+
+impl Typed {
+    pub fn new(row: usize, col: usize, byte: u8) -> Typed {
+        Typed {
+            row,
+            start: col,
+            bytes: vec![byte],
+        }
+    }
+
+    /// Put `byte` at `col` if that is inside the run or right beside it.
+    /// False, changing nothing, otherwise.
+    pub fn put(&mut self, col: usize, byte: u8) -> bool {
+        let end = self.start + self.bytes.len();
+        if (self.start..end).contains(&col) {
+            self.bytes[col - self.start] = byte;
+        } else if col == end {
+            self.bytes.push(byte);
+        } else if col + 1 == self.start {
+            self.bytes.insert(0, byte);
+            self.start = col;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The typed character at a cell, if the run covers it.
+    pub fn at(&self, row: usize, col: usize) -> Option<u8> {
+        let offset = col.checked_sub(self.start)?;
+        self.bytes.get(offset).copied().filter(|_| row == self.row)
+    }
+
+    /// The command that makes the run part of the alignment.
+    pub fn command(&self) -> MsaCmd {
+        MsaCmd::Overwrite {
+            row: self.row + 1,
+            col: self.start + 1,
+            seq: String::from_utf8_lossy(&self.bytes).into_owned(),
+        }
+    }
+}
+
 /// The narrowest and widest the names column can be made, and the step.
 const NAME_WIDTHS: (u16, u16, u16) = (4, 60, 4);
 
@@ -89,6 +141,8 @@ pub struct MsaView {
     pub colouring: Colouring,
     /// The selection, if one has been started. Moving the cursor extends it.
     pub select: Option<Select>,
+    /// What has been typed since the last command, while typing.
+    pub typed: Option<Typed>,
 }
 
 impl MsaView {
@@ -100,6 +154,7 @@ impl MsaView {
             name_width: 24,
             colouring: Colouring::Conserved,
             select: None,
+            typed: None,
         }
     }
 
@@ -432,5 +487,28 @@ mod tests {
         });
         view.clamp(Shape { rows: 3, cols: 3 });
         assert!(view.select.is_some());
+    }
+
+    #[test]
+    fn a_typed_run_grows_at_either_end_and_can_be_retyped() {
+        use seqpeeq_core::Command;
+        let mut typed = Typed::new(2, 5, b'A');
+        assert!(typed.put(6, b'C') && typed.put(4, b'-') && typed.put(5, b'G'));
+        assert_eq!(
+            (typed.start, typed.bytes.as_slice()),
+            (4, b"-GC".as_slice())
+        );
+        assert!(
+            !typed.put(8, b'T') && !typed.put(2, b'T'),
+            "not beside the run"
+        );
+        assert_eq!(
+            (typed.at(2, 5), typed.at(2, 7), typed.at(1, 5)),
+            (Some(b'G'), None, None)
+        );
+        assert_eq!(
+            Command::Msa(typed.command()).to_line().unwrap(),
+            "msa overwrite --row 3 --col 5 --seq=-GC"
+        );
     }
 }
