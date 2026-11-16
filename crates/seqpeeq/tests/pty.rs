@@ -171,3 +171,18 @@ fn a_signal_puts_the_terminal_back() {
         assert!(run.dir().join("a.fa").exists());
     }
 }
+
+#[test]
+fn the_grid_is_drawn_and_an_edit_reaches_the_log() {
+    let mut run = Pty::start(&["--log", "s.log", "a.fa"]);
+    run.wait_for("s3 third one");
+    run.send("jVd");
+    run.wait_for("deleted 1 sequence");
+    run.send("q");
+    run.wait_for("Quit anyway?");
+    run.send("y");
+    assert!(run.wait_exit().success());
+    run.assert_terminal_restored("after quitting with edits");
+    let log = std::fs::read_to_string(run.dir().join("s.log")).unwrap();
+    assert!(log.contains("\nmsa delete-rows --rows 2\n"), "{log}");
+}

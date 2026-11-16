@@ -230,7 +230,16 @@ pub fn draw_grid(
         if names.width > 1 {
             let width = names.width as usize - 1;
             let name = fit(alignment.name(row), width);
-            buffer.set_stringn(names.x, y, name, width, Style::new());
+            // Matches are marked only while they are of the state shown.
+            let found = view.search.as_ref().is_some_and(|search| {
+                search.revision == alignment.revision() && search.is_match(row)
+            });
+            let style = if found {
+                Style::new().add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::new()
+            };
+            buffer.set_stringn(names.x, y, name, width, style);
         }
         if marked {
             let label = Rect {

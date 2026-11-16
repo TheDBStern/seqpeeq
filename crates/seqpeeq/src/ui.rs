@@ -7,7 +7,7 @@ use std::ops::Range;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -185,19 +185,32 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(" seqpeeq").style(dim()), area);
         return;
     }
-    let mut spans = Vec::new();
-    for (index, title) in titles.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled("│", dim()));
+    let ranges = tab_ranges(&titles, area.width, app.active);
+    for (index, (title, range)) in titles.iter().zip(&ranges).enumerate() {
+        if range.is_empty() {
+            continue;
         }
         let style = if index == app.active {
             Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else {
             Style::new()
         };
-        spans.push(Span::styled(format!(" {title} "), style));
+        let tab = Rect {
+            x: area.x + range.start,
+            width: range.end - range.start,
+            ..area
+        };
+        frame.render_widget(Paragraph::new(format!(" {title} ")).style(style), tab);
+        // The column after a tab separates it from the next.
+        if range.end < area.width && index + 1 < titles.len() {
+            let gap = Rect {
+                x: area.x + range.end,
+                width: 1,
+                ..area
+            };
+            frame.render_widget(Paragraph::new("│").style(dim()), gap);
+        }
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
@@ -372,22 +385,52 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).style(style), area);
 }
 
+/// What the help screen says, above the line about the log. No line is
+/// wider than 56 columns, so the box fits a 60-column terminal.
+const HELP: &[&str] = &[
+    "Move      arrows hjkl   PgUp PgDn   Home End",
+    "          g go to   / search names   n N next, previous",
+    "Select    drag   right-click extends   v V C   Esc clear",
+    "Edit      d delete or gap   f fill   i type   r rename",
+    "          u U undo redo   e extract to a file",
+    "View      c colours   [ ] name width   Tab next file",
+    "          L log   ? help   q quit",
+    "Commands  :  open FILE   close   use N   undo   redo",
+    "          msa delete-rows  delete-cols  fill  overwrite",
+    "          msa extract  rename",
+    "          :rescue FILE if the log has failed",
+    "Mouse     hold Shift (Option on macOS) to select text",
+    "          with the terminal itself",
+    "          in tmux: set -g mouse on",
+];
+
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = [
-        (":", "command line"),
-        ("Tab", "next tab"),
-        ("L", "toggle log"),
-        ("?", "help"),
-        ("q", "quit"),
-    ]
-    .iter()
-    .map(|(key, what)| Line::from(format!("{key:<5}{what}")))
-    .collect();
+    // Content plus a border and one column of padding each side.
+    let room = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line> = HELP.iter().map(|line| Line::from(*line)).collect();
     if let Some(path) = app.session.log_path() {
-        lines.push(Line::from(format!("log: {}", path.display())));
+        // The end of a path says which file it is; show that if the whole
+        // does not fit.
+        let whole = format!("log: {}", path.display());
+        let line = if whole.width() <= room {
+            whole
+        } else {
+            let path = path.display().to_string();
+            let fits = room.saturating_sub("log: …".width());
+            let mut start = path.len();
+            let mut used = 0;
+            for (index, c) in path.char_indices().rev() {
+                used += c.width().unwrap_or(0);
+                if used > fits {
+                    break;
+                }
+                start = index;
+            }
+            format!("log: …{}", &path[start..])
+        };
+        lines.push(Line::from(line));
     }
     let widest = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-    // Content plus a border and one column of padding each side.
     let width = (widest + 4).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
@@ -415,17 +458,38 @@ pub fn tab_titles(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// The columns each tab occupies in the tab bar. A tab is drawn as its title
+/// The columns each tab occupies in a tab bar `width` columns wide; an
+/// empty range for a tab that is not shown. A tab is drawn as its title
 /// with one space either side, and tabs are separated by one `│` column.
+/// When they do not all fit, the bar starts at a later tab, so that the
+/// `active` one is shown whole if it can be.
+///
 /// Drawing and click handling both use this, so they cannot disagree.
-pub fn tab_ranges(titles: &[String]) -> Vec<Range<u16>> {
-    let mut start = 0u16;
-    titles
+pub fn tab_ranges(titles: &[String], width: u16, active: usize) -> Vec<Range<u16>> {
+    let widths: Vec<u32> = titles
         .iter()
-        .map(|title| {
-            let width = title.width() as u16 + 2;
-            let range = start..start.saturating_add(width);
-            start = range.end.saturating_add(1);
+        .map(|title| title.width() as u32 + 2)
+        .collect();
+    // The first tab to draw: the earliest from which everything up to and
+    // including the active tab fits.
+    let active = active.min(titles.len().saturating_sub(1));
+    let mut first = active;
+    let mut used = widths.get(active).copied().unwrap_or(0);
+    while first > 0 && used + 1 + widths[first - 1] <= u32::from(width) {
+        first -= 1;
+        used += 1 + widths[first];
+    }
+    let mut start = 0u32;
+    widths
+        .iter()
+        .enumerate()
+        .map(|(index, &tab)| {
+            if index < first || start >= u32::from(width) {
+                return 0..0;
+            }
+            let end = (start + tab).min(u32::from(width));
+            let range = start as u16..end as u16;
+            start = end + 1;
             range
         })
         .collect()
@@ -609,7 +673,7 @@ mod tests {
     #[test]
     fn tab_ranges_count_wide_characters_by_display_width() {
         // Two double-width characters: 4 columns of title plus the two spaces.
-        assert_eq!(tab_ranges(&["配列".to_string()])[0], 0..6);
+        assert_eq!(tab_ranges(&["配列".to_string()], 80, 0)[0], 0..6);
     }
 
     #[test]
@@ -947,5 +1011,119 @@ mod tests {
             Color::Indexed(71)
         );
         assert!(app.outbox.is_empty() && app.conserved.is_empty());
+    }
+
+    #[test]
+    fn help_names_every_key_and_command() {
+        let mut app = with_file("tests/data/grid.fa");
+        app.mode = Mode::Help;
+        let screen = rows(&render(&app, 100, 30)).join("\n");
+        for needle in [
+            "hjkl",
+            "PgUp",
+            "Home",
+            "right-click",
+            "v V C",
+            "Esc",
+            "undo",
+            "redo",
+            "overwrite",
+            "delete-rows",
+            "delete-cols",
+            "extract",
+            "rename",
+            "close",
+            ":rescue FILE",
+            "Option on macOS",
+            "set -g mouse on",
+        ] {
+            assert!(
+                screen.contains(needle),
+                "help does not mention {needle:?}\n{screen}"
+            );
+        }
+        for (width, height) in [(30, 8), (10, 3), (1, 1)] {
+            render(&app, width, height);
+        }
+    }
+
+    #[test]
+    fn every_help_line_fits_a_60_column_terminal() {
+        for line in HELP {
+            assert!(line.width() <= 56, "{} columns: {line:?}", line.width());
+        }
+    }
+
+    #[test]
+    fn a_long_log_path_shows_its_end_in_help() {
+        use seqpeeq_core::SessionLog;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir
+            .path()
+            .join("a-very-long-directory-name".repeat(6))
+            .join("session-END.log");
+        let mut app = App::new(Session::new(Some(SessionLog::new(log))));
+        app.mode = Mode::Help;
+        let screen = rows(&render(&app, 60, 30)).join("\n");
+        assert!(screen.contains("log: …"), "{screen}");
+        assert!(screen.contains("session-END.log"), "{screen}");
+    }
+
+    #[test]
+    fn the_tab_bar_scrolls_to_keep_the_active_tab_in_view() {
+        // Each tab is 10 columns wide, with one column between tabs.
+        let titles: Vec<String> = (1..=6).map(|n| format!("file{n}.fa")).collect();
+        assert_eq!(tab_ranges(&titles, 80, 0)[..2], [0..10, 11..21]);
+        let scrolled = tab_ranges(&titles, 25, 4);
+        assert!(scrolled[0].is_empty() && scrolled[1].is_empty() && scrolled[2].is_empty());
+        assert_eq!(scrolled[3..], [0..10, 11..21, 22..25]);
+        // A tab wider than the screen is cut, not hidden.
+        assert_eq!(
+            tab_ranges(&["x".repeat(50)], 20, 0),
+            std::slice::from_ref(&(0..20))
+        );
+        assert!(
+            tab_ranges(&titles, 0, 2)
+                .iter()
+                .all(|range| range.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_scrolled_tab_bar_draws_what_its_ranges_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        for n in 1..=6 {
+            let path = dir.path().join(format!("file{n}.fa"));
+            std::fs::write(&path, ">a\nACGT\n").unwrap();
+            app.enqueue(Command::Open { path, kind: None });
+        }
+        settle(&mut app);
+        app.active = 4;
+        let screen = rows(&render(&app, 25, 6));
+        assert_eq!(screen[0], " file4.fa │ file5.fa │ fi");
+    }
+
+    #[test]
+    fn matching_names_are_underlined() {
+        use crate::msa_view::Search;
+        let mut app = with_file("tests/data/grid.fa");
+        view_mut(&mut app).search = Some(Search {
+            pattern: "pan".into(),
+            matches: vec![1],
+            revision: 0,
+        });
+        let terminal = render(&app, 70, 9);
+        let buffer = terminal.backend().buffer();
+        assert!(buffer[(2, 3)].modifier.contains(Modifier::UNDERLINED));
+        assert!(!buffer[(2, 2)].modifier.contains(Modifier::UNDERLINED));
+        // Matches found in an earlier state are not marked on this one.
+        view_mut(&mut app).search.as_mut().unwrap().revision = 99;
+        let terminal = render(&app, 70, 9);
+        assert!(
+            !terminal.backend().buffer()[(2, 3)]
+                .modifier
+                .contains(Modifier::UNDERLINED)
+        );
     }
 }

@@ -69,6 +69,37 @@ impl SessionLog {
         )
     }
 
+    /// As [`SessionLog::new`], but the file refuses to grow past `bytes`.
+    /// This is for tests and fault drills: it is how a full disk or a quota
+    /// looks to the session.
+    pub fn with_limit(path: PathBuf, bytes: usize) -> SessionLog {
+        struct Limited {
+            file: std::fs::File,
+            left: usize,
+        }
+        impl Write for Limited {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes.len() > self.left {
+                    return Err(io::Error::other("no space left (a limit was set)"));
+                }
+                self.left -= bytes.len();
+                self.file.write_all(bytes)?;
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.file.flush()
+            }
+        }
+        SessionLog::with_opener(
+            path,
+            Box::new(move |path| {
+                let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+                Ok(Box::new(Limited { file, left: bytes }) as Output)
+            }),
+        )
+    }
+
     /// As [`SessionLog::new`], with the way the output is created supplied.
     pub(crate) fn with_opener(path: PathBuf, opener: Opener) -> SessionLog {
         SessionLog {
@@ -237,5 +268,22 @@ pub(crate) mod tests {
             SessionLog::default_path(Path::new("/d"), &fixed()),
             Path::new("/d/seqpeeq-20261115-160503.log")
         );
+    }
+
+    #[test]
+    fn a_limited_log_refuses_writes_past_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.log");
+        let mut log = SessionLog::with_limit(path.clone(), 200);
+        log.record("open a.fa", None, &fixed()).unwrap();
+        assert!(!log.is_broken());
+        let long = "x".repeat(200);
+        assert!(matches!(
+            log.record(&long, None, &fixed()),
+            Err(Error::Log { .. })
+        ));
+        assert!(log.is_broken());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.ends_with("open a.fa\n"), "{text}");
     }
 }

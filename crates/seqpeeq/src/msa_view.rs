@@ -127,6 +127,41 @@ impl Typed {
     }
 }
 
+/// A search of the sequence names, and what it found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Search {
+    pub pattern: String,
+    /// The rows whose names match, ascending.
+    pub matches: Vec<usize>,
+    /// The revision of the alignment the matches were found in. Rows move
+    /// when the alignment changes, so the matches are only good for this.
+    pub revision: u64,
+}
+
+impl Search {
+    /// The next match from `row` on, wrapping round at the end: forwards
+    /// or backwards, counting a match on `row` itself only if `inclusive`.
+    /// Returns its place among the matches and its row.
+    pub fn step(&self, row: usize, forward: bool, inclusive: bool) -> Option<(usize, usize)> {
+        let last = self.matches.len().checked_sub(1)?;
+        // How many matches lie before `row`, and whether one is on it.
+        let before = self.matches.partition_point(|&at| at < row);
+        let on = self.matches.get(before) == Some(&row);
+        let index = match (forward, inclusive) {
+            (true, true) => before,
+            (true, false) => before + usize::from(on),
+            (false, true) if on => before,
+            (false, _) => before.checked_sub(1).unwrap_or(last),
+        };
+        let index = if index > last { 0 } else { index };
+        Some((index, self.matches[index]))
+    }
+
+    pub fn is_match(&self, row: usize) -> bool {
+        self.matches.binary_search(&row).is_ok()
+    }
+}
+
 /// The narrowest and widest the names column can be made, and the step.
 const NAME_WIDTHS: (u16, u16, u16) = (4, 60, 4);
 
@@ -143,6 +178,8 @@ pub struct MsaView {
     pub select: Option<Select>,
     /// What has been typed since the last command, while typing.
     pub typed: Option<Typed>,
+    /// The last search of the names.
+    pub search: Option<Search>,
 }
 
 impl MsaView {
@@ -155,6 +192,7 @@ impl MsaView {
             colouring: Colouring::Conserved,
             select: None,
             typed: None,
+            search: None,
         }
     }
 
@@ -510,5 +548,27 @@ mod tests {
             Command::Msa(typed.command()).to_line().unwrap(),
             "msa overwrite --row 3 --col 5 --seq=-GC"
         );
+    }
+
+    #[test]
+    fn stepping_through_matches_wraps_both_ways() {
+        let search = Search {
+            pattern: "x".into(),
+            matches: vec![2, 5, 9],
+            revision: 0,
+        };
+        assert_eq!(search.step(0, true, true), Some((0, 2)));
+        assert_eq!(search.step(5, true, true), Some((1, 5)));
+        assert_eq!(search.step(5, true, false), Some((2, 9)));
+        assert_eq!(search.step(9, true, false), Some((0, 2)));
+        assert_eq!(search.step(2, false, false), Some((2, 9)));
+        assert_eq!(search.step(7, false, false), Some((1, 5)));
+        assert!(search.is_match(5) && !search.is_match(6));
+        let none = Search {
+            pattern: "x".into(),
+            matches: vec![],
+            revision: 0,
+        };
+        assert_eq!(none.step(0, true, true), None);
     }
 }

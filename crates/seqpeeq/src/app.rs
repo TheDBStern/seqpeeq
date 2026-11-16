@@ -15,7 +15,7 @@ use seqpeeq_core::{
 
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
-    Cell, Colouring, MsaView, Region, SelKind, Select, Shape, Typed, parse_goto,
+    Cell, Colouring, MsaView, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
 use crate::ui;
 use crate::ui::grid::{self, Hit};
@@ -55,6 +55,8 @@ pub enum PromptKind {
     Goto,
     /// A new name for the sequence in `row`.
     Rename { row: usize },
+    /// A regular expression to look for in the sequence names.
+    Search,
 }
 
 impl PromptKind {
@@ -64,6 +66,7 @@ impl PromptKind {
             PromptKind::Command => ":",
             PromptKind::Goto => "go to: ",
             PromptKind::Rename { .. } => "name: ",
+            PromptKind::Search => "/",
         }
     }
 }
@@ -366,6 +369,11 @@ impl App {
                 None => return,
             },
             Err(Error::Cancelled) => "cancelled".to_string(),
+            // Nothing more can be logged, so nothing more will be done;
+            // say how to get the work out all the same.
+            Err(error @ Error::Log { .. }) => {
+                format!("error: {error}; :rescue FILE still writes the alignment")
+            }
             Err(error) => format!("error: {error}"),
         };
         if !(queued && self.status.starts_with("error:")) {
@@ -484,6 +492,114 @@ impl App {
         let ran = self.run_command(cmd);
         self.report(ran, false);
         self.reveal();
+    }
+
+    /// Look for `pattern` in the sequence names and go to the first match
+    /// at or after the cursor. A search that fails leaves the last one be.
+    fn search(&mut self, pattern: &str) {
+        if pattern.is_empty() {
+            return;
+        }
+        let Some((alignment, view)) = self.alignment() else {
+            return;
+        };
+        let search = match alignment.find_names(pattern) {
+            Ok(matches) if matches.is_empty() => {
+                self.status = format!("error: no sequence name matches '{pattern}'");
+                return;
+            }
+            Ok(matches) => Search {
+                pattern: pattern.to_string(),
+                matches,
+                revision: alignment.revision(),
+            },
+            Err(error) => {
+                self.status = format!("error: {error}");
+                return;
+            }
+        };
+        let found = search.step(view.cursor.row, true, true);
+        if let Some(view) = self.view_mut() {
+            view.search = Some(search);
+        }
+        self.go_to_match(found);
+    }
+
+    /// `n` and `N`: go to the next or the previous match.
+    fn search_step(&mut self, forward: bool) {
+        let Some((alignment, view)) = self.alignment() else {
+            return;
+        };
+        let Some(search) = &view.search else {
+            self.status = "error: nothing to search for; press / first".to_string();
+            return;
+        };
+        // Rows have moved if the alignment changed: look again.
+        let fresh = if search.revision == alignment.revision() {
+            None
+        } else {
+            let matches = alignment.find_names(&search.pattern).unwrap_or_default();
+            Some(Search {
+                pattern: search.pattern.clone(),
+                matches,
+                revision: alignment.revision(),
+            })
+        };
+        let row = view.cursor.row;
+        let Some(view) = self.view_mut() else {
+            return;
+        };
+        if let Some(fresh) = fresh {
+            view.search = Some(fresh);
+        }
+        let found = view
+            .search
+            .as_ref()
+            .and_then(|search| search.step(row, forward, false));
+        self.go_to_match(found);
+    }
+
+    /// Put the cursor on a match and say which one it is; or say there is
+    /// none.
+    fn go_to_match(&mut self, found: Option<(usize, usize)>) {
+        let (Some((alignment, view)), Some(aln)) = (self.alignment(), self.shape()) else {
+            return;
+        };
+        let Some(search) = &view.search else {
+            return;
+        };
+        let Some((index, row)) = found else {
+            self.status = format!("error: no sequence name matches '{}'", search.pattern);
+            return;
+        };
+        self.status = format!(
+            "match {} of {}: {}",
+            index + 1,
+            search.matches.len(),
+            alignment.name(row)
+        );
+        if let Some(view) = self.view_mut() {
+            view.move_to(Some(row), None, aln);
+        }
+        self.reveal();
+    }
+
+    /// `:rescue FILE`: write the alignment out when the log has failed and
+    /// no command can run any more.
+    fn rescue(&mut self, file: &str) {
+        if file.is_empty() {
+            self.status = "error: rescue needs a file name".to_string();
+            return;
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = match (Path::new(file).strip_prefix("~"), home) {
+            (Ok(rest), Some(home)) => home.join(rest),
+            _ => PathBuf::from(file),
+        };
+        self.status = match self.session.rescue(&path) {
+            Ok(outcome) => outcome.message,
+            Err(error) => format!("error: {error}"),
+        };
     }
 
     /// `i`: start typing over residues.
@@ -659,6 +775,9 @@ impl App {
         match key.code {
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
             KeyCode::Char('i') => return self.start_typing(),
+            KeyCode::Char('/') => return self.open_prompt(PromptKind::Search, ""),
+            KeyCode::Char('n') => return self.search_step(true),
+            KeyCode::Char('N') => return self.search_step(false),
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => return self.delete(),
             KeyCode::Char('f') => return self.mode = Mode::FillChar,
             KeyCode::Char('e') => return self.start_extract(),
@@ -799,6 +918,7 @@ impl App {
             }
             PromptKind::Goto => self.go_to(prompt.line.text()),
             PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
+            PromptKind::Search => self.search(prompt.line.text()),
         }
     }
 
@@ -825,7 +945,7 @@ impl App {
         self.wheel(mouse);
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         if left_click && mouse.row == 0 {
-            let ranges = ui::tab_ranges(&ui::tab_titles(self));
+            let ranges = ui::tab_ranges(&ui::tab_titles(self), self.screen.width, self.active);
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
                 self.active = tab;
             }
@@ -1007,7 +1127,13 @@ impl App {
         match line {
             "q" | "quit" => return self.ask_quit(),
             "q!" | "quit!" => return self.quit = true,
+            "rescue" => return self.rescue(""),
             _ => {}
+        }
+        // Not a command either: commands are logged, and this is for when
+        // the log cannot be written.
+        if let Some(file) = line.strip_prefix("rescue ") {
+            return self.rescue(file.trim());
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let parsed = Command::parse_line(line).map(|cmd| expand_home(cmd, home.as_deref()));
@@ -1236,7 +1362,7 @@ mod tests {
     #[test]
     fn click_selects_tab() {
         let titles = ["a.fa".to_string(), "t.nwk".to_string()];
-        assert_eq!(tab_ranges(&titles), [0..6, 7..14]);
+        assert_eq!(tab_ranges(&titles, 80, 0), [0..6, 7..14]);
 
         let (mut app, _dir) = with_two_tabs();
         app.active = 0;
@@ -2369,5 +2495,143 @@ mod tests {
         app.handle_event(&key('c'));
         app.pump();
         assert!(app.outbox.is_empty());
+    }
+
+    #[test]
+    fn search_finds_names_and_steps_through_them() {
+        let mut app = with_grid();
+        type_str(&mut app, "/_a1$");
+        enter(&mut app);
+        assert_eq!(app.status, "match 1 of 4: Homo_sapiens_A1");
+        type_str(&mut app, "nn");
+        assert_eq!(
+            (view(&app).cursor.row, app.status.as_str()),
+            (3, "match 3 of 4: Pongo_abelii_A1")
+        );
+        type_str(&mut app, "nn");
+        assert_eq!(view(&app).cursor.row, 0, "wraps past the last match");
+        type_str(&mut app, "N");
+        assert_eq!(view(&app).cursor.row, 4);
+        assert_eq!(app.session.history().len(), 1, "searching is not logged");
+    }
+
+    #[test]
+    fn search_refusals_keep_the_earlier_search() {
+        let mut app = with_grid();
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "error: nothing to search for; press / first");
+        type_str(&mut app, "/gorilla");
+        enter(&mut app);
+        assert_eq!(view(&app).cursor.row, 2);
+        for (typed, status) in [
+            ("/(", "error: bad regular expression '('"),
+            ("/zebra", "error: no sequence name matches 'zebra'"),
+        ] {
+            type_str(&mut app, typed);
+            enter(&mut app);
+            assert_eq!(app.status, status);
+            assert_eq!(view(&app).search.as_ref().unwrap().pattern, "gorilla");
+        }
+        // An empty search line changes nothing.
+        type_str(&mut app, "/");
+        enter(&mut app);
+        assert_eq!(view(&app).search.as_ref().unwrap().pattern, "gorilla");
+    }
+
+    #[test]
+    fn matches_are_found_again_after_the_rows_change() {
+        let mut app = with_grid();
+        type_str(&mut app, "/pan|macaca");
+        enter(&mut app);
+        assert_eq!(view(&app).cursor.row, 1);
+        type_str(&mut app, ":msa delete-rows --rows 1-2");
+        enter(&mut app);
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "match 1 of 1: Macaca_mulatta_A1");
+        assert_eq!(view(&app).cursor.row, 2);
+        type_str(&mut app, ":msa delete-rows --rows 3");
+        enter(&mut app);
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "error: no sequence name matches 'pan|macaca'");
+        assert!(view(&app).cursor.row < 2);
+    }
+
+    /// An app showing TRIO whose log has room for the `open` and no more.
+    fn with_trio_and_a_full_log() -> (App, TempDir) {
+        use seqpeeq_core::SessionLog;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.fa");
+        fs::write(&path, TRIO).unwrap();
+        let open = Command::Open {
+            path: path.clone(),
+            kind: None,
+        };
+        // How much of a log one `open` of this file takes.
+        let probe = dir.path().join("probe.log");
+        let mut session = Session::new(Some(SessionLog::new(probe.clone())));
+        session.execute(open).unwrap();
+        drop(session);
+        let used = fs::metadata(&probe).unwrap().len() as usize;
+
+        let log = SessionLog::with_limit(dir.path().join("s.log"), used + 10);
+        let mut app = App::new(Session::new(Some(log)));
+        app.resize(Size::new(80, 12));
+        open_file(&mut app, &path);
+        (app, dir)
+    }
+
+    #[test]
+    fn rescue_is_offered_and_works_when_the_log_fails() {
+        let (mut app, dir) = with_trio_and_a_full_log();
+        type_str(&mut app, "d");
+        assert!(
+            app.status.starts_with("error: cannot write session log"),
+            "{}",
+            app.status
+        );
+        assert!(
+            app.status
+                .ends_with("; :rescue FILE still writes the alignment"),
+            "{}",
+            app.status
+        );
+        assert_eq!(seq(&app, 0), "ACGT-ACGTA", "the edit did not stand");
+        let out = dir.path().join("saved.fa");
+        type_str(&mut app, &format!(":rescue {}", out.display()));
+        enter(&mut app);
+        assert!(app.status.contains("not logged"), "{}", app.status);
+        assert_eq!(fs::read_to_string(&out).unwrap(), TRIO);
+
+        let (mut app, dir) = with_trio();
+        type_str(
+            &mut app,
+            &format!(":rescue {}", dir.path().join("x.fa").display()),
+        );
+        enter(&mut app);
+        assert_eq!(
+            app.status,
+            "error: the session log has not failed; use msa extract --out PATH"
+        );
+        type_str(&mut app, ":rescue");
+        enter(&mut app);
+        assert_eq!(app.status, "error: rescue needs a file name");
+    }
+
+    #[test]
+    fn a_click_selects_the_tab_drawn_there_when_the_bar_is_scrolled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        for n in 1..=6 {
+            let path = dir.path().join(format!("file{n}.fa"));
+            fs::write(&path, TRIO).unwrap();
+            open_file(&mut app, &path);
+        }
+        app.resize(Size::new(25, 10));
+        app.active = 4;
+        // Tabs 4, 5 and part of 6 are drawn; tab 4 starts at the left edge.
+        app.handle_event(&click(12, 0));
+        assert_eq!(app.active, 4);
+        app.handle_event(&click(0, 0));
+        assert_eq!(app.active, 3);
     }
 }

@@ -1,17 +1,17 @@
 ---
 source: crates/seqpeeq/src/ui.rs
-assertion_line: 486
+assertion_line: 598
 expression: "render(&app, 60, 12).backend()"
 ---
-" aln.fa                                                     "
-"                           1                                "
-"1 seq1             ┌help───────────────┐                    "
-"2 seq2             │ :    command line │                    "
-"                   │ Tab  next tab     │                    "
-"                   │ L    toggle log   │                    "
-"                   │ ?    help         │                    "
-"                   │ q    quit         │                    "
-"                   └───────────────────┘                    "
-"                                                            "
-"row 1/2 · col 1/8 · A                                       "
-"opened tests/data/aln.fa (msa, 2 sequences x 8 columns)     "
+"┌help──────────────────────────────────────────────────────┐"
+"│ Move      arrows hjkl   PgUp PgDn   Home End             │"
+"│           g go to   / search names   n N next, previous  │"
+"│ Select    drag   right-click extends   v V C   Esc clear │"
+"│ Edit      d delete or gap   f fill   i type   r rename   │"
+"│           u U undo redo   e extract to a file            │"
+"│ View      c colours   [ ] name width   Tab next file     │"
+"│           L log   ? help   q quit                        │"
+"│ Commands  :  open FILE   close   use N   undo   redo     │"
+"│           msa delete-rows  delete-cols  fill  overwrite  │"
+"│           msa extract  rename                            │"
+"└──────────────────────────────────────────────────────────┘"
