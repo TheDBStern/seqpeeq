@@ -6,6 +6,7 @@
 
 pub(crate) mod layer;
 pub(crate) mod source;
+pub(crate) mod write;
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -172,7 +173,12 @@ impl Alignment {
             MsaCmd::Rename { .. } => {
                 invalid("say the new name with --to, or use --regex with --replace")
             }
-            MsaCmd::Extract { .. } => invalid("not available yet"),
+            MsaCmd::Extract {
+                rows,
+                cols,
+                wrap,
+                out,
+            } => self.extract(rows, cols.as_ref(), *wrap, out),
         }
     }
 
@@ -419,6 +425,40 @@ impl Alignment {
     }
 }
 
+impl Alignment {
+    /// Write to a new file. Changes nothing in the alignment or its history.
+    fn extract(
+        &self,
+        sel: &RowSel,
+        cols: Option<&Ranges>,
+        wrap: Option<usize>,
+        out: &Path,
+    ) -> Result<Applied> {
+        if wrap == Some(0) {
+            return invalid("--wrap must be at least 1");
+        }
+        let rows = self.select_rows(sel)?;
+        if let Some(cols) = cols {
+            self.check_cols(cols)?;
+        }
+        let size = write::write_fasta(self, &rows, cols, wrap, out)?;
+        let sequences = count(rows.len(), "sequence");
+        let shape = match cols {
+            Some(cols) => format!("{sequences} x {}", count(cols.count(), "column")),
+            None if self.is_aligned() => format!("{sequences} x {}", count(self.cols(), "column")),
+            None => sequences,
+        };
+        // The full path, so the log says where the file went whatever the
+        // working directory was.
+        let full = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+        Ok(Applied {
+            message: format!("wrote {} ({shape})", out.display()),
+            note: Some(format!("output {} size={size}", full.display())),
+            created: Some(out.to_path_buf()),
+        })
+    }
+}
+
 /// Rows (ascending, at least one) as ranges.
 fn to_ranges(rows: &[usize]) -> Ranges {
     Ranges::new(rows.iter().map(|&row| row..row + 1)).expect("a selection is never empty")
@@ -467,10 +507,19 @@ fn guess_alphabet(source: &Source) -> Alphabet {
 
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::Alignment;
+    use super::{Alignment, Applied};
+    use crate::{Command, Result};
 
     /// Three sequences of ten columns, used throughout the tests.
     pub(crate) const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+
+    /// Apply `msa <text>`.
+    pub(crate) fn run(aln: &mut Alignment, text: &str) -> Result<Applied> {
+        match Command::parse_line(&format!("msa {text}")).unwrap() {
+            Command::Msa(cmd) => aln.apply(&cmd),
+            other => panic!("not an alignment command: {other:?}"),
+        }
+    }
 
     /// Every row as (name, residues).
     pub(crate) fn grid(aln: &Alignment) -> Vec<(String, String)> {
@@ -486,17 +535,8 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{TRIO, grid};
+    use super::testing::{TRIO, grid, run};
     use super::*;
-    use crate::Command;
-
-    /// Apply `msa <text>`.
-    fn run(aln: &mut Alignment, text: &str) -> Result<Applied> {
-        match Command::parse_line(&format!("msa {text}")).unwrap() {
-            Command::Msa(cmd) => aln.apply(&cmd),
-            other => panic!("not an alignment command: {other:?}"),
-        }
-    }
 
     fn text(aln: &Alignment, row: usize) -> String {
         grid(aln)[row].1.clone()

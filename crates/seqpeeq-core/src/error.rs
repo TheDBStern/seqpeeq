@@ -25,6 +25,10 @@ pub enum Error {
         cause: std::io::Error,
     },
 
+    /// Output files are only ever created, never replaced.
+    #[error("{} already exists; choose another name or remove it first", .0.display())]
+    Exists(PathBuf),
+
     /// The file is not in the format it was opened as.
     #[error("{}: {message}", .path.display())]
     Format { path: PathBuf, message: String },
