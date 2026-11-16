@@ -1,5 +1,6 @@
 //! Alignments: a FASTA file read in place, under a layer of edits.
 
+pub(crate) mod conservation;
 pub(crate) mod layer;
 pub(crate) mod source;
 pub(crate) mod write;
@@ -10,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use regex::Regex;
+
+pub use conservation::Conservation;
 
 use crate::command::msa::{MsaCmd, RowSel};
 use crate::ranges::Ranges;
