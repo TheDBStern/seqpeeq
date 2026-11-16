@@ -115,11 +115,7 @@ impl Command {
         if words.is_empty() {
             return Err(Error::Parse("empty command".to_string()));
         }
-        Command::try_parse_from(words).map_err(|e| {
-            let text = e.render().to_string();
-            let first = text.lines().next().unwrap_or("invalid command");
-            Error::Parse(first.strip_prefix("error: ").unwrap_or(first).to_string())
-        })
+        Command::try_parse_from(&words).map_err(|error| Error::Parse(describe(&error, &words)))
     }
 
     /// The canonical text form: command words, then flags, then positionals.
@@ -169,6 +165,32 @@ impl Command {
         }
         Ok(line)
     }
+}
+
+/// A parse error as one line that says what to change. clap's own first line
+/// often stops short of that ("the following required arguments were not
+/// provided:"), and the in-app command line has room for one line only.
+fn describe(error: &clap::Error, words: &[String]) -> String {
+    use clap::CommandFactory;
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    match error.kind() {
+        ErrorKind::MissingRequiredArgument => {
+            if let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg) {
+                return format!("missing {}", missing.join(", "));
+            }
+        }
+        ErrorKind::MissingSubcommand | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            let all = Command::command();
+            if let Some(group) = all.find_subcommand(&words[0]) {
+                let names: Vec<&str> = group.get_subcommands().map(|sub| sub.get_name()).collect();
+                return format!("{} needs one of: {}", words[0], names.join(", "));
+            }
+        }
+        _ => {}
+    }
+    let text = error.render().to_string();
+    let first = text.lines().next().unwrap_or("invalid command");
+    first.strip_prefix("error: ").unwrap_or(first).to_string()
 }
 
 /// Quote a word for the text form only when it needs it. shlex alone would
@@ -445,6 +467,26 @@ mod tests {
         fn round_trip(cmd in command()) {
             let line = cmd.to_line().unwrap();
             prop_assert_eq!(Command::parse_line(&line).unwrap(), cmd, "{}", line);
+        }
+    }
+
+    #[test]
+    fn parse_errors_say_what_is_missing() {
+        for (line, message) in [
+            ("open", "missing <PATH>"),
+            ("msa fill --cols 1", "missing --with <WITH>"),
+            ("msa extract", "missing --out <OUT>"),
+            ("msa delete-cols", "missing --cols <COLS>"),
+            ("msa rename --regex a", "missing --replace <REPLACE>"),
+            (
+                "msa",
+                "msa needs one of: delete-rows, delete-cols, fill, extract, rename",
+            ),
+        ] {
+            let Err(Error::Parse(m)) = Command::parse_line(line) else {
+                panic!("{line}")
+            };
+            assert_eq!(m, message, "{line}");
         }
     }
 }

@@ -69,6 +69,50 @@ fn regex(pattern: &str) -> Result<Regex> {
     Regex::new(pattern).or_else(|_| invalid(format!("bad regular expression '{pattern}'")))
 }
 
+/// Refuse a replacement that names a group the pattern does not have. The
+/// regex library would silently put nothing there, and it reads `$2_` as a
+/// group called `2_`, so the common `$2_$1` would quietly delete text.
+fn check_replacement(re: &Regex, replace: &str) -> Result<()> {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let exists = |name: &str| match name.parse::<usize>() {
+        Ok(index) => index < re.captures_len(),
+        Err(_) => re.capture_names().flatten().any(|group| group == name),
+    };
+    let mut rest = replace;
+    while let Some(at) = rest.find('$') {
+        rest = &rest[at + 1..];
+        if let Some(after) = rest.strip_prefix('$') {
+            // `$$` is a literal dollar sign.
+            rest = after;
+            continue;
+        }
+        let (name, braced) = match rest.strip_prefix('{') {
+            Some(inner) => match inner.find('}') {
+                Some(end) => (&inner[..end], true),
+                None => continue,
+            },
+            None => {
+                let end = rest.find(|c| !is_name(c)).unwrap_or(rest.len());
+                (&rest[..end], false)
+            }
+        };
+        if name.is_empty() || exists(name) {
+            continue;
+        }
+        let mut message =
+            format!("--replace refers to group '{name}', which the pattern does not have");
+        let digits = name.len() - name.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let (number, text) = name.split_at(digits);
+        if !braced && !number.is_empty() && !text.is_empty() && exists(number) {
+            message.push_str(&format!(
+                "; write ${{{number}}}{text} for group {number} followed by '{text}'"
+            ));
+        }
+        return invalid(message);
+    }
+    Ok(())
+}
+
 const NOT_ALIGNED: &str = "sequences differ in length, so columns cannot be selected";
 
 // Not derived: the contents can be gigabytes.
@@ -368,6 +412,7 @@ impl Alignment {
 
     fn rename_matching(&mut self, sel: &RowSel, pattern: &str, replace: &str) -> Result<Applied> {
         let re = regex(pattern)?;
+        check_replacement(&re, replace)?;
         let rows = self.select_rows(sel)?;
         let mut matched = false;
         let mut renames: Vec<(usize, String)> = Vec::new();
@@ -746,5 +791,42 @@ mod tests {
         run(&mut a, "delete-cols --cols 1-3").unwrap();
         a.restore(before);
         assert_eq!(grid(&a), grid(&Alignment::from_text(TRIO)));
+    }
+
+    #[test]
+    fn a_replacement_may_only_name_groups_the_pattern_has() {
+        let mut a = Alignment::from_text(">Homo_sapiens\nAC\n>Mus_musculus\nAC\n");
+        let swap = r"rename --regex '^(\w+?)_(\w+)$' --replace";
+        assert_eq!(
+            run(&mut a, &format!("{swap} '$2_$1'"))
+                .unwrap_err()
+                .to_string(),
+            "--replace refers to group '2_', which the pattern does not have; \
+             write ${2}_ for group 2 followed by '_'"
+        );
+        assert_eq!(
+            run(&mut a, &format!("{swap} '$3'"))
+                .unwrap_err()
+                .to_string(),
+            "--replace refers to group '3', which the pattern does not have"
+        );
+        assert_eq!(
+            run(&mut a, &format!("{swap} 'x${{genus}}'"))
+                .unwrap_err()
+                .to_string(),
+            "--replace refers to group 'genus', which the pattern does not have"
+        );
+        assert_eq!(a.name(0), "Homo_sapiens");
+
+        run(&mut a, &format!("{swap} '${{2}}_$1'")).unwrap();
+        assert_eq!([a.name(0), a.name(1)], ["sapiens_Homo", "musculus_Mus"]);
+        run(
+            &mut a,
+            r"rename --regex '(?<first>\w+)_(\w+)' --replace '$2 $$ ${first}'",
+        )
+        .unwrap();
+        assert_eq!(a.name(0), "Homo $ sapiens");
+        run(&mut a, r"rename --regex ' \$ ' --replace '$0$'").unwrap();
+        assert_eq!(a.name(0), "Homo $ $sapiens");
     }
 }

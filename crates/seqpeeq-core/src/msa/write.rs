@@ -2,7 +2,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -15,9 +15,8 @@ use crate::{Error, Result};
 /// one line per sequence or in lines of `wrap` residues. Returns the size of
 /// the finished file in bytes.
 ///
-/// The file is created new: an existing file is an error, never replaced.
-/// A name ending in `.gz` is written gzip-compressed. Nothing is left behind
-/// if writing fails.
+/// An existing file is an error, never replaced. A name ending in `.gz` is
+/// written gzip-compressed.
 pub(crate) fn write_fasta(
     aln: &Alignment,
     rows: &[usize],
@@ -25,30 +24,69 @@ pub(crate) fn write_fasta(
     wrap: Option<usize>,
     out: &Path,
 ) -> Result<u64> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(out)
-        .map_err(|cause| match cause.kind() {
-            io::ErrorKind::AlreadyExists => Error::Exists(out.to_path_buf()),
-            _ => Error::Io {
-                path: out.to_path_buf(),
-                cause,
-            },
-        })?;
     let gzip = out
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
-    let written = write_records(aln, rows, cols, wrap, file, gzip)
-        .and_then(|()| std::fs::metadata(out))
-        .map(|meta| meta.len());
-    written.map_err(|cause| {
-        let _ = std::fs::remove_file(out);
-        Error::Io {
-            path: out.to_path_buf(),
-            cause,
+    create_then(out, |file| write_records(aln, rows, cols, wrap, file, gzip))
+}
+
+/// Create `out` as a new file with the contents `fill` writes. Returns its
+/// size in bytes.
+///
+/// The contents go to a partial file beside `out`, which is given the final
+/// name only once complete. So a run that fails or is killed part-way never
+/// leaves a short file that looks finished, and a file that already has the
+/// name, or takes it meanwhile, is never replaced.
+fn create_then(out: &Path, fill: impl FnOnce(File) -> io::Result<()>) -> Result<u64> {
+    let failed = |cause| Error::Io {
+        path: out.to_path_buf(),
+        cause,
+    };
+    let taken = || out.symlink_metadata().is_ok();
+    if taken() {
+        return Err(Error::Exists(out.to_path_buf()));
+    }
+    let (partial, file) = create_partial(out).map_err(failed)?;
+    let published = fill(file).map_err(failed).and_then(|()| {
+        // A hard link fails if the name exists, which makes this step safe
+        // against a file created while we were writing.
+        match std::fs::hard_link(&partial, out) {
+            Ok(()) => Ok(()),
+            Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => {
+                Err(Error::Exists(out.to_path_buf()))
+            }
+            // Some file systems have no hard links; there, check and rename.
+            Err(_) if taken() => Err(Error::Exists(out.to_path_buf())),
+            Err(_) => std::fs::rename(&partial, out).map_err(failed),
         }
-    })
+    });
+    // After a rename the partial name is already gone; that is fine.
+    let _ = std::fs::remove_file(&partial);
+    published?;
+    Ok(std::fs::metadata(out).map_err(failed)?.len())
+}
+
+/// Create a new file named after `out` with `.partial-<process id>` added,
+/// trying further names if one is left over from an earlier run.
+fn create_partial(out: &Path) -> io::Result<(PathBuf, File)> {
+    let name = out
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file name"))?;
+    let mut last = io::Error::from(io::ErrorKind::AlreadyExists);
+    for attempt in 0..100 {
+        let mut partial = name.to_os_string();
+        partial.push(format!(".partial-{}", std::process::id()));
+        if attempt > 0 {
+            partial.push(format!("-{attempt}"));
+        }
+        let path = out.with_file_name(partial);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last)
 }
 
 fn write_records(
@@ -113,10 +151,11 @@ fn records(
 
 #[cfg(test)]
 mod tests {
+    use super::create_then;
     use crate::msa::testing::{TRIO, grid, run};
     use crate::msa::{Alignment, Applied};
     use crate::{Error, Result};
-    use std::io::Read;
+    use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
 
     /// Apply `msa extract <flags> --out <path>`.
@@ -292,5 +331,51 @@ mod tests {
         extract(&mut a, "", &dir.join("y.fa")).unwrap();
         a.undo().unwrap();
         assert_eq!(a.cols(), 10);
+    }
+
+    #[test]
+    fn the_final_name_appears_only_when_the_file_is_complete() {
+        let (_keep, dir) = dir();
+        let out = dir.join("x.fa");
+        let size = create_then(&out, |mut file| {
+            assert!(!out.exists(), "the final name must not exist while writing");
+            assert_eq!(files(&dir), 1, "the partial file");
+            file.write_all(b"done\n")
+        })
+        .unwrap();
+        assert_eq!((size, read(&out).as_str(), files(&dir)), (5, "done\n", 1));
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_file_of_any_name() {
+        let (_keep, dir) = dir();
+        let result = create_then(&dir.join("x.fa"), |mut file| {
+            file.write_all(b"half")?;
+            Err(io::Error::other("disk full"))
+        });
+        assert!(matches!(result, Err(Error::Io { .. })));
+        assert_eq!(files(&dir), 0);
+    }
+
+    #[test]
+    fn a_name_taken_while_writing_is_not_replaced() {
+        let (_keep, dir) = dir();
+        let out = dir.join("x.fa");
+        let result = create_then(&out, |mut file| {
+            std::fs::write(&out, "theirs")?;
+            file.write_all(b"mine")
+        });
+        assert!(matches!(result, Err(Error::Exists(_))));
+        assert_eq!((read(&out).as_str(), files(&dir)), ("theirs", 1));
+    }
+
+    #[test]
+    fn a_partial_file_left_by_a_killed_run_does_not_block_a_new_one() {
+        let (_keep, dir) = dir();
+        let stale = dir.join(format!("x.fa.partial-{}", std::process::id()));
+        std::fs::write(&stale, "old").unwrap();
+        extract(&mut Alignment::from_text(TRIO), "", &dir.join("x.fa")).unwrap();
+        assert_eq!(read(&dir.join("x.fa")), TRIO);
+        assert_eq!(read(&stale), "old");
     }
 }

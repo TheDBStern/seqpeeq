@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::source::Source;
 use crate::ranges::Ranges;
@@ -19,8 +20,9 @@ fn whole(len: usize) -> Vec<Range<u32>> {
 /// of the file, so later deletions never have to rewrite it.
 #[derive(Debug, Clone)]
 struct Fill {
-    /// Record ids, ascending.
-    ids: Vec<u32>,
+    /// Record ids, as ascending runs. A fill of whole columns is one run,
+    /// however many rows there are.
+    ids: Vec<Range<u32>>,
     /// Columns of the file, ascending.
     cols: Vec<Range<u32>>,
     with: u8,
@@ -28,35 +30,38 @@ struct Fill {
 
 /// Rows and columns passed in are current ones, counted from 0, and must be
 /// in bounds; the caller checks.
+///
+/// Every earlier state is kept for undo, so the parts are shared: a copy
+/// costs a few pointers, and an edit replaces only the part it changes.
 #[derive(Debug, Clone)]
 pub(crate) struct Layer {
     /// The record id behind each row, in display order.
-    rows: Vec<u32>,
+    rows: Arc<Vec<u32>>,
     /// The columns of the file still present, ascending. Aligned files only.
-    cols: Vec<Range<u32>>,
+    cols: Arc<Vec<Range<u32>>>,
     /// The current column at which each range of `cols` starts.
-    col_starts: Vec<usize>,
+    col_starts: Arc<Vec<usize>>,
     /// The current number of columns; for an unaligned file, the longest row.
     width: usize,
     /// The shortest row; equal to `width` when aligned.
     min_len: usize,
     aligned: bool,
     /// New names, by record id.
-    names: HashMap<u32, String>,
+    names: Arc<HashMap<u32, String>>,
     /// Overwritten blocks, oldest first.
-    fills: Vec<Fill>,
+    fills: Vec<Arc<Fill>>,
 }
 
 impl Layer {
     pub(crate) fn new(source: &Source) -> Layer {
         let mut layer = Layer {
-            rows: (0..source.rows() as u32).collect(),
-            cols: Vec::new(),
-            col_starts: Vec::new(),
+            rows: Arc::new((0..source.rows() as u32).collect()),
+            cols: Arc::default(),
+            col_starts: Arc::default(),
             width: source.width(),
             min_len: source.min_len(),
             aligned: source.width() == source.min_len(),
-            names: HashMap::new(),
+            names: Arc::default(),
             fills: Vec::new(),
         };
         if layer.aligned {
@@ -115,7 +120,11 @@ impl Layer {
         let fills: Vec<&Fill> = self
             .fills
             .iter()
-            .filter(|fill| fill.ids.binary_search(&id).is_ok())
+            .map(Arc::as_ref)
+            .filter(|fill| {
+                let run = fill.ids.partition_point(|run| run.end <= id);
+                fill.ids.get(run).is_some_and(|run| run.start <= id)
+            })
             .collect();
         for segment in self.file_cols(&[cols]) {
             let at = out.len();
@@ -144,7 +153,7 @@ impl Layer {
             from = range.end;
         }
         kept.extend_from_slice(&self.rows[from..]);
-        self.rows = kept;
+        self.rows = Arc::new(kept);
 
         if !self.aligned {
             let lengths = || self.rows.iter().map(|&id| source.len(id as usize));
@@ -164,7 +173,7 @@ impl Layer {
         let gone = self.file_cols(cols.as_slice());
         let mut kept = Vec::with_capacity(self.cols.len() + gone.len());
         let mut gone = gone.iter().peekable();
-        for range in &self.cols {
+        for range in self.cols.iter() {
             let mut start = range.start;
             while let Some(cut) = gone.peek().filter(|cut| cut.start < range.end) {
                 if cut.start > start {
@@ -189,20 +198,28 @@ impl Layer {
             .copied()
             .collect();
         ids.sort_unstable();
-        self.fills.push(Fill {
-            ids,
+        let mut runs: Vec<Range<u32>> = Vec::new();
+        for id in ids {
+            match runs.last_mut() {
+                Some(run) if run.end == id => run.end += 1,
+                _ => runs.push(id..id + 1),
+            }
+        }
+        self.fills.push(Arc::new(Fill {
+            ids: runs,
             cols: self.file_cols(cols.as_slice()),
             with,
-        });
+        }));
     }
 
     pub(crate) fn rename(&mut self, row: usize, name: String) {
-        self.names.insert(self.rows[row], name);
+        // Copies the names once if an earlier state still shares them.
+        Arc::make_mut(&mut self.names).insert(self.rows[row], name);
     }
 
     fn set_cols(&mut self, cols: Vec<Range<u32>>) {
         let mut start = 0;
-        self.col_starts = cols
+        let starts = cols
             .iter()
             .map(|range| {
                 let at = start;
@@ -210,9 +227,10 @@ impl Layer {
                 at
             })
             .collect();
+        self.col_starts = Arc::new(starts);
         self.width = start;
         self.min_len = start;
-        self.cols = cols;
+        self.cols = Arc::new(cols);
     }
 
     /// The columns of the file behind current column ranges (ascending and
@@ -251,6 +269,7 @@ mod tests {
     use crate::msa::{Alignment, Alphabet};
     use proptest::prelude::*;
     use std::path::Path;
+    use std::sync::Arc;
 
     /// A source and its layer, with the layer's operations taking range text.
     struct T {
@@ -490,5 +509,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_edit_shares_what_it_does_not_change_with_earlier_states() {
+        let mut t = T::new(TRIO);
+        t.rename(0, "x");
+        let before = t.layer.clone();
+        t.fill("1-3", "2", b'N');
+        assert!(Arc::ptr_eq(&before.rows, &t.layer.rows));
+        assert!(Arc::ptr_eq(&before.cols, &t.layer.cols));
+        assert!(Arc::ptr_eq(&before.names, &t.layer.names));
+        let one_fill = t.layer.clone();
+        t.fill("1", "1", b'-');
+        assert!(Arc::ptr_eq(&one_fill.fills[0], &t.layer.fills[0]));
+        t.delete_cols("1");
+        assert!(Arc::ptr_eq(&before.rows, &t.layer.rows));
+        assert!(Arc::ptr_eq(&before.names, &t.layer.names));
+        assert_eq!((t.row(0), before.fills.len()), ("NGT-ACGTA".to_string(), 0));
+    }
+
+    #[test]
+    fn a_fill_stores_runs_of_rows_not_every_row() {
+        let text: String = (0..1000).map(|i| format!(">n{i}\nACGT\n")).collect();
+        let mut t = T::new(&text);
+        t.fill("1-1000", "2", b'N');
+        assert_eq!(t.layer.fills[0].ids, vec![0..1000u32; 1]);
+        t.delete_rows("500");
+        t.fill("1-999", "3", b'x');
+        assert_eq!(t.layer.fills[1].ids, [0..499, 500..1000]);
+        assert_eq!(
+            (t.row(0), t.row(499), t.row(998)),
+            ("ANxT".into(), "ANxT".into(), "ANxT".into())
+        );
     }
 }

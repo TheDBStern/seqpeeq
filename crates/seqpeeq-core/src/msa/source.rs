@@ -130,6 +130,10 @@ impl Source {
         let (width, min_len) = (lengths().max().unwrap_or(0), lengths().min().unwrap_or(0));
         source.width = width;
         source.min_len = min_len;
+        check_size(source.rows(), width).map_err(|message| Error::Format {
+            path: path.to_path_buf(),
+            message,
+        })?;
         Ok(source)
     }
 
@@ -194,6 +198,23 @@ impl Source {
     }
 }
 
+/// Rows and columns are counted in 32 bits by the edit layer, to keep it
+/// small. A file beyond that is refused rather than silently cut short.
+fn check_size(rows: usize, width: usize) -> std::result::Result<(), String> {
+    let most = u32::MAX as usize;
+    if width > most {
+        return Err(format!(
+            "a sequence of {width} residues is longer than seqpeeq can handle ({most})"
+        ));
+    }
+    if rows > most {
+        return Err(format!(
+            "{rows} sequences are more than seqpeeq can handle ({most})"
+        ));
+    }
+    Ok(())
+}
+
 /// The end of the line starting at `from`: where its content stops and where
 /// the next line starts.
 fn line_end(data: &[u8], from: usize) -> (usize, usize) {
@@ -205,8 +226,14 @@ fn line_end(data: &[u8], from: usize) -> (usize, usize) {
 
 /// Find every record. Errors are messages for [`Error::Format`].
 fn index(data: &[u8]) -> std::result::Result<(Vec<Record>, Vec<Vec<u8>>), String> {
+    // A byte-order mark, as some Windows editors write, is not part of the
+    // first line. Offsets stay absolute, so reads in place are unaffected.
+    let mut pos = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
     // Skip blank lines before the first record.
-    let mut pos = 0;
     let mut line_number = 1;
     loop {
         if pos >= data.len() {
@@ -453,5 +480,30 @@ mod tests {
                 .ends_with("no sequences found")
         );
         assert!(matches!(Source::load(dir.path()), Err(Error::Io { .. })));
+    }
+
+    #[test]
+    fn a_leading_byte_order_mark_is_skipped() {
+        let s = src("\u{feff}>a\r\nACGT\r\n>b\r\nAC-T\r\n");
+        assert_eq!(
+            (s.rows(), s.name(0), read(&s, 1, 0..4)),
+            (2, "a", "AC-T".to_string())
+        );
+        assert!(s.is_mapped(0));
+    }
+
+    #[test]
+    fn files_too_big_to_index_are_refused() {
+        let most = u32::MAX as usize;
+        assert_eq!(check_size(100_000, 30_000), Ok(()));
+        assert_eq!(check_size(most, most), Ok(()));
+        assert_eq!(
+            check_size(1, most + 1).unwrap_err(),
+            "a sequence of 4294967296 residues is longer than seqpeeq can handle (4294967295)"
+        );
+        assert_eq!(
+            check_size(most + 1, 5).unwrap_err(),
+            "4294967296 sequences are more than seqpeeq can handle (4294967295)"
+        );
     }
 }
