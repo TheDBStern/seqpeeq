@@ -202,7 +202,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     if let Some((alignment, view)) = app.alignment() {
-        grid::draw_grid(frame, alignment, view, area);
+        grid::draw_grid(frame, alignment, view, app.conservation(), area);
         // The terminal's own cursor marks the cursor cell.
         let layout = grid::grid_layout(area, alignment.rows(), view.name_width);
         if matches!(app.mode, Mode::Normal | Mode::Edit)
@@ -233,6 +233,9 @@ pub fn info_text(app: &App) -> (String, String) {
     let mut right = Vec::new();
     if let Some(busy) = &app.busy {
         right.push(job_text(&busy.label, busy.progress.fraction()));
+    }
+    if let Some((_, _, progress)) = &app.counting {
+        right.push(job_text("counting columns", progress.fraction()));
     }
     if let Some((alignment, view)) = app.alignment() {
         let Cell { row, col } = view.cursor;
@@ -468,6 +471,14 @@ mod tests {
             };
             match request {
                 Request::Run(job) => app.handle_done(Done::Command(job.run())),
+                Request::Conserve {
+                    dataset,
+                    view,
+                    progress,
+                } => {
+                    let result = view.conservation(&progress);
+                    app.handle_done(Done::Conservation { dataset, result });
+                }
             }
         }
     }
@@ -864,5 +875,77 @@ mod tests {
             Position::new(27, 2),
             "the cursor is shown while typing"
         );
+    }
+
+    /// Run a command as the interface would, and everything it sets off.
+    fn run(app: &mut App, line: &str) {
+        let ran = app.run_command(Command::parse_line(line).unwrap());
+        ran.unwrap_or_else(|error| panic!("{line}: {error}"));
+        settle(app);
+    }
+
+    /// Whether the cell at a row and column of the grid has the background
+    /// of a conserved residue.
+    fn shaded(app: &App, terminal: &Terminal<TestBackend>, row: u16, col: u16) -> bool {
+        let buffer = terminal.backend().buffer();
+        let (alignment, view) = app.alignment().unwrap();
+        let body = regions(app, buffer.area).body;
+        let cells = grid_layout(body, alignment.rows(), view.name_width).cells;
+        buffer[(cells.x + col, cells.y + row)].bg == Color::Indexed(24)
+    }
+
+    #[test]
+    fn conserved_cells_are_shaded_by_default() {
+        let app = with_file("tests/data/cons.fa");
+        let terminal = render(&app, 60, 9);
+        // ACGT-A / ACGA-C / ACTT-G / AGGTTT
+        let picture: Vec<String> = (0..4)
+            .map(|row| {
+                (0..6)
+                    .map(|col| {
+                        if shaded(&app, &terminal, row, col) {
+                            '#'
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(picture, ["####..", "###...", "##.#..", "#.##.."]);
+    }
+
+    #[test]
+    fn the_shading_follows_edits_and_the_colour_key() {
+        let mut app = with_file("tests/data/cons.fa");
+        run(&mut app, "msa fill --rows 1-2 --cols 6 --with G"); // column 6: G G G T
+        let terminal = render(&app, 60, 9);
+        assert!(shaded(&app, &terminal, 0, 5) && !shaded(&app, &terminal, 3, 5));
+        run(&mut app, "msa delete-cols --cols 1");
+        let terminal = render(&app, 60, 9);
+        assert!(
+            shaded(&app, &terminal, 0, 0) && !shaded(&app, &terminal, 3, 0),
+            "what was column 2 is now column 1"
+        );
+        view_mut(&mut app).cycle_colouring();
+        let terminal = render(&app, 60, 9);
+        assert!(!shaded(&app, &terminal, 0, 0), "by residue: no shading");
+    }
+
+    #[test]
+    fn unaligned_files_fall_back_to_residue_colours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ragged.fa");
+        std::fs::write(&path, ">a\nAC\n>b\nACGT\n").unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.status.clear();
+        let terminal = render(&app, 40, 6);
+        let body = regions(&app, Rect::new(0, 0, 40, 6)).body;
+        let cells = grid_layout(body, 2, 24).cells;
+        assert_eq!(
+            terminal.backend().buffer()[(cells.x, cells.y)].bg,
+            Color::Indexed(71)
+        );
+        assert!(app.outbox.is_empty() && app.conserved.is_empty());
     }
 }

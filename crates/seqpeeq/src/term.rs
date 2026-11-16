@@ -78,6 +78,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, signals: &Signals) 
     if let Some(busy) = &app.busy {
         busy.progress.cancel();
     }
+    if let Some((_, _, progress)) = &app.counting {
+        progress.cancel();
+    }
     worker.join();
     result
 }

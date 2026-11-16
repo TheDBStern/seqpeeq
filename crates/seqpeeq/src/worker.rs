@@ -30,6 +30,14 @@ impl Worker {
         self.threads.push(std::thread::spawn(move || {
             let done = match request {
                 Request::Run(job) => Done::Command(job.run()),
+                Request::Conserve {
+                    dataset,
+                    view,
+                    progress,
+                } => Done::Conservation {
+                    dataset,
+                    result: view.conservation(&progress),
+                },
             };
             // The receiver is gone only when the interface is closing.
             let _ = sender.send(done);
@@ -78,7 +86,9 @@ mod tests {
             assert!(Instant::now() < deadline, "the job never came back");
             std::thread::sleep(Duration::from_millis(5));
         };
-        let Done::Command(finished) = done;
+        let Done::Command(finished) = done else {
+            panic!("a command was submitted")
+        };
         assert!(
             session
                 .finish(finished)
@@ -87,6 +97,35 @@ mod tests {
                 .starts_with("opened ")
         );
         assert!(worker.poll().is_none());
+        worker.join();
+    }
+
+    #[test]
+    fn a_count_runs_on_another_thread_and_comes_back() {
+        use seqpeeq_core::{Alignment, Progress};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.fa");
+        std::fs::write(&file, ">a\nACGT\n>b\nACGA\n").unwrap();
+        let alignment = Alignment::load(&file).unwrap();
+        let mut worker = Worker::new();
+        worker.submit(Request::Conserve {
+            dataset: 7,
+            view: alignment.view().clone(),
+            progress: Arc::new(Progress::new()),
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let done = loop {
+            if let Some(done) = worker.poll() {
+                break done;
+            }
+            assert!(Instant::now() < deadline, "the count never came back");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let Done::Conservation { dataset, result } = done else {
+            panic!("a count was submitted")
+        };
+        assert_eq!((dataset, result.map(|found| found.cols())), (7, Some(4)));
         worker.join();
     }
 }

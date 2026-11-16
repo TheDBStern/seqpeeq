@@ -8,10 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::layout::Size;
-use seqpeeq_core::{Alignment, Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
+use seqpeeq_core::{
+    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
+    Started, View,
+};
 
 use crate::line::{History, LineEdit};
-use crate::msa_view::{Cell, MsaView, Region, SelKind, Select, Shape, Typed, parse_goto};
+use crate::msa_view::{
+    Cell, Colouring, MsaView, Region, SelKind, Select, Shape, Typed, parse_goto,
+};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 
@@ -67,12 +72,28 @@ impl PromptKind {
 pub enum Request {
     /// The slow part of a command.
     Run(Job),
+    /// Count the columns of one state of an alignment.
+    Conserve {
+        /// The [`Dataset::id`] of the alignment.
+        dataset: u64,
+        view: View,
+        progress: Arc<Progress>,
+    },
 }
 
 /// Work that a worker thread has finished.
 pub enum Done {
     Command(Finished),
+    /// A count of columns; `None` if it was cancelled.
+    Conservation {
+        dataset: u64,
+        result: Option<Conservation>,
+    },
 }
+
+/// Alignments of up to this many residues are counted for conservation at
+/// once, which takes a few milliseconds; larger ones on a worker thread.
+pub const INLINE_CELLS: usize = 4_000_000;
 
 /// The command that is running in the background.
 pub struct Busy {
@@ -107,6 +128,13 @@ pub struct App {
     ///
     /// [`Dataset::id`]: seqpeeq_core::Dataset::id
     pub views: HashMap<u64, MsaView>,
+    /// The largest alignment, in residues, to count on the spot.
+    pub inline_cells: usize,
+    /// The newest count of each alignment's columns, by [`Dataset::id`].
+    pub conserved: HashMap<u64, Conservation>,
+    /// The count running in the background: the dataset, the revision
+    /// being counted, and its progress.
+    pub counting: Option<(u64, u64, Arc<Progress>)>,
     /// Lines entered on the command line.
     history: History,
     /// Whether the left button went down on the grid and is still held, so
@@ -128,6 +156,9 @@ impl App {
             queue: VecDeque::new(),
             screen: Size::new(80, 24),
             views: HashMap::new(),
+            inline_cells: INLINE_CELLS,
+            conserved: HashMap::new(),
+            counting: None,
             history: History::default(),
             dragging: false,
         }
@@ -152,6 +183,60 @@ impl App {
             }
             self.report(ran, true);
         }
+        self.refresh_conservation();
+    }
+
+    /// Make sure the visible alignment has, or is getting, a count of its
+    /// columns for the state it is in, if its colouring needs one.
+    fn refresh_conservation(&mut self) {
+        let Some(dataset) = self.session.datasets().get(self.active) else {
+            return;
+        };
+        let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
+            return;
+        };
+        if view.colouring != Colouring::Conserved || !alignment.is_aligned() {
+            return;
+        }
+        let (id, revision) = (dataset.id, alignment.revision());
+        if self
+            .conserved
+            .get(&id)
+            .is_some_and(|found| found.revision() == revision)
+        {
+            return;
+        }
+        if alignment.rows().saturating_mul(alignment.cols()) <= self.inline_cells {
+            if let Some(found) = alignment.view().conservation(&Progress::new()) {
+                self.conserved.insert(id, found);
+            }
+            return;
+        }
+        if let Some((counting, of, progress)) = &self.counting {
+            if (*counting, *of) == (id, revision) {
+                return;
+            }
+            // A count of a state that is no longer shown is wasted work.
+            progress.cancel();
+        }
+        let progress = Arc::new(Progress::new());
+        self.counting = Some((id, revision, Arc::clone(&progress)));
+        self.outbox.push(Request::Conserve {
+            dataset: id,
+            view: alignment.view().clone(),
+            progress,
+        });
+    }
+
+    /// The count to shade the visible alignment with, if there is one that
+    /// fits it: of the state shown, or of an earlier state of the same
+    /// width, which is close enough to show while the new count runs.
+    pub fn conservation(&self) -> Option<&Conservation> {
+        let dataset = self.session.datasets().get(self.active)?;
+        let alignment = dataset.msa()?;
+        self.conserved
+            .get(&dataset.id)
+            .filter(|found| found.cols() == alignment.cols())
     }
 
     /// Take in work a thread has finished.
@@ -169,6 +254,29 @@ impl App {
                     self.active = current;
                 }
                 self.report(ended.map(|outcome| Some(outcome.message)), busy.queued);
+            }
+            Done::Conservation { dataset, result } => {
+                // A cancelled count has nothing to say; whatever cancelled
+                // it has already asked for the count it wants.
+                let Some(found) = result else {
+                    return;
+                };
+                if self
+                    .counting
+                    .as_ref()
+                    .is_some_and(|(id, of, _)| (*id, *of) == (dataset, found.revision()))
+                {
+                    self.counting = None;
+                }
+                // Kept only if the alignment is still in the state counted.
+                let datasets = self.session.datasets().iter();
+                let now = datasets
+                    .filter(|open| open.id == dataset)
+                    .find_map(Dataset::msa)
+                    .map(Alignment::revision);
+                if now == Some(found.revision()) {
+                    self.conserved.insert(dataset, found);
+                }
             }
         }
     }
@@ -231,12 +339,19 @@ impl App {
             }
         }
         self.views.retain(|id, _| open.contains(id));
+        self.conserved.retain(|id, _| open.contains(id));
+        if let Some((id, _, progress)) = &self.counting
+            && !open.contains(id)
+        {
+            progress.cancel();
+            self.counting = None;
+        }
     }
 
     /// Background work is running, so the screen should be redrawn soon to
     /// show progress.
     pub fn wants_tick(&self) -> bool {
-        self.busy.is_some()
+        self.busy.is_some() || self.counting.is_some()
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -981,6 +1096,14 @@ mod tests {
             };
             match request {
                 Request::Run(job) => app.handle_done(Done::Command(job.run())),
+                Request::Conserve {
+                    dataset,
+                    view,
+                    progress,
+                } => {
+                    let result = view.conservation(&progress);
+                    app.handle_done(Done::Conservation { dataset, result });
+                }
             }
         }
     }
@@ -2100,5 +2223,151 @@ mod tests {
         let (mut app, _dir) = with_trio();
         type_str(&mut app, "Vi");
         assert_eq!(view(&app).select, None);
+    }
+
+    use seqpeeq_core::{Conservation, Progress};
+
+    /// Open a file holding `text` without asking for anything further: the
+    /// open is run to its end, and the loop is not turned again.
+    fn open_text(app: &mut App, dir: &TempDir, name: &str, text: &str) {
+        let path = dir.path().join(name);
+        fs::write(&path, text).unwrap();
+        app.enqueue(Command::Open { path, kind: None });
+        app.pump();
+        let Some(Request::Run(job)) = app.outbox.pop() else {
+            panic!("an alignment opens in the background")
+        };
+        app.handle_done(Done::Command(job.run()));
+    }
+
+    /// An app that counts every alignment in the background, however small,
+    /// showing the 4 x 6 example.
+    fn with_background_counting() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(80, 12));
+        app.inline_cells = 0;
+        open_text(
+            &mut app,
+            &dir,
+            "c.fa",
+            ">1\nACGT-A\n>2\nACGA-C\n>3\nACTT-G\n>4\nAGGTTT\n",
+        );
+        (app, dir)
+    }
+
+    #[test]
+    fn small_alignments_are_counted_at_once() {
+        let (mut app, _dir) = with_trio();
+        assert_eq!(app.inline_cells, INLINE_CELLS);
+        assert!(app.outbox.is_empty() && !app.wants_tick());
+        assert_eq!(app.conservation().map(Conservation::cols), Some(10));
+        type_str(&mut app, "Cd");
+        app.pump();
+        assert_eq!(app.conservation().map(Conservation::cols), Some(9));
+        assert!(app.outbox.is_empty());
+    }
+
+    #[test]
+    fn large_alignments_are_counted_in_the_background() {
+        let (mut app, _dir) = with_background_counting();
+        assert!(app.conservation().is_none());
+        app.pump();
+        assert!(matches!(app.outbox.as_slice(), [Request::Conserve { .. }]));
+        assert!(app.wants_tick());
+        app.pump();
+        assert_eq!(
+            app.outbox.len(),
+            1,
+            "one count per state, however often asked"
+        );
+        let (_, right) = ui::info_text(&app);
+        assert!(right.starts_with("counting columns"), "{right}");
+        settle(&mut app);
+        assert_eq!(app.conservation().map(Conservation::cols), Some(6));
+        assert!(app.counting.is_none() && !app.wants_tick());
+    }
+
+    #[test]
+    fn an_old_count_shades_only_while_the_width_is_unchanged() {
+        let (mut app, _dir) = with_background_counting();
+        settle(&mut app);
+        type_str(&mut app, "fN"); // same width
+        assert!(
+            app.conservation().is_some(),
+            "the old shading stays while the new count runs"
+        );
+        settle(&mut app);
+        let id = app.session.datasets()[0].id;
+        assert_eq!(
+            app.conserved[&id].revision(),
+            app.alignment().unwrap().0.revision()
+        );
+        type_str(&mut app, "Cd"); // one column fewer
+        assert!(
+            app.conservation().is_none(),
+            "the old count no longer lines up"
+        );
+        settle(&mut app);
+        assert_eq!(app.conservation().map(Conservation::cols), Some(5));
+    }
+
+    #[test]
+    fn a_result_for_a_state_that_has_gone_is_dropped() {
+        let (mut app, _dir) = with_background_counting();
+        app.pump();
+        let Some(Request::Conserve {
+            dataset,
+            view: counted,
+            progress,
+        }) = app.outbox.pop()
+        else {
+            panic!("a count was asked for")
+        };
+        type_str(&mut app, "Cd"); // the alignment moves on
+        let result = counted.conservation(&Progress::new());
+        app.handle_done(Done::Conservation { dataset, result });
+        assert!(app.conserved.is_empty());
+        assert!(progress.is_cancelled() || app.counting.is_none());
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        type_str(&mut app, "y");
+        settle(&mut app);
+        assert!(app.session.datasets().is_empty());
+        assert!(
+            app.conserved.is_empty() && app.counting.is_none(),
+            "nothing is kept for a closed file"
+        );
+    }
+
+    #[test]
+    fn a_new_state_cancels_the_count_of_the_old_one() {
+        let (mut app, _dir) = with_background_counting();
+        app.pump();
+        let Some(Request::Conserve {
+            progress: first, ..
+        }) = app.outbox.pop()
+        else {
+            panic!("a count was asked for")
+        };
+        type_str(&mut app, "fN");
+        app.pump();
+        assert!(first.is_cancelled());
+        assert_eq!(app.outbox.len(), 1);
+        // The cancelled count comes back empty and disturbs nothing.
+        let dataset = app.session.datasets()[0].id;
+        app.handle_done(Done::Conservation {
+            dataset,
+            result: None,
+        });
+        assert!(app.counting.is_some());
+    }
+
+    #[test]
+    fn other_colourings_and_other_tabs_need_no_count() {
+        let (mut app, _dir) = with_background_counting();
+        app.handle_event(&key('c'));
+        app.pump();
+        assert!(app.outbox.is_empty());
     }
 }

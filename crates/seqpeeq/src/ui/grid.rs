@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
-use seqpeeq_core::Alignment;
+use seqpeeq_core::{Alignment, Conservation};
 use unicode_width::UnicodeWidthChar;
 
 use crate::msa_view::{Cell, Colouring, MsaView, Shape};
@@ -152,7 +152,15 @@ fn fit(text: &str, width: usize) -> String {
 
 /// Draw the alignment in `body`. Only the rows and columns on screen are
 /// read, so the cost does not depend on the size of the alignment.
-pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body: Rect) {
+///
+/// `conserved` is the count of columns to shade by, when one is ready.
+pub fn draw_grid(
+    frame: &mut Frame,
+    alignment: &Alignment,
+    view: &MsaView,
+    conserved: Option<&Conservation>,
+    body: Rect,
+) {
     let layout = grid_layout(body, alignment.rows(), view.name_width);
     let GridLayout {
         ruler,
@@ -203,8 +211,8 @@ pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body:
 
     // A file whose sequences differ in length has no columns to compare.
     let colouring = match view.colouring {
-        Colouring::Plain => Colouring::Plain,
-        _ => Colouring::Residue,
+        Colouring::Conserved if !alignment.is_aligned() => Colouring::Residue,
+        chosen => chosen,
     };
     let mut residues = Vec::with_capacity(cells.width as usize);
     for line in 0..cells.height {
@@ -238,12 +246,15 @@ pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body:
         alignment.residues(row, on_screen, &mut residues);
         for (offset, &residue) in residues.iter().enumerate() {
             let col = view.left + offset;
-            let style = if is_selected(Cell { row, col }) {
-                palette::SELECTED
-            } else if colouring == Colouring::Plain {
-                Style::new()
-            } else {
-                palette::residue(alignment.alphabet(), residue)
+            let style = match colouring {
+                _ if is_selected(Cell { row, col }) => palette::SELECTED,
+                Colouring::Plain => Style::new(),
+                Colouring::Residue => palette::residue(alignment.alphabet(), residue),
+                // Plain until the count is ready, and where it says no.
+                Colouring::Conserved => match conserved {
+                    Some(found) if found.matches(col, residue) => palette::SHADE,
+                    _ => Style::new(),
+                },
             };
             // A character typed and not yet made a command shows in place
             // of the residue it will replace, marked as provisional.
