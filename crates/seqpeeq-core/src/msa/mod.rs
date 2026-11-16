@@ -2,6 +2,7 @@
 
 pub(crate) mod conservation;
 pub(crate) mod layer;
+pub(crate) mod overview;
 pub(crate) mod shift;
 pub(crate) mod source;
 pub(crate) mod write;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use regex::Regex;
 
 pub use conservation::Conservation;
+pub use overview::{SUMMARY_BYTES, Summary, Tally, summary_block};
 pub use shift::Shift;
 
 use crate::command::msa::{MsaCmd, RowSel};
@@ -800,6 +802,50 @@ pub(crate) mod testing {
         match Command::parse_line(&format!("msa {text}")).unwrap() {
             Command::Msa(cmd) => aln.apply(&cmd),
             other => panic!("not an alignment command: {other:?}"),
+        }
+    }
+
+    /// Counts what this thread has allocated, so a test can see the most
+    /// memory a call held at once.
+    pub(crate) mod measure {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static LIVE: Cell<usize> = const { Cell::new(0) };
+            static PEAK: Cell<usize> = const { Cell::new(0) };
+        }
+
+        pub struct Counting;
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let pointer = unsafe { System.alloc(layout) };
+                if !pointer.is_null() {
+                    let _ = LIVE.try_with(|live| {
+                        live.set(live.get() + layout.size());
+                        let _ = PEAK.try_with(|peak| peak.set(peak.get().max(live.get())));
+                    });
+                }
+                pointer
+            }
+
+            unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(pointer, layout) };
+                let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(layout.size())));
+            }
+        }
+
+        #[global_allocator]
+        static COUNTING: Counting = Counting;
+
+        /// The most memory, beyond what was held at the start, that `f`
+        /// held at once on this thread.
+        pub fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+            let start = LIVE.with(Cell::get);
+            PEAK.with(|peak| peak.set(start));
+            let out = f();
+            (out, PEAK.with(Cell::get) - start)
         }
     }
 
