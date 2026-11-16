@@ -44,37 +44,49 @@ impl Conservation {
 
 const LETTERS: usize = 26;
 
+/// Columns counted together. The table of counters for one block takes
+/// under 7 MB, however long the alignment.
+const BLOCK: usize = 1 << 16;
+
 impl View {
     /// Count every column. `None` if cancelled through `progress`, or if the
     /// sequences differ in length.
     ///
-    /// This reads every residue once, row by row, so it takes time in
-    /// proportion to the size of the alignment.
+    /// This reads every residue once, so it takes time in proportion to the
+    /// size of the alignment; memory stays small.
     pub fn conservation(&self, progress: &Progress) -> Option<Conservation> {
+        self.conservation_in_blocks(progress, BLOCK)
+    }
+
+    /// [`View::conservation`], `block` columns at a time.
+    fn conservation_in_blocks(&self, progress: &Progress, block: usize) -> Option<Conservation> {
         if !self.is_aligned() {
             return None;
         }
         let (rows, cols) = (self.rows(), self.cols());
-        progress.set_total(rows as u64);
-        let mut counts = vec![0u32; cols * LETTERS];
-        let mut residues = Vec::with_capacity(cols);
-        for row in 0..rows {
-            if progress.is_cancelled() {
-                return None;
-            }
-            residues.clear();
-            self.residues(row, 0..cols, &mut residues);
-            for (col, residue) in residues.iter().enumerate() {
-                let letter = residue.to_ascii_uppercase().wrapping_sub(b'A') as usize;
-                if letter < LETTERS {
-                    counts[col * LETTERS + letter] += 1;
+        let blocks = cols.div_ceil(block);
+        progress.set_total((rows * blocks) as u64);
+        let mut majority = Vec::with_capacity(cols);
+        let mut counts = vec![0u32; block.min(cols) * LETTERS];
+        let mut residues = Vec::with_capacity(block.min(cols));
+        for first in (0..cols).step_by(block) {
+            let span = first..(first + block).min(cols);
+            counts.fill(0);
+            for row in 0..rows {
+                if progress.is_cancelled() {
+                    return None;
                 }
+                residues.clear();
+                self.residues(row, span.clone(), &mut residues);
+                for (col, residue) in residues.iter().enumerate() {
+                    let letter = residue.to_ascii_uppercase().wrapping_sub(b'A') as usize;
+                    if letter < LETTERS {
+                        counts[col * LETTERS + letter] += 1;
+                    }
+                }
+                progress.add(1);
             }
-            progress.add(1);
-        }
-        let majority = counts
-            .chunks(LETTERS)
-            .map(|column| {
+            majority.extend(counts.chunks(LETTERS).take(span.len()).map(|column| {
                 // The first of the most frequent letters.
                 let (mut letter, mut most) = (0, 0);
                 for (index, &count) in column.iter().enumerate() {
@@ -87,8 +99,8 @@ impl View {
                 } else {
                     0
                 }
-            })
-            .collect();
+            }));
+        }
         Some(Conservation {
             revision: self.revision(),
             majority,
@@ -139,6 +151,65 @@ mod tests {
         assert!(!found.matches(0, b'C') && !found.matches(0, b'-') && !found.matches(9, b'A'));
     }
 
+    /// Counts what this thread has allocated, so a test can see the most
+    /// memory a call held at once.
+    mod measure {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static LIVE: Cell<usize> = const { Cell::new(0) };
+            static PEAK: Cell<usize> = const { Cell::new(0) };
+        }
+
+        pub struct Counting;
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let pointer = unsafe { System.alloc(layout) };
+                if !pointer.is_null() {
+                    let _ = LIVE.try_with(|live| {
+                        live.set(live.get() + layout.size());
+                        let _ = PEAK.try_with(|peak| peak.set(peak.get().max(live.get())));
+                    });
+                }
+                pointer
+            }
+
+            unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(pointer, layout) };
+                let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(layout.size())));
+            }
+        }
+
+        #[global_allocator]
+        static COUNTING: Counting = Counting;
+
+        /// The most memory, beyond what was held at the start, that `f`
+        /// held at once on this thread.
+        pub fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+            let start = LIVE.with(Cell::get);
+            PEAK.with(|peak| peak.set(start));
+            let out = f();
+            (out, PEAK.with(Cell::get) - start)
+        }
+    }
+
+    #[test]
+    fn a_very_long_alignment_is_counted_in_little_memory() {
+        // One sequence of a million residues: a table of 26 counters per
+        // column would take over 100 MB.
+        let text = format!(">only\n{}\n", "ACGT".repeat(250_000));
+        let aln = Alignment::from_text(&text);
+        let (found, peak) = measure::peak_during(|| aln.view().conservation(&Progress::new()));
+        let found = found.unwrap();
+        assert_eq!(
+            (found.cols(), found.majority(999_999)),
+            (1_000_000, Some(b'T'))
+        );
+        assert!(peak < 16 << 20, "held {} MB at once", peak >> 20);
+    }
+
     #[test]
     fn the_count_is_of_the_alignment_as_edited() {
         let mut aln = Alignment::from_text(TRIO);
@@ -180,6 +251,10 @@ mod tests {
             }
             let aln = Alignment::from_text(&text);
             let found = aln.view().conservation(&Progress::new()).unwrap();
+            for block in 1..=5 {
+                let in_blocks = aln.view().conservation_in_blocks(&Progress::new(), block);
+                prop_assert_eq!(in_blocks.as_ref(), Some(&found), "blocks of {}", block);
+            }
             for col in 0..cols {
                 let mut tally: BTreeMap<u8, usize> = BTreeMap::new();
                 for row in 0..rows {

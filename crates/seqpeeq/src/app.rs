@@ -250,8 +250,13 @@ impl App {
                     return;
                 };
                 let ended = self.session.finish(finished);
+                // A queued open does not take the tab from a prompt, a
+                // pending fill, a question or a typed run: those were aimed
+                // at the file on screen and must land on it.
+                let pending = !matches!(self.mode, Mode::Normal | Mode::Help);
                 if ended.is_ok()
                     && busy.follow
+                    && !(busy.queued && pending)
                     && let Some(current) = self.session.current()
                 {
                     self.active = current;
@@ -478,9 +483,9 @@ impl App {
             .collect()
     }
 
-    /// Quit, asking first if that would lose edits.
+    /// Quit, asking first if that would lose edits or stop a running job.
     fn ask_quit(&mut self) {
-        if self.unwritten().is_empty() {
+        if self.unwritten().is_empty() && self.busy.is_none() {
             self.quit = true;
         } else {
             self.mode = Mode::Confirm(Confirm::Quit);
@@ -596,7 +601,7 @@ impl App {
             (Ok(rest), Some(home)) => home.join(rest),
             _ => PathBuf::from(file),
         };
-        self.status = match self.session.rescue(&path) {
+        self.status = match self.session.rescue(self.active, &path) {
             Ok(outcome) => outcome.message,
             Err(error) => format!("error: {error}"),
         };
@@ -1637,6 +1642,59 @@ mod tests {
         assert_eq!(app.status, "using 1: a.fa");
     }
 
+    /// a.fa is open and shown; b.fa is queued and its open has started.
+    fn with_b_loading() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(80, 12));
+        let (a, b) = (dir.path().join("a.fa"), dir.path().join("b.fa"));
+        fs::write(&a, TRIO).unwrap();
+        fs::write(&b, TRIO).unwrap();
+        open_file(&mut app, &a);
+        app.enqueue(Command::Open {
+            path: b,
+            kind: None,
+        });
+        app.pump();
+        assert!(app.busy.is_some());
+        (app, dir)
+    }
+
+    #[test]
+    fn a_queued_open_does_not_take_the_tab_from_a_pending_gesture() {
+        // A rename prompt started on a.fa renames a.fa.
+        let (mut app, _dir) = with_b_loading();
+        type_str(&mut app, "jjr");
+        settle(&mut app);
+        assert_eq!(app.session.datasets().len(), 2);
+        assert_eq!(app.active, 0, "the tab stays on a.fa");
+        for _ in 0.."s3 third one".len() {
+            app.handle_event(&press(KeyCode::Backspace));
+        }
+        type_str(&mut app, "renamed");
+        enter(&mut app);
+        assert_eq!(app.session.datasets()[0].msa().unwrap().name(2), "renamed");
+        assert_eq!(
+            app.session.datasets()[1].msa().unwrap().name(2),
+            "s3 third one"
+        );
+
+        // So does a fill waiting for its character.
+        let (mut app, _dir) = with_b_loading();
+        type_str(&mut app, "f");
+        settle(&mut app);
+        type_str(&mut app, "N");
+        settle(&mut app);
+        assert_eq!(app.active, 0);
+        assert!(app.session.datasets()[0].msa().unwrap().is_modified());
+        assert!(!app.session.datasets()[1].msa().unwrap().is_modified());
+
+        // With nothing pending, the newly opened file is shown, as before.
+        let (mut app, _dir) = with_b_loading();
+        settle(&mut app);
+        assert_eq!(app.active, 1);
+    }
+
     #[test]
     fn a_tab_chosen_during_an_extract_stays_chosen() {
         let (mut app, dir) = with_two_alignments();
@@ -2175,6 +2233,30 @@ mod tests {
     }
 
     #[test]
+    fn quitting_while_a_file_is_being_written_asks_first() {
+        let (mut app, dir) = with_trio();
+        let out = dir.path().join("o.fa");
+        type_str(&mut app, &format!(":msa extract --out {}", out.display()));
+        // Enter and `q` arrive in the same turn, before any thread starts.
+        app.handle_event(&press(KeyCode::Enter));
+        type_str(&mut app, "q");
+        assert!(!app.quit, "the write would be lost");
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Quit)));
+        assert_eq!(
+            crate::ui::bottom_text(&app),
+            "Still writing o.fa; quitting stops it. Quit anyway? (y/n)"
+        );
+        // The write ends while the question is still open.
+        settle(&mut app);
+        assert!(out.exists());
+        assert_eq!(crate::ui::bottom_text(&app), "Quit? (y/n)");
+        type_str(&mut app, "n");
+        // Once it has ended and nothing is unwritten, `q` just quits.
+        type_str(&mut app, "q");
+        assert!(app.quit);
+    }
+
+    #[test]
     fn quitting_and_closing_ask_when_edits_are_unwritten() {
         let (mut app, dir) = with_trio();
         type_str(&mut app, "q");
@@ -2578,6 +2660,49 @@ mod tests {
         app.resize(Size::new(80, 12));
         open_file(&mut app, &path);
         (app, dir)
+    }
+
+    #[test]
+    fn rescue_writes_the_file_on_screen() {
+        use seqpeeq_core::SessionLog;
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.fa"), dir.path().join("b.fa"));
+        fs::write(&a, TRIO).unwrap();
+        fs::write(&b, TRIO).unwrap();
+        // Edit a.fa, then open b.fa, which becomes current.
+        let script = |log: SessionLog| {
+            let mut app = App::new(Session::new(Some(log)));
+            app.resize(Size::new(80, 12));
+            open_file(&mut app, &a);
+            type_str(&mut app, "fT");
+            open_file(&mut app, &b);
+            app
+        };
+        let probe = dir.path().join("probe.log");
+        drop(script(SessionLog::new(probe.clone())));
+        let used = fs::metadata(&probe).unwrap().len() as usize;
+        let mut app = script(SessionLog::with_limit(dir.path().join("s.log"), used + 10));
+
+        // Back to a.fa; the `use 1` that `d` needs cannot be logged.
+        app.handle_event(&press(KeyCode::Tab));
+        type_str(&mut app, "d");
+        assert!(
+            app.status.contains("cannot write session log"),
+            "{}",
+            app.status
+        );
+        assert_eq!((app.active, app.session.current()), (0, Some(1)));
+
+        let out = dir.path().join("saved.fa");
+        type_str(&mut app, &format!(":rescue {}", out.display()));
+        enter(&mut app);
+        assert!(app.status.contains("from a.fa"), "{}", app.status);
+        assert!(
+            fs::read_to_string(&out)
+                .unwrap()
+                .starts_with(">s1\nTCGT-ACGTA\n"),
+            "the file on screen, with its edit"
+        );
     }
 
     #[test]

@@ -394,17 +394,20 @@ impl Session {
         self.log.as_ref().is_some_and(SessionLog::is_broken)
     }
 
-    /// Write the current alignment, whole, to a new file without logging.
+    /// Write the open alignment at `dataset` (its index among the open
+    /// files), whole, to a new file without logging.
     ///
     /// This exists so that work is not lost when the log can no longer be
     /// written (a full disk, a quota); it is refused while the log works.
-    pub fn rescue(&self, out: &Path) -> Result<Outcome> {
+    /// It takes the file explicitly because, with the log broken, `use N`
+    /// cannot be logged and so the current file can no longer change.
+    pub fn rescue(&self, dataset: usize, out: &Path) -> Result<Outcome> {
         if !self.log_failed() {
             return Err(Error::Invalid(
                 "the session log has not failed; use msa extract --out PATH".to_string(),
             ));
         }
-        let Some(dataset) = self.current.map(|index| &self.datasets[index]) else {
+        let Some(dataset) = self.datasets.get(dataset) else {
             return Err(Error::Invalid("no file is open".to_string()));
         };
         let Some(alignment) = dataset.msa() else {
@@ -417,8 +420,9 @@ impl Session {
         write::write_fasta(alignment.view(), &rows, None, None, out, &Progress::new())?;
         Ok(Outcome {
             message: format!(
-                "wrote {} ({}); not logged, because the session log could not be written",
+                "wrote {} from {} ({}); not logged, because the session log could not be written",
                 out.display(),
+                dataset.file_name(),
                 alignment.shape()
             ),
         })
@@ -1225,16 +1229,16 @@ mod tests {
         let out = dir.join("saved.fa");
         let mut session = Session::with_clock(Some(log_full_after_open(&file)), fixed);
         session.execute(open(&file)).unwrap();
-        assert_eq!(session.rescue(&out).unwrap_err().to_string(), WORKING);
+        assert_eq!(session.rescue(0, &out).unwrap_err().to_string(), WORKING);
         assert!(matches!(
             ex(&mut session, "msa delete-cols --cols 1"),
             Err(Error::Log { .. })
         ));
         assert!(session.log_failed());
         assert_eq!(
-            session.rescue(&out).unwrap().message,
+            session.rescue(0, &out).unwrap().message,
             format!(
-                "wrote {} (3 sequences x 10 columns); not logged, because the session log could not be written",
+                "wrote {} from a.fa (3 sequences x 10 columns); not logged, because the session log could not be written",
                 out.display()
             )
         );
@@ -1243,10 +1247,45 @@ mod tests {
             TRIO,
             "the refused edit was undone"
         );
-        assert!(matches!(session.rescue(&out), Err(Error::Exists(_))));
+        assert!(matches!(session.rescue(0, &out), Err(Error::Exists(_))));
 
         let no_log = Session::new(None);
-        assert_eq!(no_log.rescue(&out).unwrap_err().to_string(), WORKING);
+        assert_eq!(no_log.rescue(0, &out).unwrap_err().to_string(), WORKING);
+    }
+
+    #[test]
+    fn rescue_writes_the_file_it_is_given_not_the_current_one() {
+        let (_keep, dir) = trio_dir();
+        let (a, b) = (dir.join("a.fa"), dir.join("b.fa"));
+        let script = |s: &mut Session| {
+            s.execute(open(&a)).unwrap();
+            ex(s, "msa fill --rows 1 --cols 1 --with N").unwrap();
+            s.execute(open(&b)).unwrap();
+        };
+        let (log, buffer) = limited_log(100_000);
+        script(&mut Session::with_clock(Some(log), fixed));
+        let used = buffer.lock().unwrap().len();
+        let mut s = Session::with_clock(Some(limited_log(used + 10).0), fixed);
+        script(&mut s);
+        assert!(matches!(ex(&mut s, "use 1"), Err(Error::Log { .. })));
+        assert_eq!(s.current(), Some(1), "the session is stuck on b.fa");
+
+        let out = dir.join("saved.fa");
+        let message = s.rescue(0, &out).unwrap().message;
+        assert!(
+            message.starts_with(&format!("wrote {} from a.fa (", out.display())),
+            "{message}"
+        );
+        assert!(
+            fs::read_to_string(&out)
+                .unwrap()
+                .starts_with(">s1\nNCGT-ACGTA\n"),
+            "a.fa's edit is in the file"
+        );
+        assert_eq!(
+            s.rescue(5, &dir.join("x.fa")).unwrap_err().to_string(),
+            "no file is open"
+        );
     }
 
     #[test]

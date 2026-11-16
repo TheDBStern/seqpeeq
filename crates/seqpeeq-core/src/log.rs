@@ -273,8 +273,16 @@ pub(crate) mod tests {
     #[test]
     fn a_limited_log_refuses_writes_past_its_limit() {
         let dir = tempfile::tempdir().unwrap();
+        // The header names the working directory, so measure what one
+        // command takes rather than assuming a size.
+        let probe = dir.path().join("probe.log");
+        let mut log = SessionLog::new(probe.clone());
+        log.record("open a.fa", None, &fixed()).unwrap();
+        drop(log);
+        let used = std::fs::metadata(&probe).unwrap().len() as usize;
+
         let path = dir.path().join("s.log");
-        let mut log = SessionLog::with_limit(path.clone(), 200);
+        let mut log = SessionLog::with_limit(path.clone(), used + 50);
         log.record("open a.fa", None, &fixed()).unwrap();
         assert!(!log.is_broken());
         let long = "x".repeat(200);

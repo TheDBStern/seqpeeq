@@ -157,11 +157,17 @@ fn wrap_columns(text: &str, width: usize) -> Vec<String> {
 /// byte `cursor`, is on screen with one column to spare for itself: the
 /// text and the column the cursor is drawn in.
 fn window(text: &str, cursor: usize, width: usize) -> (&str, usize) {
-    let columns = |part: &str| part.width();
-    // Start as far left as still shows the cursor.
-    let mut start = 0;
-    while columns(&text[start..cursor]) + 1 > width && start < cursor {
-        start += text[start..].chars().next().map_or(1, char::len_utf8);
+    // Start as far left as still shows the cursor: walk back from it, so the
+    // cost follows the screen width, not the length of the line.
+    let mut start = cursor;
+    let mut before = 0;
+    for c in text[..cursor].chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if before + w + 1 > width {
+            break;
+        }
+        before += w;
+        start -= c.len_utf8();
     }
     let mut end = start;
     let mut used = 0;
@@ -172,7 +178,7 @@ fn window(text: &str, cursor: usize, width: usize) -> (&str, usize) {
         }
         end += c.len_utf8();
     }
-    (&text[start..end], columns(&text[start..cursor]))
+    (&text[start..end], before)
 }
 
 fn dim() -> Style {
@@ -334,12 +340,20 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
 
 /// What the bottom of the screen says when nothing is being typed there:
 /// the question being asked, or else the last outcome.
-fn bottom_text(app: &App) -> String {
+pub(crate) fn bottom_text(app: &App) -> String {
     let Mode::Confirm(confirm) = app.mode else {
         return app.status.clone();
     };
+    if let (Confirm::Quit, Some(busy)) = (confirm, &app.busy) {
+        return format!(
+            "Still {}; quitting stops it. Quit anyway? (y/n)",
+            busy.label
+        );
+    }
     let unwritten = app.unwritten();
     let subject = match (confirm, unwritten.as_slice()) {
+        // The job that prompted the question has ended meanwhile.
+        (Confirm::Quit, []) => return "Quit? (y/n)".to_string(),
         (Confirm::Quit, [name]) => format!("{name} has edits"),
         (Confirm::Quit, names) => format!("{} files have edits", names.len()),
         (Confirm::Close, _) => {
@@ -1045,6 +1059,31 @@ mod tests {
         for (width, height) in [(30, 8), (10, 3), (1, 1)] {
             render(&app, width, height);
         }
+    }
+
+    #[test]
+    fn a_long_prompt_line_shows_the_part_around_the_cursor() {
+        assert_eq!(window("abcdef", 6, 4), ("def", 3));
+        assert_eq!(window("abcdef", 2, 4), ("abcd", 2));
+        assert_eq!(window("abcdef", 6, 10), ("abcdef", 6));
+        assert_eq!(window("ab漢字", 8, 4), ("字", 2));
+        assert_eq!(window("abc", 3, 0), ("", 0));
+    }
+
+    #[test]
+    fn a_pasted_line_as_long_as_an_alignment_draws_at_once() {
+        let text = format!(
+            ":msa overwrite --row 1 --col 1 --seq {}",
+            "A".repeat(100_000)
+        );
+        let started = std::time::Instant::now();
+        let (visible, column) = window(&text, text.len(), 80);
+        assert_eq!((visible.len(), column), (79, 79));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
