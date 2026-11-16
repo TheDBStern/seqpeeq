@@ -16,7 +16,7 @@ pub use command::msa::{MsaCmd, RowSel};
 pub use command::{Command, Kind};
 pub use error::{Error, Result};
 pub use log::SessionLog;
-pub use msa::{Alignment, Alphabet, Conservation, View};
+pub use msa::{Alignment, Alphabet, Conservation, Shift, View};
 pub use progress::Progress;
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};

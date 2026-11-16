@@ -2,6 +2,7 @@
 
 pub(crate) mod conservation;
 pub(crate) mod layer;
+pub(crate) mod shift;
 pub(crate) mod source;
 pub(crate) mod write;
 
@@ -13,6 +14,7 @@ use std::sync::Arc;
 use regex::Regex;
 
 pub use conservation::Conservation;
+pub use shift::Shift;
 
 use crate::command::msa::{MsaCmd, RowSel};
 use crate::progress::Progress;
