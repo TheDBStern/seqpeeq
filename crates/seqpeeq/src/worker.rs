@@ -38,6 +38,15 @@ impl Worker {
                     dataset,
                     result: view.conservation(&progress),
                 },
+                Request::Summarise {
+                    dataset,
+                    view,
+                    conserved,
+                    progress,
+                } => Done::Summary {
+                    dataset,
+                    result: view.summary(&conserved, &progress),
+                },
             };
             // The receiver is gone only when the interface is closing.
             let _ = sender.send(done);
@@ -126,6 +135,39 @@ mod tests {
             panic!("a count was submitted")
         };
         assert_eq!((dataset, result.map(|found| found.cols())), (7, Some(4)));
+        worker.join();
+    }
+
+    #[test]
+    fn a_summary_runs_on_another_thread_and_comes_back() {
+        use seqpeeq_core::{Alignment, Progress};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.fa");
+        std::fs::write(&file, ">a\nACGT\n>b\nACGA\n").unwrap();
+        let alignment = Alignment::load(&file).unwrap();
+        let conserved = alignment.view().conservation(&Progress::new()).unwrap();
+        let mut worker = Worker::new();
+        worker.submit(Request::Summarise {
+            dataset: 7,
+            view: alignment.view().clone(),
+            conserved,
+            progress: Arc::new(Progress::new()),
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let done = loop {
+            if let Some(done) = worker.poll() {
+                break done;
+            }
+            assert!(Instant::now() < deadline, "the summary never came back");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let Done::Summary { dataset, result } = done else {
+            panic!("a summary was submitted")
+        };
+        let result = result.unwrap();
+        assert_eq!((dataset, result.rows(), result.cols()), (7, 2, 4));
+        assert_eq!(result.row(0).score(), Some(75), "a tie goes to A");
         worker.join();
     }
 }

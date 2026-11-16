@@ -293,6 +293,9 @@ pub fn info_text(app: &App) -> (String, String) {
     if let Some((_, _, progress)) = &app.counting {
         right.push(job_text("counting columns", progress.fraction()));
     }
+    if let Some((_, _, progress)) = &app.summarising {
+        right.push(job_text("summarising", progress.fraction()));
+    }
     if let Some((alignment, view)) = app.alignment()
         && view.zoom > 0
     {
@@ -639,6 +642,15 @@ mod tests {
                 } => {
                     let result = view.conservation(&progress);
                     app.handle_done(Done::Conservation { dataset, result });
+                }
+                Request::Summarise {
+                    dataset,
+                    view,
+                    conserved,
+                    progress,
+                } => {
+                    let result = view.summary(&conserved, &progress);
+                    app.handle_done(Done::Summary { dataset, result });
                 }
             }
         }
@@ -1116,9 +1128,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lines_holding_several_sequences_say_how_many() {
-        let tall: String = (0..40)
+    /// 40 sequences x 20 columns; the eighth is all T.
+    fn tall() -> String {
+        (0..40)
             .map(|i| {
                 let row = if i == 7 {
                     "TTTTTTTTTTTTTTTTTTTT"
@@ -1127,8 +1139,24 @@ mod tests {
                 };
                 format!(">n{i}\n{row}\n")
             })
-            .collect();
-        let (mut app, _dir) = with_text(&tall);
+            .collect()
+    }
+
+    #[test]
+    fn a_shrunk_line_shows_the_lowest_score_of_its_sequences() {
+        let (mut app, _dir) = with_text(&tall());
+        keys(&mut app, "z");
+        settle(&mut app);
+        let screen = rows(&render(&app, 80, 12));
+        let layout = overview_layout(&app);
+        let y = layout.cells.y as usize;
+        assert!(screen[y].contains(" 25%"), "{}", screen[y]);
+        assert!(screen[y + 1].contains("100%"), "{}", screen[y + 1]);
+    }
+
+    #[test]
+    fn lines_holding_several_sequences_say_how_many() {
+        let (mut app, _dir) = with_text(&tall());
         keys(&mut app, "z"); // no pump: no summary is asked for
         let screen = rows(&render(&app, 80, 12));
         let layout = overview_layout(&app);

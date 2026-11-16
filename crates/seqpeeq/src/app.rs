@@ -92,6 +92,15 @@ pub enum Request {
         view: View,
         progress: Arc<Progress>,
     },
+    /// Tally every row of one state of an alignment for the overview.
+    Summarise {
+        /// The [`Dataset::id`] of the alignment.
+        dataset: u64,
+        view: View,
+        /// The count of that state's columns.
+        conserved: Conservation,
+        progress: Arc<Progress>,
+    },
 }
 
 /// Work that a worker thread has finished.
@@ -101,6 +110,11 @@ pub enum Done {
     Conservation {
         dataset: u64,
         result: Option<Conservation>,
+    },
+    /// A summary for the overview; `None` if it was cancelled.
+    Summary {
+        dataset: u64,
+        result: Option<Summary>,
     },
 }
 
@@ -148,6 +162,11 @@ pub struct App {
     /// The count running in the background: the dataset, the revision
     /// being counted, and its progress.
     pub counting: Option<(u64, u64, Arc<Progress>)>,
+    /// The newest summary of each alignment, by [`Dataset::id`].
+    pub summaries: HashMap<u64, Summary>,
+    /// The summary being made in the background: the dataset, the
+    /// revision, and its progress.
+    pub summarising: Option<(u64, u64, Arc<Progress>)>,
     /// Lines entered on the command line.
     history: History,
     /// Whether the left button went down on the grid and is still held, so
@@ -172,6 +191,8 @@ impl App {
             inline_cells: INLINE_CELLS,
             conserved: HashMap::new(),
             counting: None,
+            summaries: HashMap::new(),
+            summarising: None,
             history: History::default(),
             dragging: false,
         }
@@ -198,6 +219,58 @@ impl App {
             self.report(ran, true);
         }
         self.refresh_conservation();
+        self.refresh_summary();
+    }
+
+    /// Make sure the visible alignment has, or is getting, a summary of the
+    /// state it is in, while its lines hold several sequences. It waits for
+    /// a count of exactly that state.
+    fn refresh_summary(&mut self) {
+        let Some(dataset) = self.session.datasets().get(self.active) else {
+            return;
+        };
+        let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
+            return;
+        };
+        if view.scale.rows <= 1 || !alignment.is_aligned() {
+            return;
+        }
+        let (id, revision) = (dataset.id, alignment.revision());
+        if self
+            .summaries
+            .get(&id)
+            .is_some_and(|summary| summary.revision() == revision)
+        {
+            return;
+        }
+        let Some(conserved) = self
+            .conserved
+            .get(&id)
+            .filter(|found| found.revision() == revision)
+        else {
+            return;
+        };
+        if alignment.rows().saturating_mul(alignment.cols()) <= self.inline_cells {
+            if let Some(summary) = alignment.view().summary(conserved, &Progress::new()) {
+                self.summaries.insert(id, summary);
+            }
+            return;
+        }
+        if let Some((summarising, of, progress)) = &self.summarising {
+            if (*summarising, *of) == (id, revision) {
+                return;
+            }
+            // A summary of a state that is no longer shown is wasted work.
+            progress.cancel();
+        }
+        let progress = Arc::new(Progress::new());
+        self.summarising = Some((id, revision, Arc::clone(&progress)));
+        self.outbox.push(Request::Summarise {
+            dataset: id,
+            view: alignment.view().clone(),
+            conserved: conserved.clone(),
+            progress,
+        });
     }
 
     /// Make sure the visible alignment has, or is getting, a count of its
@@ -255,9 +328,15 @@ impl App {
             .filter(|found| found.cols() == alignment.cols())
     }
 
-    /// The summary to draw lines of several sequences from: none yet.
+    /// The summary to draw the visible alignment's lines of several
+    /// sequences from: of the state shown, or of an earlier state of the
+    /// same shape, which is close enough to show while the new one is made.
     pub fn summary(&self) -> Option<&Summary> {
-        None
+        let dataset = self.session.datasets().get(self.active)?;
+        let alignment = dataset.msa()?;
+        self.summaries.get(&dataset.id).filter(|summary| {
+            summary.rows() == alignment.rows() && summary.cols() == alignment.cols()
+        })
     }
 
     /// The zoom levels for the visible alignment on this screen. Only the
@@ -371,6 +450,27 @@ impl App {
                     self.conserved.insert(dataset, found);
                 }
             }
+            Done::Summary { dataset, result } => {
+                let Some(summary) = result else {
+                    return;
+                };
+                if self
+                    .summarising
+                    .as_ref()
+                    .is_some_and(|(id, of, _)| (*id, *of) == (dataset, summary.revision()))
+                {
+                    self.summarising = None;
+                }
+                // Kept only if the alignment is still in the state summarised.
+                let datasets = self.session.datasets().iter();
+                let now = datasets
+                    .filter(|open| open.id == dataset)
+                    .find_map(Dataset::msa)
+                    .map(Alignment::revision);
+                if now == Some(summary.revision()) {
+                    self.summaries.insert(dataset, summary);
+                }
+            }
         }
     }
 
@@ -431,18 +531,21 @@ impl App {
         }
         self.views.retain(|id, _| open.contains(id));
         self.conserved.retain(|id, _| open.contains(id));
-        if let Some((id, _, progress)) = &self.counting
-            && !open.contains(id)
-        {
-            progress.cancel();
-            self.counting = None;
+        self.summaries.retain(|id, _| open.contains(id));
+        for job in [&mut self.counting, &mut self.summarising] {
+            if let Some((id, _, progress)) = job
+                && !open.contains(id)
+            {
+                progress.cancel();
+                *job = None;
+            }
         }
     }
 
     /// Background work is running, so the screen should be redrawn soon to
     /// show progress.
     pub fn wants_tick(&self) -> bool {
-        self.busy.is_some() || self.counting.is_some()
+        self.busy.is_some() || self.counting.is_some() || self.summarising.is_some()
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -1466,6 +1569,15 @@ mod tests {
                 } => {
                     let result = view.conservation(&progress);
                     app.handle_done(Done::Conservation { dataset, result });
+                }
+                Request::Summarise {
+                    dataset,
+                    view,
+                    conserved,
+                    progress,
+                } => {
+                    let result = view.summary(&conserved, &progress);
+                    app.handle_done(Done::Summary { dataset, result });
                 }
             }
         }
@@ -2668,6 +2780,84 @@ mod tests {
             row("AC--"),
             row("TTTT")
         )
+    }
+
+    /// 40 sequences x 20 columns: the columns fit; the rows do not.
+    fn tall() -> String {
+        (0..40)
+            .map(|i| {
+                let row = if i == 7 {
+                    "TTTTTTTTTTTTTTTTTTTT"
+                } else {
+                    "ACGTACGTACGTACGTACGT"
+                };
+                format!(">n{i}\n{row}\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_shrunk_line_shows_its_lowest_score_once_summarised() {
+        let (mut app, _dir) = with_text(&tall());
+        type_str(&mut app, "z");
+        settle(&mut app);
+        let summary = app.summary().expect("summarised at once: it is small");
+        assert_eq!(summary.row(7).score(), Some(25));
+        assert!(app.outbox.is_empty() && app.summarising.is_none());
+    }
+
+    #[test]
+    fn large_alignments_are_summarised_in_the_background_and_old_results_dropped() {
+        let (mut app, _dir) = with_text(&tall());
+        app.inline_cells = 0;
+        type_str(&mut app, "z");
+        settle(&mut app); // count, then summary, both through the outbox
+        assert!(app.summary().is_some() && app.summarising.is_none() && !app.wants_tick());
+        let first = app.summary().unwrap().revision();
+        type_str(&mut app, "fN"); // a new state of the same shape
+        assert!(app.summary().is_some(), "the old picture stays meanwhile");
+
+        // The count of the new state, then its summary, which comes back
+        // only after the alignment has moved on again.
+        app.pump();
+        let Some(Request::Conserve {
+            dataset,
+            view: counted,
+            progress,
+        }) = app.outbox.pop()
+        else {
+            panic!("a count was asked for")
+        };
+        let result = counted.conservation(&progress);
+        app.handle_done(Done::Conservation { dataset, result });
+        app.pump();
+        let Some(Request::Summarise {
+            dataset,
+            view,
+            conserved,
+            progress,
+        }) = app.outbox.pop()
+        else {
+            panic!("a summary was asked for")
+        };
+        assert!(app.wants_tick(), "a summary is running");
+        type_str(&mut app, "fA");
+        let stale = view.summary(&conserved, &progress);
+        let stale_revision = stale.as_ref().unwrap().revision();
+        app.handle_done(Done::Summary {
+            dataset,
+            result: stale,
+        });
+        let kept = app.summary().unwrap().revision();
+        assert_eq!(kept, first, "the stale summary is dropped");
+        assert_ne!(kept, stale_revision);
+
+        type_str(&mut app, "z:close");
+        enter(&mut app);
+        type_str(&mut app, "y");
+        settle(&mut app);
+        assert!(app.session.datasets().is_empty());
+        assert!(app.summaries.is_empty() && app.summarising.is_none());
     }
 
     #[test]
