@@ -10,7 +10,7 @@ use std::sync::Arc;
 use ratatui::layout::Size;
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
-    Started, View,
+    Started, Summary, View, summary_block,
 };
 
 use crate::line::{History, LineEdit};
@@ -19,6 +19,7 @@ use crate::msa_view::{
 };
 use crate::ui;
 use crate::ui::grid::{self, Hit};
+use crate::zoom::{self, Scale};
 
 pub enum Mode {
     Normal,
@@ -185,6 +186,7 @@ impl App {
     /// nothing is running.
     pub fn pump(&mut self) {
         self.sync_views();
+        self.rescale();
         while self.busy.is_none() {
             let Some(cmd) = self.queue.pop_front() else {
                 break;
@@ -207,7 +209,9 @@ impl App {
         let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
             return;
         };
-        if view.colouring != Colouring::Conserved || !alignment.is_aligned() {
+        // The overview's colours and scores need the count, whatever the
+        // grid's colouring.
+        if (view.colouring != Colouring::Conserved && view.zoom == 0) || !alignment.is_aligned() {
             return;
         }
         let (id, revision) = (dataset.id, alignment.revision());
@@ -249,6 +253,78 @@ impl App {
         self.conserved
             .get(&dataset.id)
             .filter(|found| found.cols() == alignment.cols())
+    }
+
+    /// The summary to draw lines of several sequences from: none yet.
+    pub fn summary(&self) -> Option<&Summary> {
+        None
+    }
+
+    /// The zoom levels for the visible alignment on this screen. Only the
+    /// grid when the alignment fits it whole, or is unaligned.
+    pub fn levels(&self) -> Vec<Scale> {
+        let (Some(aln), Some(grid), Some(overview)) = (
+            self.shape(),
+            ui::plain_shape(self),
+            ui::overview_shape(self),
+        ) else {
+            return vec![Scale::ONE];
+        };
+        let aligned = self
+            .alignment()
+            .is_some_and(|(alignment, _)| alignment.is_aligned());
+        let fits = aln.rows <= grid.rows && aln.cols <= grid.cols;
+        if !aligned || fits {
+            return vec![Scale::ONE];
+        }
+        zoom::levels(aln, overview, summary_block(aln.rows, aln.cols))
+    }
+
+    /// Keep the visible view's zoom level among the levels there are, and
+    /// its scale the level's.
+    fn rescale(&mut self) {
+        let levels = self.levels();
+        if let Some(view) = self.view_mut() {
+            view.zoom = view.zoom.min(levels.len() - 1);
+            let scale = levels[view.zoom];
+            if view.scale != scale {
+                view.scale = scale;
+                view.snap();
+            }
+        }
+    }
+
+    /// `-`, `+` and `z`: go to another zoom level, centred on the cursor.
+    fn zoom(&mut self, key: KeyCode) {
+        let Some((alignment, view)) = self.alignment() else {
+            return;
+        };
+        let zooming_out = matches!(key, KeyCode::Char('-' | 'z'));
+        if zooming_out && !alignment.is_aligned() {
+            self.status = "error: the overview needs sequences of one length".to_string();
+            return;
+        }
+        let last = self.levels().len() - 1;
+        if zooming_out && last == 0 {
+            self.status = "the whole alignment already fits on screen".to_string();
+            return;
+        }
+        let zoom = match key {
+            KeyCode::Char('-') => (view.zoom + 1).min(last),
+            KeyCode::Char('z') if view.zoom == 0 => last,
+            KeyCode::Char('z') => 0,
+            _ => view.zoom.saturating_sub(1),
+        };
+        if let Some(view) = self.view_mut() {
+            view.zoom = zoom;
+        }
+        self.rescale();
+        let (Some(aln), screen) = (self.shape(), self.screen_shape()) else {
+            return;
+        };
+        if let Some(view) = self.view_mut() {
+            view.centre(screen, aln);
+        }
     }
 
     /// Take in work a thread has finished.
@@ -332,6 +408,7 @@ impl App {
 
     /// Scroll the visible alignment just enough to show its cursor.
     fn reveal(&mut self) {
+        self.rescale();
         let screen = self.screen_shape();
         if let Some(view) = self.view_mut() {
             view.reveal(screen);
@@ -923,7 +1000,12 @@ impl App {
         let Some(aln) = self.shape() else {
             return;
         };
+        let zoomed = self.alignment().is_some_and(|(_, view)| view.zoom > 0);
         match key.code {
+            KeyCode::Char('i' | 'R' | 'r') if zoomed => {
+                return self.status = "zoom in to edit".to_string();
+            }
+            KeyCode::Char('-' | '+' | '=' | 'z') | KeyCode::Enter => return self.zoom(key.code),
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
             KeyCode::Char('i') => return self.start_typing(Typing::Insert),
             KeyCode::Char('R') => return self.start_typing(Typing::Replace),
@@ -1186,8 +1268,10 @@ impl App {
                 let column = x.clamp(cells.left(), cells.right() - 1) - cells.x;
                 let line = y.clamp(cells.top(), cells.bottom() - 1) - cells.y;
                 let to = Cell {
-                    row: (view.top + line as usize).min(aln.rows.saturating_sub(1)),
-                    col: (view.left + column as usize).min(aln.cols.saturating_sub(1)),
+                    row: (view.top + line as usize * view.scale.rows)
+                        .min(aln.rows.saturating_sub(1)),
+                    col: (view.left + column as usize * view.scale.cols)
+                        .min(aln.cols.saturating_sub(1)),
                 };
                 view.select.get_or_insert(Select {
                     kind,
@@ -1198,6 +1282,7 @@ impl App {
                     SelKind::Rows => view.cursor.row = to.row,
                     SelKind::Cols => view.cursor.col = to.col,
                 }
+                view.snap();
             }
             MouseEventKind::Up(MouseButton::Left) => dragging = false,
             _ => {}
@@ -2571,6 +2656,107 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "error: still busy: writing o.fa (Esc cancels)");
         settle(&mut app);
+    }
+
+    /// 4 sequences x 201 columns: does not fit 80 columns; the rows do.
+    fn wide() -> String {
+        let row = |unit: &str| unit.repeat(50) + "A";
+        format!(
+            ">a\n{}\n>b\n{}\n>c\n{}\n>d\n{}\n",
+            row("ACGT"),
+            row("ACGT"),
+            row("AC--"),
+            row("TTTT")
+        )
+    }
+
+    #[test]
+    fn minus_plus_and_z_step_through_the_levels() {
+        let (mut app, _dir) = with_text(&wide());
+        let levels = app.levels();
+        assert_eq!(levels.last(), Some(&Scale { rows: 1, cols: 8 }));
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, view(&app).scale),
+            (1, Scale { rows: 1, cols: 2 })
+        );
+        type_str(&mut app, "z");
+        assert_eq!(
+            view(&app).zoom,
+            0,
+            "from any overview level back to the grid"
+        );
+        type_str(&mut app, "z");
+        assert_eq!(view(&app).zoom, levels.len() - 1);
+        type_str(&mut app, "-");
+        assert_eq!(view(&app).zoom, levels.len() - 1, "no further out");
+        type_str(&mut app, "+");
+        assert_eq!(view(&app).zoom, levels.len() - 2);
+        app.handle_event(&press(KeyCode::Enter));
+        assert_eq!(view(&app).zoom, levels.len() - 3);
+        type_str(&mut app, "=");
+        assert_eq!(view(&app).zoom, levels.len() - 4);
+        type_str(&mut app, "+");
+        assert_eq!((view(&app).zoom, view(&app).scale), (0, Scale::ONE));
+    }
+
+    #[test]
+    fn a_file_that_fits_or_is_unaligned_has_no_overview() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, app.status.as_str()),
+            (0, "the whole alignment already fits on screen")
+        );
+        let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
+        type_str(&mut app, "z");
+        assert_eq!(
+            app.status,
+            "error: the overview needs sequences of one length"
+        );
+    }
+
+    #[test]
+    fn editing_keys_are_refused_in_the_overview() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-");
+        for key in ["i", "R", "r"] {
+            app.status.clear();
+            type_str(&mut app, key);
+            assert!(matches!(app.mode, Mode::Normal), "{key}");
+            assert_eq!(app.status, "zoom in to edit", "{key}");
+        }
+    }
+
+    #[test]
+    fn a_selection_in_the_overview_names_real_columns() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-Cld"); // two blocks of 2 columns
+        assert_eq!(last(&app), "msa delete-cols --cols 1-4");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "Cd"); // the last block holds one column
+        assert_eq!(last(&app), "msa delete-cols --cols 197");
+    }
+
+    #[test]
+    fn the_level_follows_the_screen_and_the_alignment() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "z");
+        app.resize(Size::new(400, 40));
+        assert_eq!(
+            (view(&app).zoom, view(&app).scale),
+            (0, Scale::ONE),
+            "it all fits now"
+        );
+        app.resize(Size::new(80, 12));
+        type_str(&mut app, "z:msa delete-cols --cols 50-201");
+        enter(&mut app);
+        assert_eq!(view(&app).zoom, 0, "49 columns fit the grid");
+        assert!(view(&app).cursor.col < 49);
+        for (w, h) in [(5, 3), (1, 1), (0, 0)] {
+            app.resize(Size::new(w, h));
+            type_str(&mut app, "-z+");
+        }
     }
 
     #[test]

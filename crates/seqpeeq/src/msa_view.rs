@@ -254,7 +254,6 @@ pub struct MsaView {
     /// The last search of the names.
     pub search: Option<Search>,
     /// The zoom level, an index into the app's levels; 0 is the grid.
-    #[allow(dead_code)] // Read by the overview, next.
     pub zoom: usize,
     /// Sequences per line and columns per cell at that level, set by the
     /// app. [`Scale::ONE`] in the grid.
@@ -398,7 +397,6 @@ impl MsaView {
 
     /// Scroll so that the cursor's block is in the middle of a screen of
     /// `screen` lines and cells, as far as the edges allow.
-    #[allow(dead_code)] // Used by the overview's keys, next.
     pub fn centre(&mut self, screen: Shape, aln: Shape) {
         let middle = |at: usize, shown: usize, total: usize, per: usize| {
             let most = total.div_ceil(per).saturating_sub(shown);

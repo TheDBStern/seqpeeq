@@ -20,7 +20,6 @@ impl Scale {
 /// doubling, until they all fit; then rows, until they all fit too, with
 /// at least `block` columns per cell (the summary's block, which lines of
 /// several sequences are drawn from).
-#[allow(dead_code)] // Used by the overview, next.
 pub fn levels(aln: Shape, screen: Shape, block: usize) -> Vec<Scale> {
     let mut levels = vec![Scale::ONE];
     if screen.rows == 0 || screen.cols == 0 {
