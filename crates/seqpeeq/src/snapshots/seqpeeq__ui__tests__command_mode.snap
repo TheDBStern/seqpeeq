@@ -1,16 +1,17 @@
 ---
 source: crates/seqpeeq/src/ui.rs
+assertion_line: 475
 expression: terminal.backend()
 ---
 " aln.fa                                                     "
-"                                                            "
-" tests/data/aln.fa                                          "
-" 2 sequences x 8 columns                                    "
-" nucleotide                                                 "
-"                                                            "
+"                           1                                "
+"1 seq1                     ACGTACGT                         "
+"2 seq2                     ACGTAC-T                         "
 "                                                            "
 "                                                            "
 "                                                            "
 "                                                            "
 "                                                            "
+"                                                            "
+"row 1/2 · col 1/8 · A                                       "
 ":open x                                                     "

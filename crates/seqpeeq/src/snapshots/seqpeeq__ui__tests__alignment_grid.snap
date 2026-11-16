@@ -1,0 +1,14 @@
+---
+source: crates/seqpeeq/src/ui.rs
+assertion_line: 594
+expression: "render(&app, 70, 9).backend()"
+---
+" grid.fa                                                              "
+"                           1        10        20        30        40  "
+"1 Homo_sapiens_A1          ACGTTGCA--ACGTAGCTAGCATCGNTCGATCGTAGCTAGCTA"
+"2 Pan_troglodytes_A1       ACGTTGCA--ACGTAGCTAGCATCGATCGATCGTAGCTAGCTA"
+"3 Gorilla_gorilla_gorilla… ACGTTGGA--ACGTAGCTAGCATCGATCGATCGTAGCTAGCTA"
+"4 Pongo_abelii_A1          ACGATGCA--ACGTAGCTAGCATCGATCGATCGTAGCTTGCTA"
+"5 Macaca_mulatta_A1        ACGTTGCACAACGTAGCTAGCATCGATCGATCGTAGCTAGCTA"
+"row 1/5 · col 1/60 · A                                                "
+"opened tests/data/grid.fa (msa, 5 sequences x 60 columns)             "

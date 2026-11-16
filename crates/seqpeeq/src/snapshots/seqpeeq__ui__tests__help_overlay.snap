@@ -1,16 +1,17 @@
 ---
 source: crates/seqpeeq/src/ui.rs
+assertion_line: 486
 expression: "render(&app, 60, 12).backend()"
 ---
 " aln.fa                                                     "
-"                                                            "
-" tests/data/aln.fa ┌help───────────────┐                    "
-" 2 sequences x 8 co│ :    command line │                    "
-" nucleotide        │ Tab  next tab     │                    "
+"                           1                                "
+"1 seq1             ┌help───────────────┐                    "
+"2 seq2             │ :    command line │                    "
+"                   │ Tab  next tab     │                    "
 "                   │ L    toggle log   │                    "
 "                   │ ?    help         │                    "
 "                   │ q    quit         │                    "
 "                   └───────────────────┘                    "
 "                                                            "
-"                                                            "
+"row 1/2 · col 1/8 · A                                       "
 "opened tests/data/aln.fa (msa, 2 sequences x 8 columns)     "

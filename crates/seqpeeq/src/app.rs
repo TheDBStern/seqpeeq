@@ -3,14 +3,15 @@
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::layout::Size;
-use seqpeeq_core::{Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
+use seqpeeq_core::{Alignment, Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
 
 use crate::line::{History, LineEdit};
+use crate::msa_view::{MsaView, Shape, parse_goto};
 use crate::ui;
 
 pub enum Mode {
@@ -29,6 +30,8 @@ pub struct Prompt {
 pub enum PromptKind {
     /// The `:` command line.
     Command,
+    /// Where to move the cursor: a column, or a row and a column.
+    Goto,
 }
 
 impl PromptKind {
@@ -36,6 +39,7 @@ impl PromptKind {
     pub fn lead(&self) -> &'static str {
         match self {
             PromptKind::Command => ":",
+            PromptKind::Goto => "go to: ",
         }
     }
 }
@@ -80,6 +84,10 @@ pub struct App {
     pub queue: VecDeque<Command>,
     /// The size of the terminal.
     pub screen: Size,
+    /// Where the user is in each open alignment, by [`Dataset::id`].
+    ///
+    /// [`Dataset::id`]: seqpeeq_core::Dataset::id
+    pub views: HashMap<u64, MsaView>,
     /// Lines entered on the command line.
     history: History,
 }
@@ -97,6 +105,7 @@ impl App {
             outbox: Vec::new(),
             queue: VecDeque::new(),
             screen: Size::new(80, 24),
+            views: HashMap::new(),
             history: History::default(),
         }
     }
@@ -109,6 +118,7 @@ impl App {
     /// Called once per turn of the event loop: start queued commands while
     /// nothing is running.
     pub fn pump(&mut self) {
+        self.sync_views();
         while self.busy.is_none() {
             let Some(cmd) = self.queue.pop_front() else {
                 break;
@@ -141,7 +151,63 @@ impl App {
     }
 
     pub fn resize(&mut self, size: Size) {
-        self.screen = size;
+        if size != self.screen {
+            self.screen = size;
+            self.reveal();
+        }
+    }
+
+    /// The alignment on the visible tab and where the user is in it.
+    pub fn alignment(&self) -> Option<(&Alignment, &MsaView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        Some((dataset.msa()?, self.views.get(&dataset.id)?))
+    }
+
+    /// The size of the alignment on the visible tab.
+    fn shape(&self) -> Option<Shape> {
+        let (alignment, _) = self.alignment()?;
+        Some(Shape {
+            rows: alignment.rows(),
+            cols: alignment.cols(),
+        })
+    }
+
+    fn view_mut(&mut self) -> Option<&mut MsaView> {
+        let dataset = self.session.datasets().get(self.active)?;
+        self.views.get_mut(&dataset.id)
+    }
+
+    /// How many rows and columns of residues are on screen.
+    fn screen_shape(&self) -> Shape {
+        match ui::grid_of(self) {
+            Some(layout) => ui::grid::screen_shape(&layout),
+            None => Shape { rows: 0, cols: 0 },
+        }
+    }
+
+    /// Scroll the visible alignment just enough to show its cursor.
+    fn reveal(&mut self) {
+        let screen = self.screen_shape();
+        if let Some(view) = self.view_mut() {
+            view.reveal(screen);
+        }
+    }
+
+    /// Keep one view per open alignment, each inside its alignment: files
+    /// are opened and closed, and edits can shrink what a view points into.
+    fn sync_views(&mut self) {
+        let mut open = Vec::new();
+        for dataset in self.session.datasets() {
+            if let Some(alignment) = dataset.msa() {
+                let view = self.views.entry(dataset.id).or_insert_with(MsaView::new);
+                view.clamp(Shape {
+                    rows: alignment.rows(),
+                    cols: alignment.cols(),
+                });
+                open.push(dataset.id);
+            }
+        }
+        self.views.retain(|id, _| open.contains(id));
     }
 
     /// Background work is running, so the screen should be redrawn soon to
@@ -167,6 +233,7 @@ impl App {
         if !(queued && self.status.starts_with("error:")) {
             self.status = text;
         }
+        self.sync_views();
     }
 
     pub fn handle_event(&mut self, event: &Event) {
@@ -174,6 +241,7 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             Event::Paste(text) => self.handle_paste(text),
+            Event::Resize(width, height) => self.resize(Size::new(*width, *height)),
             _ => {}
         }
     }
@@ -199,7 +267,7 @@ impl App {
                 KeyCode::Char('L') => self.show_log = !self.show_log,
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
-                _ => {}
+                _ => self.grid_key(key),
             },
             Mode::Prompt(prompt) => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -226,6 +294,95 @@ impl App {
                 }
             },
             Mode::Help => self.mode = Mode::Normal,
+        }
+    }
+
+    /// A key that acts on the alignment on the visible tab.
+    fn grid_key(&mut self, key: &KeyEvent) {
+        let Some(aln) = self.shape() else {
+            return;
+        };
+        if key.code == KeyCode::Char('g') {
+            self.open_prompt(PromptKind::Goto, "");
+            return;
+        }
+        let page = self.screen_shape().rows.max(1) as isize;
+        let Some(view) = self.view_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') => view.move_by(0, -1, aln),
+            KeyCode::Right | KeyCode::Char('l') => view.move_by(0, 1, aln),
+            KeyCode::Up | KeyCode::Char('k') => view.move_by(-1, 0, aln),
+            KeyCode::Down | KeyCode::Char('j') => view.move_by(1, 0, aln),
+            KeyCode::PageUp => view.move_by(-page, 0, aln),
+            KeyCode::PageDown => view.move_by(page, 0, aln),
+            KeyCode::Home => view.move_to(None, Some(0), aln),
+            KeyCode::End => view.move_to(None, Some(usize::MAX), aln),
+            KeyCode::Char('c') => view.cycle_colouring(),
+            KeyCode::Char('[') => view.widen_names(-1),
+            KeyCode::Char(']') => view.widen_names(1),
+            _ => return,
+        }
+        self.reveal();
+    }
+
+    /// Move the cursor to what was typed at the go-to prompt.
+    fn go_to(&mut self, text: &str) {
+        let Some(aln) = self.shape() else {
+            return;
+        };
+        let target = parse_goto(text).and_then(|(row, col)| {
+            if let Some(row) = row.filter(|&row| row >= aln.rows) {
+                return Err(format!(
+                    "row {} is past the last row ({})",
+                    row + 1,
+                    aln.rows
+                ));
+            }
+            if let Some(col) = col.filter(|&col| col >= aln.cols) {
+                return Err(format!(
+                    "column {} is past the last column ({})",
+                    col + 1,
+                    aln.cols
+                ));
+            }
+            Ok((row, col))
+        });
+        match target {
+            Ok((row, col)) => {
+                if let Some(view) = self.view_mut() {
+                    view.move_to(row, col, aln);
+                }
+                self.reveal();
+            }
+            Err(message) => self.status = format!("error: {message}"),
+        }
+    }
+
+    /// Scroll the alignment under the mouse wheel. The cursor stays put.
+    fn wheel(&mut self, mouse: &MouseEvent) {
+        const ROWS: isize = 3;
+        const COLS: isize = 10;
+        // Few terminals report sideways scrolling; many pass on the wheel
+        // with Shift or Alt held instead.
+        let sideways = mouse
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        let (rows, cols) = match mouse.kind {
+            MouseEventKind::ScrollUp if sideways => (0, -COLS),
+            MouseEventKind::ScrollDown if sideways => (0, COLS),
+            MouseEventKind::ScrollUp => (-ROWS, 0),
+            MouseEventKind::ScrollDown => (ROWS, 0),
+            MouseEventKind::ScrollLeft => (0, -COLS),
+            MouseEventKind::ScrollRight => (0, COLS),
+            _ => return,
+        };
+        let (Some(aln), screen) = (self.shape(), self.screen_shape()) else {
+            return;
+        };
+        if let Some(view) = self.view_mut() {
+            view.scroll(rows, cols, aln, screen);
         }
     }
 
@@ -262,10 +419,15 @@ impl App {
                 self.history.push(prompt.line.text());
                 self.run_line(prompt.line.text());
             }
+            PromptKind::Goto => self.go_to(prompt.line.text()),
         }
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        self.wheel(mouse);
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         if left_click && mouse.row == 0 && matches!(self.mode, Mode::Normal) {
             let ranges = ui::tab_ranges(&ui::tab_titles(self));
@@ -280,6 +442,7 @@ impl App {
         let count = self.session.datasets().len() as isize;
         if count > 0 {
             self.active = (self.active as isize + step).rem_euclid(count) as usize;
+            self.reveal();
         }
     }
 
@@ -838,5 +1001,144 @@ mod tests {
         settle(&mut app);
         assert!(app.status.starts_with("wrote "), "{}", app.status);
         assert_eq!(app.active, 0);
+    }
+
+    use crate::msa_view::{Cell, Colouring, MsaView};
+    use crate::ui::grid::{GridLayout, cursor_position};
+    use ratatui::layout::Size;
+
+    /// An app showing the 5 x 60 fixture on a 70 x 9 screen.
+    fn with_grid() -> App {
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(70, 9));
+        app.enqueue(Command::Open {
+            path: "tests/data/grid.fa".into(),
+            kind: None,
+        });
+        settle(&mut app);
+        app
+    }
+
+    /// The view of the alignment on the visible tab.
+    fn view(app: &App) -> &MsaView {
+        app.alignment().expect("an alignment is shown").1
+    }
+
+    fn active_layout(app: &App) -> GridLayout {
+        ui::grid_of(app).expect("an alignment is shown")
+    }
+
+    fn wheel(kind: MouseEventKind, modifiers: KeyModifiers) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 30,
+            row: 3,
+            modifiers,
+        })
+    }
+
+    #[test]
+    fn keys_move_the_cursor_and_the_screen_follows() {
+        let mut app = with_grid();
+        for c in "lllj".chars() {
+            app.handle_event(&key(c));
+        }
+        assert_eq!(view(&app).cursor, Cell { row: 1, col: 3 });
+        app.handle_event(&key('h'));
+        app.handle_event(&key('k'));
+        app.handle_event(&press(KeyCode::Right));
+        app.handle_event(&press(KeyCode::Down));
+        assert_eq!(view(&app).cursor, Cell { row: 1, col: 3 });
+        app.handle_event(&press(KeyCode::End));
+        assert_eq!(view(&app).cursor.col, 59);
+        assert_eq!(
+            view(&app).left,
+            17,
+            "43 columns fit; the last one is on screen"
+        );
+        app.handle_event(&press(KeyCode::Home));
+        assert_eq!((view(&app).cursor.col, view(&app).left), (0, 0));
+        app.handle_event(&press(KeyCode::PageDown));
+        assert_eq!(view(&app).cursor.row, 4, "stops at the last row");
+        app.handle_event(&press(KeyCode::PageUp));
+        assert_eq!(view(&app).cursor.row, 0);
+    }
+
+    #[test]
+    fn go_to_moves_or_explains() {
+        let mut app = with_grid();
+        type_str(&mut app, "g3,50");
+        enter(&mut app);
+        assert_eq!(view(&app).cursor, Cell { row: 2, col: 49 });
+        assert_eq!(view(&app).left, 7);
+        for (typed, status) in [
+            ("g99,1", "error: row 99 is past the last row (5)"),
+            ("g999", "error: column 999 is past the last column (60)"),
+            (
+                "gx",
+                "error: go to: give a column (27), a row and column (12,27) or a row (12,)",
+            ),
+        ] {
+            type_str(&mut app, typed);
+            enter(&mut app);
+            assert_eq!(app.status, status);
+            assert_eq!(view(&app).cursor, Cell { row: 2, col: 49 });
+        }
+        assert_eq!(app.session.history().len(), 1, "moving is not logged");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_and_view_keys_change_only_the_view() {
+        let mut app = with_grid();
+        app.handle_event(&wheel(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert_eq!((view(&app).left, view(&app).cursor.col), (10, 0));
+        app.handle_event(&wheel(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
+        assert_eq!(view(&app).left, 0);
+        app.handle_event(&wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert_eq!(
+            view(&app).top,
+            0,
+            "five rows fit, so there is nothing to scroll"
+        );
+        app.handle_event(&key(']'));
+        app.handle_event(&key('c'));
+        assert_eq!(
+            (view(&app).name_width, view(&app).colouring),
+            (28, Colouring::Residue)
+        );
+        assert_eq!(app.session.history().len(), 1);
+    }
+
+    #[test]
+    fn each_file_keeps_its_own_place_and_closing_forgets_it() {
+        let (mut app, _dir) = with_two_alignments();
+        app.handle_event(&key('l'));
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(view(&app).cursor, Cell::default());
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(view(&app).cursor, Cell { row: 0, col: 1 });
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        assert_eq!(app.views.len(), 1);
+        assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn shrinking_the_terminal_keeps_the_cursor_on_screen() {
+        let mut app = with_grid();
+        app.handle_event(&press(KeyCode::End));
+        app.handle_event(&Event::Resize(40, 6));
+        let l = active_layout(&app);
+        assert!(cursor_position(&l, view(&app)).is_some());
+    }
+
+    #[test]
+    fn grid_keys_are_harmless_without_an_alignment() {
+        let (mut app, ..) = setup();
+        for c in "hjklgc[]".chars() {
+            app.handle_event(&key(c));
+        }
+        app.handle_event(&wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal) && !app.quit);
     }
 }

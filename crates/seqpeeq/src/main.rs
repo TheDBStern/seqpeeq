@@ -2,6 +2,8 @@
 
 mod app;
 mod line;
+mod msa_view;
+mod palette;
 mod term;
 mod ui;
 mod worker;

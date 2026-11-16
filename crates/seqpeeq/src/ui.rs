@@ -1,5 +1,7 @@
 //! Drawing. Reads the [`App`](crate::app::App) state and never changes it.
 
+pub mod grid;
+
 use std::ops::Range;
 
 use ratatui::Frame;
@@ -7,10 +9,12 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
-use seqpeeq_core::Alphabet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::msa_view::Cell;
+
 use crate::app::{App, Mode};
+use grid::GridLayout;
 
 /// Rows the log pane takes when shown, borders included.
 const LOG_HEIGHT: u16 = 6;
@@ -18,59 +22,115 @@ const LOG_HEIGHT: u16 = 6;
 /// The most rows a long status message may take at the bottom.
 const MAX_STATUS_ROWS: u16 = 4;
 
-/// Draw the whole interface for the current state.
+/// Where each part of the screen goes. A part that is not shown has no
+/// height.
+#[derive(Debug, Clone, Copy)]
+pub struct Regions {
+    pub tabs: Rect,
+    /// The alignment grid, or what stands in for it.
+    pub body: Rect,
+    pub log: Rect,
+    /// One row saying where the cursor is and what is going on.
+    pub info: Rect,
+    /// The status message, or the line being typed.
+    pub bottom: Rect,
+}
+
+/// Lay the screen out for the current state. Drawing and mouse handling
+/// both use this, so they cannot disagree.
 ///
 /// Rows are handed out by priority, so a small terminal drops pieces instead
 /// of overlapping them: bottom line first, then the tab bar, then the body,
-/// and the log pane only when the body keeps at least one row. A status
-/// message too long for one row wraps onto up to [`MAX_STATUS_ROWS`], because
-/// the end of an error message is where the remedy is.
+/// then the information row, and the log pane only when the body still
+/// keeps a row. A status message too long for one row wraps onto up to
+/// [`MAX_STATUS_ROWS`], because the end of an error message is where the
+/// remedy is.
+pub fn regions(app: &App, area: Rect) -> Regions {
+    let none = Rect { height: 0, ..area };
+    let mut regions = Regions {
+        tabs: none,
+        body: none,
+        log: none,
+        info: none,
+        bottom: none,
+    };
+    if area.is_empty() {
+        return regions;
+    }
+    let status_rows = match app.mode {
+        Mode::Prompt(_) => 1,
+        _ => wrap_columns(&app.status, area.width as usize).len() as u16,
+    };
+    let bottom = status_rows
+        .clamp(1, MAX_STATUS_ROWS)
+        .min(area.height.saturating_sub(2).max(1));
+    regions.bottom = Rect {
+        y: area.bottom() - bottom,
+        height: bottom,
+        ..area
+    };
+    if area.height > bottom {
+        regions.tabs = Rect { height: 1, ..area };
+    }
+    if area.height > bottom + 1 {
+        let middle = Rect {
+            y: area.y + 1,
+            height: area.height - 1 - bottom,
+            ..area
+        };
+        let wanted = app.busy.is_some() || app.alignment().is_some();
+        let info = u16::from(wanted && middle.height >= 3);
+        let log = if app.show_log && middle.height - info > LOG_HEIGHT {
+            LOG_HEIGHT
+        } else {
+            0
+        };
+        regions.body = Rect {
+            height: middle.height - info - log,
+            ..middle
+        };
+        regions.log = Rect {
+            y: regions.body.bottom(),
+            height: log,
+            ..middle
+        };
+        regions.info = Rect {
+            y: regions.log.bottom(),
+            height: info,
+            ..middle
+        };
+    }
+    regions
+}
+
+/// The layout of the grid of the alignment on the visible tab, on a screen
+/// of the size the app was last told of.
+pub fn grid_of(app: &App) -> Option<GridLayout> {
+    let (alignment, view) = app.alignment()?;
+    let area = Rect::new(0, 0, app.screen.width, app.screen.height);
+    let body = regions(app, area).body;
+    Some(grid::grid_layout(body, alignment.rows(), view.name_width))
+}
+
+/// Draw the whole interface for the current state.
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if area.is_empty() {
         return;
     }
-    let status = match app.mode {
-        Mode::Prompt(_) => Vec::new(),
-        _ => wrap_columns(&app.status, area.width as usize),
-    };
-    let bottom_height = (status.len() as u16)
-        .clamp(1, MAX_STATUS_ROWS)
-        .min(area.height.saturating_sub(2).max(1));
-    let bottom = Rect {
-        y: area.bottom() - bottom_height,
-        height: bottom_height,
-        ..area
-    };
-    draw_bottom(frame, app, &status, bottom);
-
-    if area.height > bottom_height {
-        draw_tabs(frame, app, Rect { height: 1, ..area });
+    let regions = regions(app, area);
+    draw_bottom(frame, app, regions.bottom);
+    if !regions.tabs.is_empty() {
+        draw_tabs(frame, app, regions.tabs);
     }
-    if area.height > bottom_height + 1 {
-        let middle = Rect {
-            y: area.y + 1,
-            height: area.height - 1 - bottom_height,
-            ..area
-        };
-        let log_height = if app.show_log && middle.height > LOG_HEIGHT {
-            LOG_HEIGHT
-        } else {
-            0
-        };
-        let body = Rect {
-            height: middle.height - log_height,
-            ..middle
-        };
-        draw_body(frame, app, body);
-        if log_height > 0 {
-            let log = Rect {
-                y: body.bottom(),
-                height: log_height,
-                ..middle
-            };
-            draw_log(frame, app, log);
-        }
+    if !regions.body.is_empty() {
+        draw_body(frame, app, regions.body);
+    }
+    if !regions.log.is_empty() {
+        draw_log(frame, app, regions.log);
+    }
+    if !regions.info.is_empty() {
+        draw_info(frame, app, regions.info);
     }
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
@@ -141,34 +201,90 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some((alignment, view)) = app.alignment() {
+        grid::draw_grid(frame, alignment, view, area);
+        // The terminal's own cursor marks the cursor cell.
+        let layout = grid::grid_layout(area, alignment.rows(), view.name_width);
+        if matches!(app.mode, Mode::Normal)
+            && let Some(position) = grid::cursor_position(&layout, view)
+        {
+            frame.set_cursor_position(position);
+        }
+        return;
+    }
     let lines = match app.session.datasets().get(app.active) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
         )],
-        Some(dataset) => {
-            let path = Line::from(dataset.path.display().to_string());
-            match dataset.msa() {
-                Some(alignment) => vec![
-                    path,
-                    Line::from(alignment.shape()),
-                    Line::styled(
-                        match alignment.alphabet() {
-                            Alphabet::Nucleotide => "nucleotide",
-                            Alphabet::Protein => "protein",
-                        },
-                        dim(),
-                    ),
-                ],
-                None => vec![
-                    path,
-                    Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
-                    Line::styled("viewer not built yet", dim()),
-                ],
-            }
-        }
+        Some(dataset) => vec![
+            Line::from(dataset.path.display().to_string()),
+            Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
+            Line::styled("viewer not built yet", dim()),
+        ],
     };
     let block = Block::new().padding(Padding::new(1, 1, 1, 0));
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The two halves of the information row: where the cursor is, on the
+/// left; what is going on, on the right.
+pub fn info_text(app: &App) -> (String, String) {
+    let mut left = String::new();
+    let mut right = Vec::new();
+    if let Some(busy) = &app.busy {
+        right.push(job_text(&busy.label, busy.progress.fraction()));
+    }
+    if let Some((alignment, view)) = app.alignment() {
+        let Cell { row, col } = view.cursor;
+        left = format!(
+            "row {}/{} · col {}/{}",
+            row + 1,
+            alignment.rows(),
+            col + 1,
+            alignment.cols()
+        );
+        let mut residue = Vec::new();
+        if row < alignment.rows() {
+            alignment.residues(row, col..col + 1, &mut residue);
+        }
+        if let Some(&residue) = residue.first() {
+            let shown = if residue.is_ascii_graphic() {
+                residue as char
+            } else {
+                '?'
+            };
+            left.push_str(&format!(" · {shown}"));
+        }
+        if alignment.is_modified() {
+            right.push("unsaved".to_string());
+        }
+    }
+    (left, right.join(" · "))
+}
+
+/// `opening big.fa 42%`, or the label alone while the total is not known.
+pub fn job_text(label: &str, fraction: Option<f64>) -> String {
+    match fraction {
+        Some(fraction) => format!("{label} {:.0}%", (fraction * 100.0).floor()),
+        None => label.to_string(),
+    }
+}
+
+fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
+    let (left, right) = info_text(app);
+    frame.render_widget(Paragraph::new(left), area);
+    if right.is_empty() {
+        return;
+    }
+    // The right half wins where the two would meet.
+    let width = (right.width() as u16 + 1).min(area.width);
+    let at = Rect {
+        x: area.right() - width,
+        width,
+        ..area
+    };
+    frame.render_widget(Clear, at);
+    frame.render_widget(Paragraph::new(format!(" {right}")).style(dim()), at);
 }
 
 fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
@@ -187,7 +303,7 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
+fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
     if let Mode::Prompt(prompt) = &app.mode {
         // Show the part of a long line where the typing happens.
         let lead = prompt.kind.lead();
@@ -198,6 +314,7 @@ fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
         frame.set_cursor_position(Position::new(area.x + column as u16, area.y));
         return;
     }
+    let status = wrap_columns(&app.status, area.width as usize);
     let shown = status.len().min(area.height as usize);
     let mut lines: Vec<String> = status[..shown].to_vec();
     if shown < status.len()
@@ -213,28 +330,6 @@ fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
     };
     let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
     frame.render_widget(Paragraph::new(lines).style(style), area);
-
-    // What is running in the background, at the right of the first row.
-    if let Some(busy) = &app.busy {
-        let text = job_text(&busy.label, busy.progress.fraction());
-        let width = (text.width() as u16 + 1).min(area.width);
-        let right = Rect {
-            x: area.right() - width,
-            width,
-            height: 1,
-            ..area
-        };
-        frame.render_widget(Clear, right);
-        frame.render_widget(Paragraph::new(format!(" {text}")).style(dim()), right);
-    }
-}
-
-/// `opening big.fa 42%`, or the label alone while the total is not known.
-pub fn job_text(label: &str, fraction: Option<f64>) -> String {
-    match fraction {
-        Some(fraction) => format!("{label} {:.0}%", (fraction * 100.0).floor()),
-        None => label.to_string(),
-    }
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
@@ -299,8 +394,10 @@ pub fn tab_ranges(titles: &[String]) -> Vec<Range<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Mode, Prompt, PromptKind};
+    use crate::app::{Done, Mode, Prompt, PromptKind, Request};
     use crate::line::LineEdit;
+    use crate::msa_view::{Cell, Colouring};
+    use crate::ui::grid::grid_layout;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -325,16 +422,36 @@ mod tests {
         terminal
     }
 
-    /// An app with the fixture alignment open. The path is relative (tests run
-    /// in the crate directory), so snapshots hold no machine-specific text.
-    fn with_dataset() -> App {
+    /// Do, on this thread, the work the loop would hand to worker threads.
+    fn settle(app: &mut App) {
+        loop {
+            app.pump();
+            let Some(request) = app.outbox.pop() else {
+                break;
+            };
+            match request {
+                Request::Run(job) => app.handle_done(Done::Command(job.run())),
+            }
+        }
+    }
+
+    /// An app with one file open.
+    fn with_file(path: &str) -> App {
         let mut app = App::new(Session::new(None));
-        let open = Command::Open {
-            path: "tests/data/aln.fa".into(),
+        app.enqueue(Command::Open {
+            path: path.into(),
             kind: None,
-        };
-        app.status = app.session.execute(open).unwrap().message;
+        });
+        settle(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
         app
+    }
+
+    /// An app with the small fixture alignment open. The path is relative
+    /// (tests run in the crate directory), so snapshots hold no
+    /// machine-specific text.
+    fn with_dataset() -> App {
+        with_file("tests/data/aln.fa")
     }
 
     #[test]
@@ -395,10 +512,11 @@ mod tests {
             bottom.starts_with("error: cannot write") && bottom.ends_with("or --no-log"),
             "{screen:#?}"
         );
-        assert_eq!(
-            screen[4], " nucleotide",
-            "the body keeps its rows above the status"
+        assert!(
+            screen[5].starts_with("row 1/2 · col 1/8"),
+            "the information row stays above the status: {screen:#?}"
         );
+        assert!(screen[2].contains("seq1"), "{screen:#?}");
     }
 
     #[test]
@@ -433,38 +551,17 @@ mod tests {
                 render(&app, width, height);
             }
         }
+        let mut app = with_file("tests/data/grid.fa");
+        app.show_log = true;
+        for (width, height) in [(1, 1), (5, 3), (20, 3), (2, 40), (27, 4), (28, 2), (60, 7)] {
+            render(&app, width, height);
+        }
     }
 
     #[test]
     fn tab_ranges_count_wide_characters_by_display_width() {
         // Two double-width characters: 4 columns of title plus the two spaces.
         assert_eq!(tab_ranges(&["配列".to_string()])[0], 0..6);
-    }
-
-    #[test]
-    fn alignment_body_shows_shape_and_alphabet() {
-        let mut app = with_dataset();
-        let screen = rows(&render(&app, 60, 8));
-        let at = screen
-            .iter()
-            .position(|row| row.contains("2 sequences x 8 columns") && !row.contains("opened"))
-            .expect("the body states the shape");
-        assert!(screen[at + 1].contains("nucleotide"), "{screen:?}");
-        assert!(
-            !screen
-                .iter()
-                .any(|row| row.contains("viewer not built yet"))
-        );
-
-        let cut = Command::parse_line("msa delete-cols --cols 1-3").unwrap();
-        app.session.execute(cut).unwrap();
-        let screen = rows(&render(&app, 60, 8));
-        assert!(
-            screen
-                .iter()
-                .any(|row| row.contains("2 sequences x 5 columns")),
-            "{screen:?}"
-        );
     }
 
     #[test]
@@ -489,5 +586,151 @@ mod tests {
         let x = narrow.get_cursor_position().unwrap().x;
         assert!(x < 6);
         assert!(rows(&narrow)[3].contains("en"), "{:?}", rows(&narrow));
+    }
+
+    #[test]
+    fn alignment_grid() {
+        let app = with_file("tests/data/grid.fa");
+        insta::assert_snapshot!(render(&app, 70, 9).backend());
+    }
+
+    #[test]
+    fn the_grid_shows_ruler_numbers_names_and_residues() {
+        let app = with_file("tests/data/grid.fa");
+        let screen = rows(&render(&app, 70, 9));
+        assert_eq!(
+            screen[1],
+            format!("{:27}1        10        20        30        40", "")
+        );
+        // Number, name padded to 24 columns, then the 43 residues that fit.
+        assert_eq!(
+            screen[2],
+            format!(
+                "1 {:24} {}",
+                "Homo_sapiens_A1", "ACGTTGCA--ACGTAGCTAGCATCGNTCGATCGTAGCTAGCTA"
+            )
+        );
+        assert!(
+            screen[4].starts_with("3 Gorilla_gorilla_gorilla… ACGTTGGA--"),
+            "{}",
+            screen[4]
+        );
+        assert_eq!(screen[7], "row 1/5 · col 1/60 · A");
+    }
+
+    fn view_mut(app: &mut App) -> &mut crate::msa_view::MsaView {
+        let id = app.session.datasets()[0].id;
+        app.views.get_mut(&id).unwrap()
+    }
+
+    #[test]
+    fn the_ruler_and_cells_scroll_together() {
+        let mut app = with_file("tests/data/grid.fa");
+        view_mut(&mut app).left = 5;
+        let screen = rows(&render(&app, 70, 9));
+        assert_eq!(&screen[1][27..33], "    10");
+        assert_eq!(&screen[2][27..37], "GCA--ACGTA");
+    }
+
+    #[test]
+    fn residues_are_coloured_by_what_they_are() {
+        let mut app = with_file("tests/data/grid.fa");
+        view_mut(&mut app).colouring = Colouring::Residue;
+        let terminal = render(&app, 70, 9);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(27, 2)].bg, Color::Indexed(71), "A");
+        assert_eq!(buffer[(28, 2)].bg, Color::Indexed(68), "C");
+        assert_eq!(buffer[(29, 2)].bg, Color::Indexed(178), "G");
+        assert_eq!(buffer[(30, 2)].bg, Color::Indexed(167), "T");
+        assert_eq!(buffer[(35, 2)].bg, Color::Reset, "a gap has no background");
+        view_mut(&mut app).colouring = Colouring::Plain;
+        let terminal = render(&app, 70, 9);
+        assert_eq!(terminal.backend().buffer()[(27, 2)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn the_terminal_cursor_sits_on_the_cursor_cell() {
+        let mut app = with_file("tests/data/grid.fa");
+        view_mut(&mut app).cursor = Cell { row: 2, col: 4 };
+        let mut terminal = render(&app, 70, 9);
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(31, 4)
+        );
+    }
+
+    #[test]
+    fn odd_bytes_take_one_cell_each_and_names_are_cut_by_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("odd.fa");
+        // A name of double-width characters, a tab in a name, a non-ASCII
+        // byte in a sequence.
+        std::fs::write(
+            &path,
+            b">\xe9\x85\x8d\xe5\x88\x97\xe9\x85\x8d\xe5\x88\x97\nAC\xffT\n>a\tb\nACGT\n",
+        )
+        .unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.status.clear(); // a temp path would wrap the status line
+        view_mut(&mut app).name_width = 4;
+        let terminal = render(&app, 40, 6);
+        let l = grid_layout(regions(&app, Rect::new(0, 0, 40, 6)).body, 2, 4);
+        let buffer = terminal.backend().buffer();
+        let cells = |row: u16| -> String {
+            (0..4)
+                .map(|i| buffer[(l.cells.x + i, l.cells.y + row)].symbol())
+                .collect()
+        };
+        // Both rows start their residues in the same screen column.
+        assert_eq!(
+            (cells(0), cells(1)),
+            ("AC?T".to_string(), "ACGT".to_string())
+        );
+        assert_eq!(buffer[(l.names.x, l.names.y)].symbol(), "配");
+        assert!(
+            (0..l.names.width).any(|i| buffer[(l.names.x + i, l.names.y)].symbol() == "…"),
+            "a name too wide for its column is cut with an ellipsis"
+        );
+        assert!(
+            rows(&terminal)[3].starts_with("2 a b "),
+            "a tab in a name is drawn as a space"
+        );
+    }
+
+    #[test]
+    fn short_rows_end_where_they_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ragged.fa");
+        std::fs::write(&path, ">a\nAC\n>b\nACGT\n").unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.status.clear();
+        view_mut(&mut app).cursor = Cell { row: 0, col: 3 };
+        let screen = rows(&render(&app, 40, 6));
+        assert!(
+            screen[2].ends_with(" AC") && screen[3].ends_with(" ACGT"),
+            "{screen:#?}"
+        );
+        assert_eq!(screen[4], "row 1/2 · col 4/4");
+    }
+
+    #[test]
+    fn the_information_row_reports_running_work_and_unwritten_edits() {
+        let mut app = with_file("tests/data/grid.fa");
+        let edit = Command::parse_line("msa delete-cols --cols 1").unwrap();
+        app.session.execute(edit).unwrap();
+        assert_eq!(info_text(&app).1, "unsaved");
+        // A job on a tab that is not an alignment still gets its row.
+        let mut app = App::new(Session::new(None));
+        app.enqueue(Command::Open {
+            path: "tests/data/grid.fa".into(),
+            kind: None,
+        });
+        app.pump();
+        assert_eq!(
+            info_text(&app),
+            (String::new(), "opening grid.fa".to_string())
+        );
+        let screen = rows(&render(&app, 60, 8));
+        assert!(screen[6].ends_with("opening grid.fa"), "{screen:#?}");
     }
 }
