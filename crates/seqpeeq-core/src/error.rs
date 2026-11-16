@@ -43,6 +43,10 @@ pub enum Error {
     #[error("command contains a line break, NUL or non-UTF-8 text and cannot be logged")]
     Unloggable,
 
+    /// Slow work was stopped at the user's request. Nothing was changed.
+    #[error("cancelled")]
+    Cancelled,
+
     #[error("line {line}: {cause}")]
     Replay { line: usize, cause: Box<Error> },
 }

@@ -13,6 +13,7 @@ use flate2::read::MultiGzDecoder;
 use memchr::{memchr, memchr3};
 use memmap2::Mmap;
 
+use crate::progress::Progress;
 use crate::{Error, Result};
 
 /// The file's contents: mapped from disk, or held in memory when the file
@@ -71,7 +72,9 @@ impl std::fmt::Debug for Source {
 }
 
 impl Source {
-    pub(crate) fn load(path: &Path) -> Result<Source> {
+    /// Read and index a file. `progress` counts the bytes indexed and is
+    /// checked for a request to stop.
+    pub(crate) fn load(path: &Path, progress: &Progress) -> Result<Source> {
         let io = |cause| Error::Io {
             path: path.to_path_buf(),
             cause,
@@ -83,42 +86,54 @@ impl Source {
         }
         if meta.len() == 0 {
             // An empty file cannot be mapped on every platform.
-            return Source::from_bytes(Bytes::Memory(Vec::new()), path);
+            return Source::from_bytes(Bytes::Memory(Vec::new()), path, progress);
         }
         // SAFETY: the mapping is only read. If another program truncates or
         // rewrites the file while it is open, reads may see changed data or
         // the process may be stopped by the system; seqpeeq itself never
         // writes to an input file.
         let map = unsafe { Mmap::map(&file) }.map_err(io)?;
-        Source::from_bytes(Bytes::Mapped(map), path)
+        Source::from_bytes(Bytes::Mapped(map), path, progress)
     }
 
     /// As [`Source::load`] for contents already in memory. `path` is used
     /// only in error messages.
     #[cfg(test)]
     pub(crate) fn from_vec(bytes: Vec<u8>, path: &Path) -> Result<Source> {
-        Source::from_bytes(Bytes::Memory(bytes), path)
+        Source::from_bytes(Bytes::Memory(bytes), path, &Progress::new())
     }
 
-    fn from_bytes(bytes: Bytes, path: &Path) -> Result<Source> {
+    fn from_bytes(bytes: Bytes, path: &Path, progress: &Progress) -> Result<Source> {
         // Gzip is recognised by its first two bytes, not by the file name.
         // bgzip writes many gzip members one after another, so all are read.
         let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
+            let mut decoder = MultiGzDecoder::new(&bytes[..]);
             let mut plain = Vec::new();
-            MultiGzDecoder::new(&bytes[..])
-                .read_to_end(&mut plain)
-                .map_err(|cause| Error::Io {
+            let mut chunk = vec![0; 1 << 20];
+            loop {
+                if progress.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                let read = decoder.read(&mut chunk).map_err(|cause| Error::Io {
                     path: path.to_path_buf(),
                     cause,
                 })?;
+                if read == 0 {
+                    break;
+                }
+                plain.extend_from_slice(&chunk[..read]);
+            }
             Bytes::Memory(plain)
         } else {
             bytes
         };
-        let (records, copied) = index(&bytes).map_err(|message| Error::Format {
+        let indexed = index(&bytes, progress).map_err(|message| Error::Format {
             path: path.to_path_buf(),
             message,
         })?;
+        let Some((records, copied)) = indexed else {
+            return Err(Error::Cancelled);
+        };
         let mut source = Source {
             bytes,
             records,
@@ -224,8 +239,15 @@ fn line_end(data: &[u8], from: usize) -> (usize, usize) {
     }
 }
 
-/// Find every record. Errors are messages for [`Error::Format`].
-fn index(data: &[u8]) -> std::result::Result<(Vec<Record>, Vec<Vec<u8>>), String> {
+type Indexed = (Vec<Record>, Vec<Vec<u8>>);
+
+/// Find every record. Errors are messages for [`Error::Format`]; `None`
+/// means the work was cancelled through `progress`, which counts bytes.
+fn index(data: &[u8], progress: &Progress) -> std::result::Result<Option<Indexed>, String> {
+    if progress.is_cancelled() {
+        return Ok(None);
+    }
+    progress.set_total(data.len() as u64);
     // A byte-order mark, as some Windows editors write, is not part of the
     // first line. Offsets stay absolute, so reads in place are unaffected.
     let mut pos = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -254,7 +276,12 @@ fn index(data: &[u8]) -> std::result::Result<(Vec<Record>, Vec<Vec<u8>>), String
 
     let mut records = Vec::new();
     let mut copied = Vec::new();
+    progress.add(pos as u64);
     while pos < data.len() {
+        if progress.is_cancelled() {
+            return Ok(None);
+        }
+        let record_start = pos;
         // `pos` is at the `>` of a header line.
         let (header_end, seq_start) = line_end(data, pos);
         let name_start = pos + 1;
@@ -335,8 +362,9 @@ fn index(data: &[u8]) -> std::result::Result<(Vec<Record>, Vec<Vec<u8>>), String
             name: name_start..name_start + name_len,
             seq,
         });
+        progress.add((pos - record_start) as u64);
     }
-    Ok((records, copied))
+    Ok(Some((records, copied)))
 }
 
 #[cfg(test)]
@@ -344,6 +372,7 @@ mod tests {
     use super::*;
     use crate::Error;
     use crate::msa::testing::TRIO;
+    use crate::progress::Progress;
     use std::io::Write;
 
     fn src(text: &str) -> Source {
@@ -438,7 +467,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("no-gz-in-the-name.fa");
             std::fs::write(&path, bytes).unwrap();
-            let s = Source::load(&path).unwrap();
+            let s = Source::load(&path, &Progress::new()).unwrap();
             assert_eq!(
                 (s.rows(), read(&s, 2, 0..10)),
                 (3, "AC--TACGTA".to_string())
@@ -451,7 +480,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.fa");
         std::fs::write(&path, TRIO).unwrap();
-        let s = Source::load(&path).unwrap();
+        let s = Source::load(&path, &Progress::new()).unwrap();
         assert_eq!(read(&s, 1, 0..10), "ACGTTACG-A");
     }
 
@@ -474,12 +503,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("e.fa"), "").unwrap();
         assert!(
-            Source::load(&dir.path().join("e.fa"))
+            Source::load(&dir.path().join("e.fa"), &Progress::new())
                 .unwrap_err()
                 .to_string()
                 .ends_with("no sequences found")
         );
-        assert!(matches!(Source::load(dir.path()), Err(Error::Io { .. })));
+        assert!(matches!(
+            Source::load(dir.path(), &Progress::new()),
+            Err(Error::Io { .. })
+        ));
     }
 
     #[test]
@@ -505,5 +537,39 @@ mod tests {
             check_size(most + 1, 5).unwrap_err(),
             "4294967296 sequences are more than seqpeeq can handle (4294967295)"
         );
+    }
+
+    #[test]
+    fn loading_stops_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("a.fa", TRIO.as_bytes().to_vec()),
+            ("a.fa.gz", gz(TRIO.as_bytes())),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let stop = Progress::new();
+            stop.cancel();
+            assert!(
+                matches!(Source::load(&path, &stop), Err(Error::Cancelled)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn loading_reports_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("a.fa", TRIO.as_bytes().to_vec()),
+            ("a.fa.gz", gz(TRIO.as_bytes())),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let progress = Progress::new();
+            assert_eq!(progress.fraction(), None);
+            Source::load(&path, &progress).unwrap();
+            assert_eq!(progress.fraction(), Some(1.0), "{name}");
+        }
     }
 }

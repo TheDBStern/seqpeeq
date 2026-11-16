@@ -15,6 +15,7 @@ use regex::Regex;
 pub use conservation::Conservation;
 
 use crate::command::msa::{MsaCmd, RowSel};
+use crate::progress::Progress;
 use crate::ranges::Ranges;
 use crate::{Error, Result};
 use layer::Layer;
@@ -176,7 +177,13 @@ impl Alignment {
     /// Open a FASTA file. Plain files are read in place; gzip is decompressed
     /// into memory.
     pub fn load(path: &Path) -> Result<Alignment> {
-        Ok(Alignment::new(Source::load(path)?))
+        Alignment::load_with(path, &Progress::new())
+    }
+
+    /// As [`Alignment::load`], reporting how far it has got and stopping
+    /// with [`Error::Cancelled`] if `progress` is cancelled.
+    pub fn load_with(path: &Path, progress: &Progress) -> Result<Alignment> {
+        Ok(Alignment::new(Source::load(path, progress)?))
     }
 
     fn new(source: Source) -> Alignment {
@@ -308,7 +315,9 @@ impl Alignment {
                 cols,
                 wrap,
                 out,
-            } => self.extract(rows, cols.as_ref(), *wrap, out),
+            } => self
+                .plan_extract(rows, cols.as_ref(), *wrap, out)?
+                .run(&Progress::new()),
         }
     }
 
@@ -590,15 +599,26 @@ impl Alignment {
     }
 }
 
+/// An `msa extract` that has been checked and is ready to write: the slow
+/// part of the command, separate from the alignment it came from.
+pub(crate) struct Extraction {
+    view: View,
+    rows: Vec<usize>,
+    cols: Option<Ranges>,
+    wrap: Option<usize>,
+    out: PathBuf,
+}
+
 impl Alignment {
-    /// Write to a new file. Changes nothing in the alignment or its history.
-    fn extract(
+    /// Check an extract and capture the state it will write. Changes
+    /// nothing in the alignment or its history.
+    pub(crate) fn plan_extract(
         &self,
         sel: &RowSel,
         cols: Option<&Ranges>,
         wrap: Option<usize>,
         out: &Path,
-    ) -> Result<Applied> {
+    ) -> Result<Extraction> {
         if wrap == Some(0) {
             return invalid("--wrap must be at least 1");
         }
@@ -606,11 +626,30 @@ impl Alignment {
         if let Some(cols) = cols {
             self.check_cols(cols)?;
         }
-        let size = write::write_fasta(&self.view, &rows, cols, wrap, out)?;
-        let sequences = count(rows.len(), "sequence");
+        Ok(Extraction {
+            view: self.view.clone(),
+            rows,
+            cols: cols.cloned(),
+            wrap,
+            out: out.to_path_buf(),
+        })
+    }
+}
+
+impl Extraction {
+    pub(crate) fn out(&self) -> &Path {
+        &self.out
+    }
+
+    /// Write the file.
+    pub(crate) fn run(&self, progress: &Progress) -> Result<Applied> {
+        let (view, out) = (&self.view, &self.out);
+        let cols = self.cols.as_ref();
+        let size = write::write_fasta(view, &self.rows, cols, self.wrap, out, progress)?;
+        let sequences = count(self.rows.len(), "sequence");
         let shape = match cols {
             Some(cols) => format!("{sequences} x {}", count(cols.count(), "column")),
-            None if self.is_aligned() => format!("{sequences} x {}", count(self.cols(), "column")),
+            None if view.is_aligned() => format!("{sequences} x {}", count(view.cols(), "column")),
             None => sequences,
         };
         // The full path, so the log says where the file went whatever the

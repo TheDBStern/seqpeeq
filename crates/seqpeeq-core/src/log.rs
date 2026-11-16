@@ -89,6 +89,11 @@ impl SessionLog {
         &self.path
     }
 
+    /// Whether a write has failed, so that nothing more can be recorded.
+    pub(crate) fn is_broken(&self) -> bool {
+        self.broken
+    }
+
     /// Create the file and write its header. Does nothing once the file is
     /// open; fails if an earlier write failed.
     pub fn ensure_open(&mut self, now: &Zoned) -> Result<()> {

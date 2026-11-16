@@ -20,4 +20,4 @@ pub use msa::{Alignment, Alphabet, Conservation, View};
 pub use progress::Progress;
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
-pub use session::{Content, Dataset, Outcome, Session};
+pub use session::{Content, Dataset, Finished, Job, Outcome, Session, Started, check_input};

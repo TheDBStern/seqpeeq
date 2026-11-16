@@ -8,6 +8,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use super::View;
+use crate::progress::Progress;
 use crate::ranges::Ranges;
 use crate::{Error, Result};
 
@@ -17,17 +18,31 @@ use crate::{Error, Result};
 ///
 /// An existing file is an error, never replaced. A name ending in `.gz` is
 /// written gzip-compressed.
+///
+/// `progress` counts rows written. If it is cancelled the result is
+/// [`Error::Cancelled`] and no file is left behind.
 pub(crate) fn write_fasta(
     aln: &View,
     rows: &[usize],
     cols: Option<&Ranges>,
     wrap: Option<usize>,
     out: &Path,
+    progress: &Progress,
 ) -> Result<u64> {
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    progress.set_total(rows.len() as u64);
     let gzip = out
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
-    create_then(out, |file| write_records(aln, rows, cols, wrap, file, gzip))
+    let written = create_then(out, |file| {
+        write_records(aln, rows, cols, wrap, file, gzip, progress)
+    });
+    match written {
+        Err(Error::Io { .. }) if progress.is_cancelled() => Err(Error::Cancelled),
+        other => other,
+    }
 }
 
 /// Create `out` as a new file with the contents `fill` writes. Returns its
@@ -96,6 +111,7 @@ fn write_records(
     wrap: Option<usize>,
     file: File,
     gzip: bool,
+    progress: &Progress,
 ) -> io::Result<()> {
     let mut buffered = BufWriter::with_capacity(1 << 20, file);
     // Each writer is finished by hand: dropping one would hide a failure to
@@ -104,10 +120,10 @@ fn write_records(
         // The default header holds no file name and no time, so the same
         // content always compresses to the same bytes.
         let mut encoder = GzEncoder::new(buffered, Compression::default());
-        records(aln, rows, cols, wrap, &mut encoder)?;
+        records(aln, rows, cols, wrap, &mut encoder, progress)?;
         encoder.finish()?.flush()
     } else {
-        records(aln, rows, cols, wrap, &mut buffered)?;
+        records(aln, rows, cols, wrap, &mut buffered, progress)?;
         buffered.flush()
     }
 }
@@ -118,9 +134,13 @@ fn records(
     cols: Option<&Ranges>,
     wrap: Option<usize>,
     out: &mut impl Write,
+    progress: &Progress,
 ) -> io::Result<()> {
     let mut residues = Vec::new();
     for &row in rows {
+        if progress.is_cancelled() {
+            return Err(io::Error::other("cancelled"));
+        }
         out.write_all(b">")?;
         out.write_all(aln.name(row).as_bytes())?;
         out.write_all(b"\n")?;
@@ -145,6 +165,7 @@ fn records(
                 out.write_all(b"\n")?;
             }
         }
+        progress.add(1);
     }
     Ok(())
 }

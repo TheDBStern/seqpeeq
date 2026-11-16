@@ -1,12 +1,14 @@
 //! A session: the open datasets, and the one place commands are executed.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
 use crate::log::stamp;
 use crate::msa::layer::Layer;
-use crate::msa::{Alignment, Applied};
+use crate::msa::{Alignment, Applied, Extraction, write};
+use crate::progress::Progress;
 use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog};
 
 /// What an open file holds.
@@ -43,10 +45,71 @@ impl Dataset {
 
     /// The file's name without its directory, for messages.
     fn file_name(&self) -> String {
-        match self.path.file_name() {
-            Some(name) => name.to_string_lossy().into_owned(),
-            None => self.path.display().to_string(),
-        }
+        file_name(&self.path)
+    }
+}
+
+/// A path's last part, for messages.
+fn file_name(path: &Path) -> String {
+    match path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => path.display().to_string(),
+    }
+}
+
+/// What kind of file `path` is, or why it cannot be opened: a kind that
+/// cannot be told from the name comes first, then a file that cannot be read.
+pub fn check_input(path: &Path, kind: Option<Kind>) -> Result<Kind> {
+    let kind = kind
+        .or_else(|| Kind::from_path(path))
+        .ok_or_else(|| Error::UnknownKind(path.to_path_buf()))?;
+    std::fs::metadata(path).map_err(|cause| Error::Io {
+        path: path.to_path_buf(),
+        cause,
+    })?;
+    Ok(kind)
+}
+
+/// What is known about a file before it is read.
+struct Input {
+    path: PathBuf,
+    kind: Kind,
+    size: u64,
+    /// The comment written to the log after the `open`.
+    note: String,
+}
+
+impl Input {
+    fn check(path: &Path, kind: Option<Kind>, now: &Zoned) -> Result<Input> {
+        let kind = check_input(path, kind)?;
+        let io = |cause| Error::Io {
+            path: path.to_path_buf(),
+            cause,
+        };
+        let meta = std::fs::metadata(path).map_err(io)?;
+        let absolute = std::fs::canonicalize(path).map_err(io)?;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| Timestamp::try_from(t).ok())
+            .map(|t| stamp(&t.to_zoned(now.time_zone().clone())))
+            .unwrap_or_else(|| "unknown".to_string());
+        let size = meta.len();
+        Ok(Input {
+            path: path.to_path_buf(),
+            kind,
+            size,
+            note: format!("input {} size={size} mtime={modified}", absolute.display()),
+        })
+    }
+
+    /// The message for a file that was opened and holds `holds`.
+    fn opened(&self, holds: &str) -> String {
+        format!(
+            "opened {} ({}, {holds})",
+            self.path.display(),
+            self.kind.as_str()
+        )
     }
 }
 
@@ -56,12 +119,93 @@ pub struct Outcome {
     pub message: String,
 }
 
+/// What [`Session::start`] did with a command.
+pub enum Started {
+    /// A quick command: carried out and recorded.
+    Done(Outcome),
+    /// A slow command: checked, with its slow part still to run.
+    Running(Job),
+}
+
+/// The slow part of a command. It holds no reference to the session, so it
+/// can run on another thread while the session stays where it is. Nothing
+/// in the session changes until the result is passed to [`Session::finish`].
+pub struct Job {
+    label: String,
+    line: String,
+    progress: Arc<Progress>,
+    // Boxed so that a job is small to pass around, whatever it carries.
+    work: Box<Work>,
+}
+
+enum Work {
+    Open(Input),
+    Extract {
+        /// The id of the dataset being written.
+        dataset: u64,
+        extraction: Extraction,
+    },
+}
+
+impl Job {
+    /// What is being done, such as `opening a.fa`.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// How far the work has got, and the way to cancel it.
+    pub fn progress(&self) -> Arc<Progress> {
+        Arc::clone(&self.progress)
+    }
+
+    /// Do the work.
+    pub fn run(self) -> Finished {
+        let result = match *self.work {
+            Work::Open(input) => {
+                Alignment::load_with(&input.path, &self.progress).map(|alignment| Product::Opened {
+                    input,
+                    alignment: Box::new(alignment),
+                })
+            }
+            Work::Extract {
+                dataset,
+                extraction,
+            } => extraction
+                .run(&self.progress)
+                .map(|applied| Product::Wrote { dataset, applied }),
+        };
+        Finished {
+            line: self.line,
+            result,
+        }
+    }
+}
+
+/// The result of a [`Job`], to be handed back to the session.
+pub struct Finished {
+    line: String,
+    result: Result<Product>,
+}
+
+enum Product {
+    Opened {
+        input: Input,
+        alignment: Box<Alignment>,
+    },
+    Wrote {
+        dataset: u64,
+        applied: Applied,
+    },
+}
+
 pub struct Session {
     datasets: Vec<Dataset>,
     /// The dataset that data commands apply to.
     current: Option<usize>,
     /// The id the next opened file will get.
     next_id: u64,
+    /// The label of the job handed out and not yet finished.
+    busy: Option<String>,
     history: Vec<String>,
     log: Option<SessionLog>,
     clock: fn() -> Zoned,
@@ -88,17 +232,34 @@ impl Session {
             datasets: Vec::new(),
             current: None,
             next_id: 1,
+            busy: None,
             history: Vec::new(),
             log,
             clock,
         }
     }
 
-    /// Run a command and, if it succeeds, record it.
-    ///
-    /// The log is opened before the command is applied, so a session that
-    /// cannot be logged refuses the command instead of changing state silently.
+    /// Run a command to its end and, if it succeeds, record it.
     pub fn execute(&mut self, cmd: Command) -> Result<Outcome> {
+        match self.start(cmd)? {
+            Started::Done(outcome) => Ok(outcome),
+            Started::Running(job) => self.finish(job.run()),
+        }
+    }
+
+    /// Begin a command. A quick one is carried out and recorded at once. A
+    /// slow one (opening an alignment, writing a file) is checked and
+    /// returned as a [`Job`]; until that job's result is passed to
+    /// [`Session::finish`] the session accepts no other command, so the log
+    /// stays in the order things happened.
+    ///
+    /// The log is opened before anything is applied, so a session that
+    /// cannot be logged refuses the command instead of changing state
+    /// silently.
+    pub fn start(&mut self, cmd: Command) -> Result<Started> {
+        if let Some(label) = &self.busy {
+            return Err(Error::Invalid(format!("still busy: {label}")));
+        }
         let line = cmd.to_line()?;
         // The log is replayed from this text, so it must mean this command.
         if Command::parse_line(&line).ok().as_ref() != Some(&cmd) {
@@ -110,8 +271,41 @@ impl Session {
         if let Some(log) = &mut self.log {
             log.ensure_open(&now)?;
         }
+
+        let cmd = match cmd {
+            Command::Open { path, kind } => {
+                let input = Input::check(&path, kind, &now)?;
+                if input.kind == Kind::Msa {
+                    let label = format!("opening {}", file_name(&input.path));
+                    return Ok(self.hand_out(label, line, Work::Open(input)));
+                }
+                // No viewer yet, so there is nothing slow to read.
+                let message = input.opened(&format!("{} bytes", input.size));
+                return self
+                    .record_open(&line, input, Content::Unloaded, message, &now)
+                    .map(Started::Done);
+            }
+            Command::Msa(MsaCmd::Extract {
+                rows,
+                cols,
+                wrap,
+                out,
+            }) => {
+                let extraction =
+                    self.current_alignment()?
+                        .plan_extract(&rows, cols.as_ref(), wrap, &out)?;
+                let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let label = format!("writing {}", file_name(extraction.out()));
+                let work = Work::Extract {
+                    dataset,
+                    extraction,
+                };
+                return Ok(self.hand_out(label, line, work));
+            }
+            quick => quick,
+        };
+
         let checkpoint = self.checkpoint(&cmd);
-        let writes = matches!(cmd, Command::Msa(MsaCmd::Extract { .. }));
         let mut closed = None;
         let applied = match cmd {
             Command::Close => {
@@ -119,23 +313,60 @@ impl Session {
                 closed = Some((at, dataset));
                 applied
             }
-            cmd => self.apply(cmd, &now)?,
+            cmd => self.apply(cmd)?,
         };
         if let Some(log) = &mut self.log
             && let Err(error) = log.record(&line, applied.note.as_deref(), &now)
         {
             // A change that is not in the log must not stand: undo it. The
             // log is now marked incomplete, so later commands are refused.
-            self.roll_back(checkpoint, applied.created.as_deref(), closed);
+            self.roll_back(checkpoint, closed);
             return Err(error);
         }
-        if writes && let Ok(alignment) = self.current_alignment() {
-            alignment.mark_written();
-        }
         self.history.push(line);
-        Ok(Outcome {
+        Ok(Started::Done(Outcome {
             message: applied.message,
-        })
+        }))
+    }
+
+    /// Take in the result of a [`Job`]: change the session and record the
+    /// command, or, if the work failed or was cancelled, leave everything
+    /// as it was.
+    pub fn finish(&mut self, finished: Finished) -> Result<Outcome> {
+        self.busy = None;
+        let Finished { line, result } = finished;
+        let now = (self.clock)();
+        match result? {
+            Product::Opened { input, alignment } => {
+                let message = input.opened(&alignment.shape());
+                let content = Content::Msa(alignment);
+                self.record_open(&line, input, content, message, &now)
+            }
+            Product::Wrote { dataset, applied } => {
+                if let Some(log) = &mut self.log
+                    && let Err(error) = log.record(&line, applied.note.as_deref(), &now)
+                {
+                    // A file that is not in the log must not stand.
+                    if let Some(path) = &applied.created {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+                let written = self.datasets.iter_mut().find(|d| d.id == dataset);
+                if let Some(Content::Msa(alignment)) = written.map(|d| &mut d.content) {
+                    alignment.mark_written();
+                }
+                self.history.push(line);
+                Ok(Outcome {
+                    message: applied.message,
+                })
+            }
+        }
+    }
+
+    /// Whether a [`Job`] has been handed out and not yet finished.
+    pub fn is_busy(&self) -> bool {
+        self.busy.is_some()
     }
 
     pub fn datasets(&self) -> &[Dataset] {
@@ -157,6 +388,79 @@ impl Session {
         self.log.as_ref().map(SessionLog::path)
     }
 
+    /// Whether a write to the session log has failed. From then on every
+    /// command is refused; [`Session::rescue`] remains.
+    pub fn log_failed(&self) -> bool {
+        self.log.as_ref().is_some_and(SessionLog::is_broken)
+    }
+
+    /// Write the current alignment, whole, to a new file without logging.
+    ///
+    /// This exists so that work is not lost when the log can no longer be
+    /// written (a full disk, a quota); it is refused while the log works.
+    pub fn rescue(&self, out: &Path) -> Result<Outcome> {
+        if !self.log_failed() {
+            return Err(Error::Invalid(
+                "the session log has not failed; use msa extract --out PATH".to_string(),
+            ));
+        }
+        let Some(dataset) = self.current.map(|index| &self.datasets[index]) else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let Some(alignment) = dataset.msa() else {
+            return Err(Error::Invalid(format!(
+                "{} is not an alignment",
+                dataset.file_name()
+            )));
+        };
+        let rows: Vec<usize> = (0..alignment.rows()).collect();
+        write::write_fasta(alignment.view(), &rows, None, None, out, &Progress::new())?;
+        Ok(Outcome {
+            message: format!(
+                "wrote {} ({}); not logged, because the session log could not be written",
+                out.display(),
+                alignment.shape()
+            ),
+        })
+    }
+
+    fn hand_out(&mut self, label: String, line: String, work: Work) -> Started {
+        self.busy = Some(label.clone());
+        Started::Running(Job {
+            label,
+            line,
+            progress: Arc::new(Progress::new()),
+            work: Box::new(work),
+        })
+    }
+
+    /// Record an `open` and, if that succeeds, add the file and make it
+    /// current.
+    fn record_open(
+        &mut self,
+        line: &str,
+        input: Input,
+        content: Content,
+        message: String,
+        now: &Zoned,
+    ) -> Result<Outcome> {
+        if let Some(log) = &mut self.log {
+            log.record(line, Some(&input.note), now)?;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.datasets.push(Dataset {
+            id,
+            path: input.path,
+            kind: input.kind,
+            size: input.size,
+            content,
+        });
+        self.current = Some(self.datasets.len() - 1);
+        self.history.push(line.to_string());
+        Ok(Outcome { message })
+    }
+
     fn checkpoint(&self, cmd: &Command) -> Checkpoint {
         let edits = matches!(cmd, Command::Msa(_) | Command::Undo | Command::Redo);
         let alignment = self
@@ -170,16 +474,10 @@ impl Session {
         }
     }
 
-    /// Put the state back to `checkpoint`: remove a file the command
-    /// created, and put back the file it closed at the position it had.
-    /// Undo history is not repaired: the log has failed, so no further
-    /// command, `undo` included, will be accepted.
-    fn roll_back(
-        &mut self,
-        checkpoint: Checkpoint,
-        created: Option<&Path>,
-        closed: Option<(usize, Dataset)>,
-    ) {
+    /// Put the state back to `checkpoint`, with the file the command closed
+    /// back at the position it had. Undo history is not repaired: the log
+    /// has failed, so no further command, `undo` included, will be accepted.
+    fn roll_back(&mut self, checkpoint: Checkpoint, closed: Option<(usize, Dataset)>) {
         self.datasets.truncate(checkpoint.datasets);
         if let Some((at, dataset)) = closed {
             self.datasets.insert(at, dataset);
@@ -189,9 +487,6 @@ impl Session {
             && let Ok(alignment) = self.current_alignment()
         {
             alignment.restore(layer);
-        }
-        if let Some(path) = created {
-            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -238,53 +533,11 @@ impl Session {
         Ok((applied, at, dataset))
     }
 
-    /// Apply a command to the session state.
-    fn apply(&mut self, cmd: Command, now: &Zoned) -> Result<Applied> {
+    /// Apply a quick command to the session state.
+    fn apply(&mut self, cmd: Command) -> Result<Applied> {
         match cmd {
-            Command::Open { path, kind } => {
-                let kind = kind
-                    .or_else(|| Kind::from_path(&path))
-                    .ok_or_else(|| Error::UnknownKind(path.clone()))?;
-                let io = |cause| Error::Io {
-                    path: path.clone(),
-                    cause,
-                };
-                let meta = std::fs::metadata(&path).map_err(io)?;
-                let absolute = std::fs::canonicalize(&path).map_err(io)?;
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| Timestamp::try_from(t).ok())
-                    .map(|t| stamp(&t.to_zoned(now.time_zone().clone())))
-                    .unwrap_or_else(|| "unknown".to_string());
-                let size = meta.len();
-                let (content, holds) = match kind {
-                    Kind::Msa => {
-                        let alignment = Alignment::load(&path)?;
-                        let shape = alignment.shape();
-                        (Content::Msa(Box::new(alignment)), shape)
-                    }
-                    Kind::Tree | Kind::Bam => (Content::Unloaded, format!("{size} bytes")),
-                };
-                let message = format!("opened {} ({}, {holds})", path.display(), kind.as_str());
-                let id = self.next_id;
-                self.next_id += 1;
-                self.datasets.push(Dataset {
-                    id,
-                    path,
-                    kind,
-                    size,
-                    content,
-                });
-                self.current = Some(self.datasets.len() - 1);
-                Ok(Applied {
-                    message,
-                    note: Some(format!(
-                        "input {} size={size} mtime={modified}",
-                        absolute.display()
-                    )),
-                    created: None,
-                })
+            Command::Open { .. } | Command::Close => {
+                unreachable!("start handles opening and closing itself")
             }
             Command::Use { dataset } => {
                 let open = self.datasets.len();
@@ -307,7 +560,6 @@ impl Session {
                     created: None,
                 })
             }
-            Command::Close => unreachable!("execute closes files itself"),
             Command::Undo => self.current_alignment()?.undo(),
             Command::Redo => self.current_alignment()?.redo(),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
@@ -829,5 +1081,187 @@ mod tests {
         assert!(matches!(ex(&mut session, "close"), Err(Error::Log { .. })));
         assert_eq!((session.datasets().len(), session.current()), (1, Some(0)));
         assert_eq!(ids(&session), [1]);
+    }
+
+    fn running(started: Started) -> Job {
+        match started {
+            Started::Running(job) => job,
+            Started::Done(outcome) => panic!("finished at once: {}", outcome.message),
+        }
+    }
+
+    fn start(session: &mut Session, line: &str) -> crate::Result<Started> {
+        session.start(Command::parse_line(line).unwrap())
+    }
+
+    #[test]
+    fn jobs_can_cross_threads() {
+        fn sendable<T: Send + 'static>() {}
+        sendable::<Job>();
+        sendable::<Finished>();
+    }
+
+    #[test]
+    fn a_slow_command_changes_nothing_until_it_is_finished() {
+        let (_keep, dir) = trio_dir();
+        let mut session = Session::new(None);
+        let job = running(session.start(open(&dir.join("a.fa"))).unwrap());
+        assert_eq!(job.label(), "opening a.fa");
+        assert!(session.is_busy() && session.datasets().is_empty() && session.history().is_empty());
+        let progress = job.progress();
+        let outcome = session.finish(job.run()).unwrap();
+        assert!(
+            outcome.message.ends_with("(msa, 3 sequences x 10 columns)"),
+            "{}",
+            outcome.message
+        );
+        assert_eq!(progress.fraction(), Some(1.0));
+        assert!(!session.is_busy());
+        assert_eq!((session.datasets().len(), session.history().len()), (1, 1));
+    }
+
+    #[test]
+    fn quick_commands_are_done_at_once() {
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        for line in [
+            "msa delete-cols --cols 1",
+            "undo",
+            "use 1",
+            &format!("open {}", dir.join("t.nwk").display()),
+            "close",
+        ] {
+            let started = start(&mut session, line).unwrap();
+            assert!(matches!(started, Started::Done(_)), "{line}");
+        }
+    }
+
+    #[test]
+    fn nothing_else_starts_while_a_job_is_out() {
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        let out = dir.join("o.fa");
+        let job = running(
+            start(
+                &mut session,
+                &format!("msa extract --out {}", out.display()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(job.label(), "writing o.fa");
+        for line in [
+            "undo",
+            "msa delete-cols --cols 1",
+            &format!("open {}", dir.join("a.fa").display()),
+        ] {
+            let refused = start(&mut session, line).err().unwrap();
+            assert_eq!(refused.to_string(), "still busy: writing o.fa");
+        }
+        assert_eq!(
+            session.finish(job.run()).unwrap().message,
+            format!("wrote {} (3 sequences x 10 columns)", out.display())
+        );
+        assert_eq!(fs::read_to_string(&out).unwrap(), TRIO);
+        assert_eq!(
+            session.start(Command::Undo).err().unwrap().to_string(),
+            "nothing to undo",
+            "refused for its own reason: the session is free again"
+        );
+        assert!(!session.is_busy());
+    }
+
+    #[test]
+    fn a_command_refused_at_start_leaves_the_session_free() {
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        let refused = start(&mut session, "msa extract --cols 99 --out x.fa")
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused.to_string(),
+            "column 99 is past the last column (10)"
+        );
+        assert!(!session.is_busy());
+    }
+
+    #[test]
+    fn a_cancelled_open_leaves_nothing() {
+        let (_keep, dir) = trio_dir();
+        let log = dir.join("s.log");
+        let mut session = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+        let job = running(session.start(open(&dir.join("a.fa"))).unwrap());
+        job.progress().cancel();
+        assert!(matches!(session.finish(job.run()), Err(Error::Cancelled)));
+        assert!(session.datasets().is_empty() && session.history().is_empty());
+        assert!(!session.is_busy());
+        drop(session);
+        assert!(!log.exists(), "a log with no commands is removed");
+    }
+
+    #[test]
+    fn a_cancelled_extract_leaves_no_file_and_the_alignment_unwritten() {
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        ex(&mut session, "msa delete-cols --cols 1").unwrap();
+        let files = || fs::read_dir(&dir).unwrap().count();
+        let before = files();
+        let line = format!("msa extract --out {}", dir.join("o.fa").display());
+        let job = running(start(&mut session, &line).unwrap());
+        job.progress().cancel();
+        assert_eq!(
+            session.finish(job.run()).unwrap_err().to_string(),
+            "cancelled"
+        );
+        assert_eq!(files(), before, "no output and no partial file");
+        assert!(session.datasets()[0].msa().unwrap().is_modified());
+        assert_eq!(session.history().len(), 2);
+    }
+
+    #[test]
+    fn rescue_writes_the_alignment_once_the_log_has_failed() {
+        const WORKING: &str = "the session log has not failed; use msa extract --out PATH";
+        let (_keep, dir) = trio_dir();
+        let file = dir.join("a.fa");
+        let out = dir.join("saved.fa");
+        let mut session = Session::with_clock(Some(log_full_after_open(&file)), fixed);
+        session.execute(open(&file)).unwrap();
+        assert_eq!(session.rescue(&out).unwrap_err().to_string(), WORKING);
+        assert!(matches!(
+            ex(&mut session, "msa delete-cols --cols 1"),
+            Err(Error::Log { .. })
+        ));
+        assert!(session.log_failed());
+        assert_eq!(
+            session.rescue(&out).unwrap().message,
+            format!(
+                "wrote {} (3 sequences x 10 columns); not logged, because the session log could not be written",
+                out.display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(&out).unwrap(),
+            TRIO,
+            "the refused edit was undone"
+        );
+        assert!(matches!(session.rescue(&out), Err(Error::Exists(_))));
+
+        let no_log = Session::new(None);
+        assert_eq!(no_log.rescue(&out).unwrap_err().to_string(), WORKING);
+    }
+
+    #[test]
+    fn check_input_reports_unknown_kinds_before_missing_files() {
+        let (_keep, dir) = trio_dir();
+        let file = dir.join("a.fa");
+        assert_eq!(check_input(&file, None).unwrap(), Kind::Msa);
+        assert_eq!(check_input(&file, Some(Kind::Tree)).unwrap(), Kind::Tree);
+        assert!(matches!(
+            check_input(&dir.join("x.txt"), None),
+            Err(Error::UnknownKind(_))
+        ));
+        assert!(matches!(
+            check_input(&dir.join("x.fa"), None),
+            Err(Error::Io { .. })
+        ));
     }
 }
