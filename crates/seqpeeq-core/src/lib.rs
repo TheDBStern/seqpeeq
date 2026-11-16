@@ -6,11 +6,14 @@
 pub mod command;
 pub mod error;
 pub mod log;
+pub mod ranges;
 pub mod replay;
 pub mod session;
 
+pub use command::msa::{MsaCmd, RowSel};
 pub use command::{Command, Kind};
 pub use error::{Error, Result};
 pub use log::SessionLog;
+pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
 pub use session::{Dataset, Outcome, Session};

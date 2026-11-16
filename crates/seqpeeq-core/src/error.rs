@@ -10,6 +10,10 @@ pub enum Error {
     #[error("{0}")]
     Parse(String),
 
+    /// A well-formed command that cannot be carried out. One line.
+    #[error("{0}")]
+    Invalid(String),
+
     #[error("cannot tell what kind of file {} is; add --kind msa|tree|bam", .0.display())]
     UnknownKind(PathBuf),
 

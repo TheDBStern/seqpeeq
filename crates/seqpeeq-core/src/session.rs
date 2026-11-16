@@ -111,6 +111,9 @@ impl Session {
                 self.datasets.push(Dataset { path, kind, size });
                 Ok((Outcome { message }, Some(note)))
             }
+            Command::Use { .. } | Command::Undo | Command::Redo | Command::Msa(_) => {
+                Err(Error::Invalid("not available yet".to_string()))
+            }
         }
     }
 }

@@ -5,11 +5,15 @@
 //! the session log stores, what the in-app command line accepts and what
 //! `seqpeeq run` takes, so the three can never drift apart.
 
+pub mod msa;
+
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
 
 use crate::{Error, Result};
+use msa::MsaCmd;
 
 /// What a file holds, and therefore which viewer and commands apply to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -56,6 +60,51 @@ pub enum Command {
         #[arg(long)]
         kind: Option<Kind>,
     },
+    /// Make the Nth open file (counting from 1) the one commands apply to.
+    Use { dataset: usize },
+    /// Take back the last change to the current file.
+    Undo,
+    /// Reapply the change that was last undone.
+    Redo,
+    /// Alignment commands.
+    #[command(subcommand)]
+    Msa(MsaCmd),
+}
+
+/// The words of a command's text form, before quoting.
+pub(crate) struct Words {
+    words: Vec<String>,
+    positionals: Vec<String>,
+}
+
+impl Words {
+    fn new(name: &str) -> Words {
+        Words {
+            words: vec![name.to_string()],
+            positionals: Vec::new(),
+        }
+    }
+
+    /// A further command word, such as a subcommand name.
+    fn word(&mut self, word: &str) {
+        self.words.push(word.to_string());
+    }
+
+    /// A flag and its value. A value starting with `-` is attached with `=`,
+    /// because on its own it would be read as another flag.
+    fn flag(&mut self, flag: &str, value: impl Display) {
+        let value = value.to_string();
+        if value.starts_with('-') {
+            self.words.push(format!("{flag}={value}"));
+        } else {
+            self.words.push(flag.to_string());
+            self.words.push(value);
+        }
+    }
+
+    fn positional(&mut self, value: impl Display) {
+        self.positionals.push(value.to_string());
+    }
 }
 
 impl Command {
@@ -73,20 +122,34 @@ impl Command {
         })
     }
 
-    /// The canonical text form: name, then flags, then positionals.
+    /// The canonical text form: command words, then flags, then positionals.
     pub fn to_line(&self) -> Result<String> {
-        let (name, flags, positionals) = match self {
+        let words = match self {
             Command::Open { path, kind } => {
-                let mut flags = Vec::new();
+                let mut words = Words::new("open");
                 if let Some(kind) = kind {
-                    flags.push("--kind".to_string());
-                    flags.push(kind.as_str().to_string());
+                    words.flag("--kind", kind.as_str());
                 }
-                ("open", flags, vec![path_word(path)?])
+                words.positional(path_word(path)?);
+                words
+            }
+            Command::Use { dataset } => {
+                let mut words = Words::new("use");
+                words.positional(dataset);
+                words
+            }
+            Command::Undo => Words::new("undo"),
+            Command::Redo => Words::new("redo"),
+            Command::Msa(cmd) => {
+                let mut words = Words::new("msa");
+                cmd.write(&mut words)?;
+                words
             }
         };
-        let mut words = vec![name.to_string()];
-        words.extend(flags);
+        let Words {
+            mut words,
+            positionals,
+        } = words;
         // A positional starting with `-` would otherwise be read as a flag.
         if positionals.iter().any(|p| p.starts_with('-')) {
             words.push("--".to_string());
@@ -98,7 +161,7 @@ impl Command {
             if word.contains(['\n', '\r', '\0']) {
                 return Err(Error::Unloggable);
             }
-            let quoted = shlex::try_quote(word).map_err(|_| Error::Unloggable)?;
+            let quoted = quote(word)?;
             if !line.is_empty() {
                 line.push(' ');
             }
@@ -106,6 +169,17 @@ impl Command {
         }
         Ok(line)
     }
+}
+
+/// Quote a word for the text form only when it needs it. shlex alone would
+/// also quote `,` and `=`, turning `--rows 3-7,12` into `--rows '3-7,12'`;
+/// neither character means anything to the parser.
+fn quote(word: &str) -> Result<std::borrow::Cow<'_, str>> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:,=+@%".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return Ok(word.into());
+    }
+    shlex::try_quote(word).map_err(|_| Error::Unloggable)
 }
 
 fn path_word(path: &Path) -> Result<String> {
@@ -116,6 +190,8 @@ fn path_word(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use crate::Error;
+    use crate::command::msa::{MsaCmd, RowSel};
+    use crate::ranges::Ranges;
     use proptest::prelude::*;
     use std::path::Path;
 
@@ -196,14 +272,179 @@ mod tests {
         }
     }
 
+    const CANONICAL: &[&str] = &[
+        "use 2",
+        "undo",
+        "redo",
+        "msa delete-rows --rows 3-7,12",
+        "msa delete-rows --name A --name 'B c'",
+        "msa delete-rows --match '^Homo_'",
+        "msa delete-cols --cols 100-250",
+        "msa fill --rows 1-3 --cols 10-20 --with N",
+        "msa fill --cols 5 --with=-",
+        "msa extract --rows 1-10 --cols 5-90 --wrap 60 --out sub.fa",
+        "msa extract --out all.fa",
+        "msa rename --rows 5 --to 'Homo sapiens'",
+        "msa rename --regex _ --replace ' '",
+        "msa rename --regex=-x --replace ''",
+    ];
+
+    #[test]
+    fn canonical_lines_round_trip() {
+        for line in CANONICAL {
+            assert_eq!(Command::parse_line(line).unwrap().to_line().unwrap(), *line);
+        }
+    }
+
+    #[test]
+    fn accepted_spellings_normalise() {
+        for (typed, canonical) in [
+            ("msa extract -o x.fa", "msa extract --out x.fa"),
+            ("msa save -o x.fa", "msa extract --out x.fa"),
+            ("msa fill --with - --cols 5", "msa fill --cols 5 --with=-"),
+            (
+                "msa delete-rows --rows 12,3-7",
+                "msa delete-rows --rows 3-7,12",
+            ),
+        ] {
+            assert_eq!(
+                Command::parse_line(typed).unwrap().to_line().unwrap(),
+                canonical
+            );
+        }
+    }
+
+    #[test]
+    fn conflicting_flags_are_refused() {
+        for line in [
+            "msa delete-rows --rows 1 --name A",
+            "msa delete-rows --rows 1 --match A",
+            "msa rename --to X --regex a --replace b",
+            "msa rename --regex a",
+            "msa rename --replace b",
+            "msa delete-cols",
+            "msa fill --cols 1 --with NN",
+            "msa delete-cols --cols 0",
+        ] {
+            assert!(
+                matches!(Command::parse_line(line), Err(Error::Parse(_))),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_errors_are_one_line_and_say_why() {
+        let Err(Error::Parse(m)) = Command::parse_line("msa delete-cols --cols 7-3") else {
+            panic!()
+        };
+        assert!(
+            m.ends_with("range 7-3 runs backwards") && !m.contains('\n'),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn subcommands_have_no_help_either() {
+        for bad in ["msa", "msa --help", "msa help", "msa delete-cols --help"] {
+            let Err(Error::Parse(m)) = Command::parse_line(bad) else {
+                panic!("{bad}")
+            };
+            assert!(!m.contains('\n') && !m.is_empty(), "{bad}: {m:?}");
+        }
+    }
+
+    /// Text with the characters most likely to break quoting or flag parsing.
+    fn text() -> impl Strategy<Value = String> {
+        prop_oneof!["[ '\"\\-=$\\\\a-zé]{0,10}", "[^\\x00\\r\\n]{0,12}"]
+    }
+
+    fn path() -> impl Strategy<Value = PathBuf> {
+        prop_oneof!["[ '\"\\-=$\\\\a-zé]{1,10}", "[^\\x00\\r\\n]{1,40}"].prop_map(PathBuf::from)
+    }
+
+    fn ranges() -> impl Strategy<Value = Ranges> {
+        proptest::collection::vec((0usize..500, 1usize..50), 1..4).prop_map(|v| {
+            Ranges::new(v.into_iter().map(|(start, len)| start..start + len)).unwrap()
+        })
+    }
+
+    fn row_sel() -> impl Strategy<Value = RowSel> {
+        prop_oneof![
+            Just(RowSel::default()),
+            ranges().prop_map(|rows| RowSel {
+                rows: Some(rows),
+                ..RowSel::default()
+            }),
+            proptest::collection::vec(text(), 1..3).prop_map(|name| RowSel {
+                name,
+                ..RowSel::default()
+            }),
+            text().prop_map(|matching| RowSel {
+                matching: Some(matching),
+                ..RowSel::default()
+            }),
+        ]
+    }
+
+    fn msa_cmd() -> impl Strategy<Value = MsaCmd> {
+        let cols = || proptest::option::of(ranges());
+        let fill_char = any::<char>().prop_filter("loggable", |c| !['\n', '\r', '\0'].contains(c));
+        prop_oneof![
+            row_sel().prop_map(|rows| MsaCmd::DeleteRows { rows }),
+            ranges().prop_map(|cols| MsaCmd::DeleteCols { cols }),
+            (row_sel(), cols(), fill_char).prop_map(|(rows, cols, with)| MsaCmd::Fill {
+                rows,
+                cols,
+                with
+            }),
+            (
+                row_sel(),
+                cols(),
+                proptest::option::of(any::<usize>()),
+                path()
+            )
+                .prop_map(|(rows, cols, wrap, out)| MsaCmd::Extract {
+                    rows,
+                    cols,
+                    wrap,
+                    out
+                }),
+            (row_sel(), proptest::option::of(text())).prop_map(|(rows, to)| MsaCmd::Rename {
+                rows,
+                to,
+                regex: None,
+                replace: None
+            }),
+            (row_sel(), text(), text()).prop_map(|(rows, regex, replace)| MsaCmd::Rename {
+                rows,
+                to: None,
+                regex: Some(regex),
+                replace: Some(replace)
+            }),
+        ]
+    }
+
+    fn command() -> impl Strategy<Value = Command> {
+        let kind = proptest::option::of(prop_oneof![
+            Just(Kind::Msa),
+            Just(Kind::Tree),
+            Just(Kind::Bam)
+        ]);
+        prop_oneof![
+            (path(), kind).prop_map(|(path, kind)| Command::Open { path, kind }),
+            any::<usize>().prop_map(|dataset| Command::Use { dataset }),
+            Just(Command::Undo),
+            Just(Command::Redo),
+            msa_cmd().prop_map(Command::Msa),
+        ]
+    }
+
     proptest! {
         #[test]
-        fn round_trip(
-            path in "[^\\x00\\r\\n]{1,40}",
-            kind in proptest::option::of(prop_oneof![Just(Kind::Msa), Just(Kind::Tree), Just(Kind::Bam)]),
-        ) {
-            let cmd = Command::Open { path: path.into(), kind };
-            prop_assert_eq!(Command::parse_line(&cmd.to_line().unwrap()).unwrap(), cmd);
+        fn round_trip(cmd in command()) {
+            let line = cmd.to_line().unwrap();
+            prop_assert_eq!(Command::parse_line(&line).unwrap(), cmd, "{}", line);
         }
     }
 }
