@@ -13,7 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::msa_view::Cell;
 
-use crate::app::{App, Confirm, Mode};
+use crate::app::{App, Confirm, Mode, Typing};
 use grid::GridLayout;
 
 /// Rows the log pane takes when shown, borders included.
@@ -224,7 +224,7 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         grid::draw_grid(frame, alignment, view, app.conservation(), area);
         // The terminal's own cursor marks the cursor cell.
         let layout = grid::grid_layout(area, alignment.rows(), view.name_width);
-        if matches!(app.mode, Mode::Normal | Mode::Edit)
+        if matches!(app.mode, Mode::Normal | Mode::Edit(_))
             && let Some(position) = grid::cursor_position(&layout, view)
         {
             frame.set_cursor_position(position);
@@ -291,8 +291,10 @@ pub fn info_text(app: &App) -> (String, String) {
             right.push("unsaved".to_string());
         }
     }
-    if matches!(app.mode, Mode::Edit) {
-        right.push("EDIT".to_string());
+    match app.mode {
+        Mode::Edit(Typing::Insert) => right.push("INSERT".to_string()),
+        Mode::Edit(Typing::Replace) => right.push("REPLACE".to_string()),
+        _ => {}
     }
     (left, right.join(" · "))
 }
@@ -405,13 +407,14 @@ const HELP: &[&str] = &[
     "Move      arrows hjkl   PgUp PgDn   Home End",
     "          g go to   / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
-    "Edit      d delete or gap   f fill   i type   r rename",
+    "Edit      d delete or gap   f fill   r rename",
+    "          i insert (shifts)   R type over   Esc stop",
     "          u U undo redo   e extract to a file",
     "View      c colours   [ ] name width   Tab next file",
     "          L log   ? help   q quit",
     "Commands  :  open FILE   close   use N   undo   redo",
     "          msa delete-rows  delete-cols  fill  overwrite",
-    "          msa extract  rename",
+    "          msa insert  remove  extract  rename",
     "          :rescue FILE if the log has failed",
     "Mouse     hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -518,7 +521,7 @@ mod tests {
     use crate::ui::grid::grid_layout;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Position;
     use seqpeeq_core::{Command, Session};
 
@@ -933,18 +936,18 @@ mod tests {
 
     #[test]
     fn typed_characters_show_before_they_are_logged() {
-        use crate::msa_view::Typed;
+        use crate::msa_view::{Pending, Typed};
         let mut app = with_file("tests/data/grid.fa");
-        app.mode = Mode::Edit;
-        view_mut(&mut app).typed = Some(Typed {
+        app.mode = Mode::Edit(Typing::Replace);
+        view_mut(&mut app).typed = Some(Pending::Replace(Typed {
             row: 0,
             start: 2,
             bytes: b"nn".to_vec(),
-        });
+        }));
         let mut terminal = render(&app, 70, 9);
         let screen = rows(&terminal);
         assert_eq!(&screen[2][27..33], "ACnnTG");
-        assert!(screen[7].ends_with("EDIT"), "{}", screen[7]);
+        assert!(screen[7].ends_with("REPLACE"), "{}", screen[7]);
         let buffer = terminal.backend().buffer();
         assert!(buffer[(29, 2)].modifier.contains(Modifier::UNDERLINED));
         assert!(!buffer[(28, 2)].modifier.contains(Modifier::UNDERLINED));
@@ -952,6 +955,35 @@ mod tests {
             terminal.get_cursor_position().unwrap(),
             Position::new(27, 2),
             "the cursor is shown while typing"
+        );
+    }
+
+    #[test]
+    fn an_insert_shows_the_shifted_row_and_says_insert() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trio.fa");
+        std::fs::write(
+            &path,
+            ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n",
+        )
+        .unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        for c in "jjliNN".chars() {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let terminal = render(&app, 80, 12);
+        let screen = rows(&terminal);
+        let line = screen
+            .iter()
+            .find(|line| line.contains("s3 third one"))
+            .unwrap();
+        assert!(line.contains("ANNCTACGTA"), "{line}");
+        assert!(
+            screen.iter().any(|line| line.ends_with("INSERT")),
+            "{screen:#?}"
         );
     }
 
@@ -1042,6 +1074,9 @@ mod tests {
             "undo",
             "redo",
             "overwrite",
+            "insert",
+            "remove",
+            "R type over",
             "delete-rows",
             "delete-cols",
             "extract",

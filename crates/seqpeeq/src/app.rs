@@ -15,7 +15,7 @@ use seqpeeq_core::{
 
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
-    Cell, Colouring, MsaView, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
+    Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
 use crate::ui;
 use crate::ui::grid::{self, Hit};
@@ -24,13 +24,22 @@ pub enum Mode {
     Normal,
     /// Typing one line at the bottom of the screen.
     Prompt(Prompt),
-    /// Typing over residues: letters are text, not commands.
-    Edit,
+    /// Typing into residues: letters are text, not commands.
+    Edit(Typing),
     /// `f` was pressed: the next key is the character to fill with.
     FillChar,
     /// Waiting for `y` or anything else in answer to a question.
     Confirm(Confirm),
     Help,
+}
+
+/// How typed characters go into a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typing {
+    /// In front of the cursor, shifting what follows (`i`).
+    Insert,
+    /// Over the residues (`R`).
+    Replace,
 }
 
 /// What the user is being asked to confirm.
@@ -448,8 +457,9 @@ impl App {
                     prompt.line.key(key);
                 }
             },
-            Mode::Edit if ctrl => {}
-            Mode::Edit => self.edit_key(key),
+            Mode::Edit(_) if ctrl => {}
+            Mode::Edit(Typing::Replace) => self.edit_key(key),
+            Mode::Edit(Typing::Insert) => self.insert_key(key),
             Mode::FillChar => {
                 self.mode = Mode::Normal;
                 if let (KeyCode::Char(with), false) = (key.code, ctrl) {
@@ -607,8 +617,8 @@ impl App {
         };
     }
 
-    /// `i`: start typing over residues.
-    fn start_typing(&mut self) {
+    /// `i` or `R`: start inserting, or typing over residues.
+    fn start_typing(&mut self, typing: Typing) {
         let Some((alignment, _)) = self.alignment() else {
             return;
         };
@@ -627,8 +637,24 @@ impl App {
         }
         if let Some(view) = self.view_mut() {
             view.select = None;
+            view.append = typing == Typing::Insert;
         }
-        self.mode = Mode::Edit;
+        self.mode = Mode::Edit(typing);
+    }
+
+    /// Esc while typing: the run becomes a command, and the cursor goes
+    /// back inside the alignment if it was past the end.
+    fn stop_typing(&mut self) {
+        self.commit_typed();
+        self.mode = Mode::Normal;
+        let aln = self.shape();
+        if let Some(view) = self.view_mut() {
+            view.append = false;
+            if let Some(aln) = aln {
+                view.clamp(aln);
+            }
+        }
+        self.reveal();
     }
 
     /// A key while typing over residues.
@@ -643,11 +669,7 @@ impl App {
         // What to put where, and where the cursor goes then.
         let last = aln.cols.saturating_sub(1);
         let (at, byte, next) = match key.code {
-            KeyCode::Esc => {
-                self.commit_typed();
-                self.mode = Mode::Normal;
-                return;
-            }
+            KeyCode::Esc => return self.stop_typing(),
             KeyCode::Char('>') => {
                 self.status = "error: '>' cannot be typed into a sequence".to_string();
                 return;
@@ -670,19 +692,145 @@ impl App {
             }
             _ => return,
         };
-        if self
-            .view_mut()
-            .and_then(|view| view.typed.as_mut())
-            .is_none_or(|typed| typed.row != row || !typed.put(at, byte))
-        {
+        let grown = match self.view_mut().and_then(|view| view.typed.as_mut()) {
+            Some(Pending::Replace(typed)) => typed.row == row && typed.put(at, byte),
+            _ => false,
+        };
+        if !grown {
             // Not beside what was typed so far: that run is finished.
             self.commit_typed();
             if let Some(view) = self.view_mut() {
-                view.typed = Some(Typed::new(row, at, byte));
+                view.typed = Some(Pending::Replace(Typed::new(row, at, byte)));
             }
         }
         if let Some(view) = self.view_mut() {
             view.cursor.col = next;
+        }
+        self.reveal();
+    }
+
+    /// A key while inserting: characters go in front of the cursor, and
+    /// Delete and Backspace remove, each shifting the residues up to the
+    /// next gap. A run of one kind of key is one command.
+    fn insert_key(&mut self, key: &KeyEvent) {
+        let Some(aln) = self.shape() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let Some(view) = self.view_mut() else {
+            return;
+        };
+        let Cell { row, col } = view.cursor;
+        // The run as it stands, if it is on this row.
+        let pending = view.typed.clone().filter(|pending| pending.row() == row);
+        // The run this key makes, whether it carries on the one pending,
+        // and where the cursor goes.
+        let (next, carries_on, cursor) = match key.code {
+            KeyCode::Esc => return self.stop_typing(),
+            KeyCode::Char('>') => {
+                self.status = "error: '>' cannot be typed into a sequence".to_string();
+                return;
+            }
+            KeyCode::Char(c) if c.is_ascii_graphic() => match pending {
+                Some(Pending::Insert {
+                    col: start,
+                    mut seq,
+                    ..
+                }) if start + seq.len() == col => {
+                    seq.push(c as u8);
+                    let next = Pending::Insert {
+                        row,
+                        col: start,
+                        seq,
+                    };
+                    (next, true, col + 1)
+                }
+                _ => {
+                    let seq = vec![c as u8];
+                    (Pending::Insert { row, col, seq }, false, col + 1)
+                }
+            },
+            KeyCode::Delete if col >= aln.cols => {
+                self.status = "error: nothing under the cursor to remove".to_string();
+                return;
+            }
+            KeyCode::Delete => match pending {
+                Some(Pending::Remove {
+                    col: start,
+                    count,
+                    back: false,
+                    ..
+                }) if start == col && start + count < aln.cols => {
+                    let count = count + 1;
+                    let next = Pending::Remove {
+                        row,
+                        col,
+                        count,
+                        back: false,
+                    };
+                    (next, true, col)
+                }
+                _ => {
+                    let next = Pending::Remove {
+                        row,
+                        col,
+                        count: 1,
+                        back: false,
+                    };
+                    (next, false, col)
+                }
+            },
+            KeyCode::Backspace if col > 0 => {
+                let carried = match pending {
+                    Some(Pending::Remove {
+                        col: start,
+                        count,
+                        back: true,
+                        ..
+                    }) if start == col => Some(count),
+                    _ => None,
+                };
+                let next = Pending::Remove {
+                    row,
+                    col: col - 1,
+                    count: carried.map_or(1, |count| count + 1),
+                    back: true,
+                };
+                (next, carried.is_some(), col - 1)
+            }
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => {
+                // Moving away ends the run; the same keys then move as usual.
+                self.commit_typed();
+                self.grid_key(key);
+                return;
+            }
+            _ => return,
+        };
+        if !carries_on {
+            self.commit_typed();
+        }
+        // An insert needing columns the alignment does not have yet is made
+        // at once, so that the preview never shows columns that do not
+        // exist. Planned after the run before it is made.
+        let now = match (&next, self.alignment()) {
+            (Pending::Insert { row, col, seq }, Some((alignment, _))) => {
+                alignment.view().plan_insert(*row, *col, seq).added > 0
+            }
+            _ => false,
+        };
+        if let Some(view) = self.view_mut() {
+            view.typed = Some(next);
+            view.cursor.col = cursor;
+        }
+        if now {
+            self.commit_typed();
         }
         self.reveal();
     }
@@ -779,7 +927,8 @@ impl App {
         };
         match key.code {
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
-            KeyCode::Char('i') => return self.start_typing(),
+            KeyCode::Char('i') => return self.start_typing(Typing::Insert),
+            KeyCode::Char('R') => return self.start_typing(Typing::Replace),
             KeyCode::Char('/') => return self.open_prompt(PromptKind::Search, ""),
             KeyCode::Char('n') => return self.search_step(true),
             KeyCode::Char('N') => return self.search_step(false),
@@ -928,7 +1077,7 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) {
-        if matches!(self.mode, Mode::Edit) {
+        if matches!(self.mode, Mode::Edit(_)) {
             self.wheel(mouse);
             // A press ends the run being typed and puts the cursor there.
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -2314,8 +2463,8 @@ mod tests {
     #[test]
     fn typing_overwrites_and_is_logged_as_one_command() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "jllli");
-        assert!(matches!(app.mode, Mode::Edit));
+        type_str(&mut app, "jlllR");
+        assert!(matches!(app.mode, Mode::Edit(Typing::Replace)));
         let before = app.session.history().len();
         type_str(&mut app, "NN");
         assert_eq!(app.session.history().len(), before, "not a command yet");
@@ -2335,7 +2484,7 @@ mod tests {
     #[test]
     fn backspace_and_delete_put_gaps() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "llllli");
+        type_str(&mut app, "lllllR");
         app.handle_event(&press(KeyCode::Backspace));
         app.handle_event(&press(KeyCode::Backspace));
         assert_eq!(view(&app).cursor.col, 3);
@@ -2344,7 +2493,7 @@ mod tests {
         assert_eq!(last(&app), "msa overwrite --row 1 --col 4 --seq A-");
 
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         app.handle_event(&press(KeyCode::Backspace));
         app.handle_event(&press(KeyCode::Delete));
         app.handle_event(&press(KeyCode::Delete));
@@ -2355,7 +2504,7 @@ mod tests {
     #[test]
     fn moving_away_ends_the_run() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "iA");
+        type_str(&mut app, "RA");
         app.handle_event(&press(KeyCode::Down));
         type_str(&mut app, "C");
         app.handle_event(&press(KeyCode::Esc));
@@ -2368,26 +2517,26 @@ mod tests {
             ]
         );
         // A click ends it too, and moves the cursor.
-        type_str(&mut app, "iG");
+        type_str(&mut app, "RG");
         let to = at(&app, 2, 7);
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), to, NONE));
         assert_eq!(last(&app), "msa overwrite --row 2 --col 3 --seq G");
         assert_eq!(view(&app).cursor, Cell { row: 2, col: 7 });
-        assert!(matches!(app.mode, Mode::Edit));
+        assert!(matches!(app.mode, Mode::Edit(Typing::Replace)));
     }
 
     #[test]
     fn letters_are_text_while_typing_and_nothing_typed_logs_nothing() {
         let (mut app, _dir) = with_trio();
         let before = app.session.history().len();
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(app.session.history().len(), before);
-        type_str(&mut app, "idquvf:");
-        assert!(!app.quit && matches!(app.mode, Mode::Edit));
+        type_str(&mut app, "Rdquvf:");
+        assert!(!app.quit && matches!(app.mode, Mode::Edit(Typing::Replace)));
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(last(&app), "msa overwrite --row 1 --col 1 --seq dquvf:");
-        type_str(&mut app, "i>");
+        type_str(&mut app, "R>");
         assert_eq!(app.status, "error: '>' cannot be typed into a sequence");
         app.handle_event(&paste("ACGT"));
         assert_eq!(view(&app).typed, None, "a paste never reaches the grid");
@@ -2399,7 +2548,7 @@ mod tests {
     fn typing_at_the_last_column_stays_there() {
         let (mut app, _dir) = with_trio();
         app.handle_event(&press(KeyCode::End));
-        type_str(&mut app, "iAC");
+        type_str(&mut app, "RAC");
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(last(&app), "msa overwrite --row 1 --col 10 --seq C");
     }
@@ -2407,7 +2556,7 @@ mod tests {
     #[test]
     fn typing_is_refused_where_it_cannot_work() {
         let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(
             app.status,
@@ -2420,7 +2569,7 @@ mod tests {
             &format!(":msa extract --out {}", dir.path().join("o.fa").display()),
         );
         app.handle_event(&press(KeyCode::Enter));
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "error: still busy: writing o.fa (Esc cancels)");
         settle(&mut app);
@@ -2429,8 +2578,97 @@ mod tests {
     #[test]
     fn typing_starts_without_a_selection() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "Vi");
+        type_str(&mut app, "VR");
         assert_eq!(view(&app).select, None);
+    }
+
+    /// A row as it is drawn: the alignment with the pending run's preview
+    /// over it.
+    fn shown(app: &App, row: usize) -> String {
+        let mut text = seq(app, row).into_bytes();
+        let (alignment, view) = app.alignment().unwrap();
+        if let Some(pending) = &view.typed {
+            let (at, start, bytes) = pending.preview(alignment.view());
+            if at == row {
+                for (offset, byte) in bytes.into_iter().enumerate() {
+                    text[start + offset] = byte;
+                }
+            }
+        }
+        String::from_utf8(text).unwrap()
+    }
+
+    #[test]
+    fn insert_mode_shifts_and_logs_one_insert() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjli");
+        assert!(matches!(app.mode, Mode::Edit(Typing::Insert)));
+        let before = app.session.history().len();
+        type_str(&mut app, "NN");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(view(&app).cursor, Cell { row: 2, col: 3 });
+        assert_eq!(shown(&app, 2), "ANNCTACGTA");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 3 --col 2 --seq NN");
+        assert_eq!(seq(&app, 2), "ANNCTACGTA", "the preview was the result");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 2), "AC--TACGTA");
+    }
+
+    #[test]
+    fn delete_and_backspace_runs_are_one_remove_each() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjlllli");
+        app.handle_event(&press(KeyCode::Delete));
+        app.handle_event(&press(KeyCode::Delete));
+        assert_eq!(
+            (view(&app).cursor.col, shown(&app, 2)),
+            (4, "AC--CGTA--".to_string())
+        );
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa remove --row 3 --col 5 --count 2");
+
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "llllllli");
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 5);
+        app.handle_event(&press(KeyCode::Delete)); // another kind of key ends the run
+        app.handle_event(&press(KeyCode::Esc));
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa remove --row 1 --col 6 --count 2",
+                "msa remove --row 1 --col 6 --count 1"
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_mode_adds_at_the_end_of_a_row_one_letter_at_a_time() {
+        let (mut app, _dir) = with_trio();
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "i");
+        app.handle_event(&press(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, 10, "one past the last column");
+        type_str(&mut app, "TG");
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa insert --row 1 --col 11 --seq T",
+                "msa insert --row 1 --col 12 --seq G"
+            ]
+        );
+        assert_eq!(
+            (seq(&app, 0), seq(&app, 1)),
+            ("ACGT-ACGTATG".into(), "ACGTTACG-A--".into())
+        );
+        app.handle_event(&press(KeyCode::Delete));
+        assert_eq!(app.status, "error: nothing under the cursor to remove");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(view(&app).cursor.col, 11, "back inside the alignment");
     }
 
     use seqpeeq_core::{Conservation, Progress};

@@ -214,6 +214,16 @@ pub fn draw_grid(
         Colouring::Conserved if !alignment.is_aligned() => Colouring::Residue,
         chosen => chosen,
     };
+    // What is typed and not yet a command, as the row will read once it is.
+    let preview = view
+        .typed
+        .as_ref()
+        .map(|pending| pending.preview(alignment.view()));
+    let typed_at = |row: usize, col: usize| {
+        let (at, start, bytes) = preview.as_ref()?;
+        let offset = col.checked_sub(*start)?;
+        bytes.get(offset).copied().filter(|_| *at == row)
+    };
     let mut residues = Vec::with_capacity(cells.width as usize);
     for line in 0..cells.height {
         let row = view.top + line as usize;
@@ -265,10 +275,9 @@ pub fn draw_grid(
                     _ => Style::new(),
                 },
             };
-            // A character typed and not yet made a command shows in place
-            // of the residue it will replace, marked as provisional.
-            let typed = view.typed.as_ref().and_then(|typed| typed.at(row, col));
-            let (residue, style) = match typed {
+            // What is typed and not yet made a command shows in place of
+            // the residues it will change, marked as provisional.
+            let (residue, style) = match typed_at(row, col) {
                 Some(typed) => (
                     typed,
                     style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),

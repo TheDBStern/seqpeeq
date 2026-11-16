@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use seqpeeq_core::{MsaCmd, Ranges, RowSel};
+use seqpeeq_core::{MsaCmd, Ranges, RowSel, View};
 
 /// One residue's place: a row and a column, counted from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -111,18 +111,76 @@ impl Typed {
         true
     }
 
-    /// The typed character at a cell, if the run covers it.
-    pub fn at(&self, row: usize, col: usize) -> Option<u8> {
-        let offset = col.checked_sub(self.start)?;
-        self.bytes.get(offset).copied().filter(|_| row == self.row)
-    }
-
     /// The command that makes the run part of the alignment.
     pub fn command(&self) -> MsaCmd {
         MsaCmd::Overwrite {
             row: self.row + 1,
             col: self.start + 1,
             seq: String::from_utf8_lossy(&self.bytes).into_owned(),
+        }
+    }
+}
+
+/// What has been typed and not yet turned into a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// Characters typed over residues.
+    Replace(Typed),
+    /// Characters inserted at `col`, shifting what follows.
+    Insert {
+        row: usize,
+        col: usize,
+        seq: Vec<u8>,
+    },
+    /// `count` cells removed from `col` on, by Delete or, when `back`, by
+    /// Backspace.
+    Remove {
+        row: usize,
+        col: usize,
+        count: usize,
+        back: bool,
+    },
+}
+
+impl Pending {
+    pub fn row(&self) -> usize {
+        match self {
+            Pending::Replace(typed) => typed.row,
+            Pending::Insert { row, .. } | Pending::Remove { row, .. } => *row,
+        }
+    }
+
+    /// The command that makes the run part of the alignment.
+    pub fn command(&self) -> MsaCmd {
+        match self {
+            Pending::Replace(typed) => typed.command(),
+            Pending::Insert { row, col, seq } => MsaCmd::Insert {
+                row: row + 1,
+                col: col + 1,
+                seq: String::from_utf8_lossy(seq).into_owned(),
+            },
+            Pending::Remove {
+                row, col, count, ..
+            } => MsaCmd::Remove {
+                row: row + 1,
+                col: col + 1,
+                count: *count,
+            },
+        }
+    }
+
+    /// How the row will read once the command runs: (row, first column,
+    /// the bytes from there). Inserts and removes are planned by the same
+    /// rule the commands use, so the preview is the result.
+    pub fn preview(&self, view: &View) -> (usize, usize, Vec<u8>) {
+        match self {
+            Pending::Replace(typed) => (typed.row, typed.start, typed.bytes.clone()),
+            Pending::Insert { row, col, seq } => {
+                (*row, *col, view.plan_insert(*row, *col, seq).bytes)
+            }
+            Pending::Remove {
+                row, col, count, ..
+            } => (*row, *col, view.plan_remove(*row, *col, *count).bytes),
         }
     }
 }
@@ -177,7 +235,10 @@ pub struct MsaView {
     /// The selection, if one has been started. Moving the cursor extends it.
     pub select: Option<Select>,
     /// What has been typed since the last command, while typing.
-    pub typed: Option<Typed>,
+    pub typed: Option<Pending>,
+    /// Inserting: the cursor may sit one past the last column, to add
+    /// at the end of a row.
+    pub append: bool,
     /// The last search of the names.
     pub search: Option<Search>,
 }
@@ -192,6 +253,7 @@ impl MsaView {
             colouring: Colouring::Conserved,
             select: None,
             typed: None,
+            append: false,
             search: None,
         }
     }
@@ -241,7 +303,12 @@ impl MsaView {
             self.cursor.row = row.min(aln.rows.saturating_sub(1));
         }
         if let Some(col) = col {
-            self.cursor.col = col.min(aln.cols.saturating_sub(1));
+            let last = if self.append {
+                aln.cols
+            } else {
+                aln.cols.saturating_sub(1)
+            };
+            self.cursor.col = col.min(last);
         }
     }
 
@@ -352,6 +419,42 @@ mod tests {
         assert_eq!(view.cursor, Cell { row: 3, col: 49 });
         view.move_to(Some(1000), Some(1000), ALN);
         assert_eq!(view.cursor, Cell { row: 99, col: 49 });
+    }
+
+    #[test]
+    fn append_lets_the_cursor_sit_one_past_the_last_column() {
+        let mut view = MsaView::new();
+        view.append = true;
+        view.move_to(None, Some(usize::MAX), ALN);
+        assert_eq!(view.cursor.col, 50);
+        view.clamp(ALN);
+        assert_eq!(view.cursor.col, 50);
+        view.append = false;
+        view.clamp(ALN);
+        assert_eq!(view.cursor.col, 49);
+    }
+
+    #[test]
+    fn a_pending_run_names_its_command() {
+        use seqpeeq_core::Command;
+        let line = |pending: Pending| Command::Msa(pending.command()).to_line().unwrap();
+        assert_eq!(
+            line(Pending::Insert {
+                row: 2,
+                col: 1,
+                seq: b"NN".to_vec()
+            }),
+            "msa insert --row 3 --col 2 --seq NN"
+        );
+        assert_eq!(
+            line(Pending::Remove {
+                row: 0,
+                col: 5,
+                count: 2,
+                back: true
+            }),
+            "msa remove --row 1 --col 6 --count 2"
+        );
     }
 
     #[test]
@@ -539,10 +642,6 @@ mod tests {
         assert!(
             !typed.put(8, b'T') && !typed.put(2, b'T'),
             "not beside the run"
-        );
-        assert_eq!(
-            (typed.at(2, 5), typed.at(2, 7), typed.at(1, 5)),
-            (Some(b'G'), None, None)
         );
         assert_eq!(
             Command::Msa(typed.command()).to_line().unwrap(),
