@@ -3,15 +3,38 @@
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use seqpeeq_core::{Command, Session};
+use std::path::{Path, PathBuf};
 
+use seqpeeq_core::{Command, MsaCmd, Session};
+
+use crate::line::{History, LineEdit};
 use crate::ui;
 
 pub enum Mode {
     Normal,
-    /// Typing on the `:` command line; holds the text so far.
-    Command(String),
+    /// Typing one line at the bottom of the screen.
+    Prompt(Prompt),
     Help,
+}
+
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub line: LineEdit,
+}
+
+/// What a line being typed is for.
+pub enum PromptKind {
+    /// The `:` command line.
+    Command,
+}
+
+impl PromptKind {
+    /// What is shown in front of the text.
+    pub fn lead(&self) -> &'static str {
+        match self {
+            PromptKind::Command => ":",
+        }
+    }
 }
 
 pub struct App {
@@ -23,6 +46,8 @@ pub struct App {
     pub active: usize,
     pub show_log: bool,
     pub quit: bool,
+    /// Lines entered on the command line.
+    history: History,
 }
 
 impl App {
@@ -34,6 +59,7 @@ impl App {
             active: 0,
             show_log: false,
             quit: false,
+            history: History::default(),
         }
     }
 
@@ -41,43 +67,89 @@ impl App {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::Paste(text) => self.handle_paste(text),
             _ => {}
         }
     }
 
     fn handle_key(&mut self, key: &KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            if key.code == KeyCode::Char('c') {
-                self.quit = true;
-            }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.quit = true;
             return;
         }
         match &mut self.mode {
+            Mode::Normal if ctrl => {}
             Mode::Normal => match key.code {
                 KeyCode::Char('q') => self.quit = true,
-                KeyCode::Char(':') => self.mode = Mode::Command(String::new()),
+                KeyCode::Char(':') => self.open_prompt(PromptKind::Command, ""),
                 KeyCode::Char('?') => self.mode = Mode::Help,
                 KeyCode::Char('L') => self.show_log = !self.show_log,
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
                 _ => {}
             },
-            Mode::Command(buffer) => match key.code {
-                KeyCode::Char(c) => buffer.push(c),
-                KeyCode::Backspace => {
-                    if buffer.pop().is_none() {
-                        self.mode = Mode::Normal;
+            Mode::Prompt(prompt) => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace if prompt.line.text().is_empty() => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let Mode::Prompt(prompt) = std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
+                        unreachable!("the mode was just matched");
+                    };
+                    self.submit(prompt);
+                }
+                KeyCode::Up if matches!(prompt.kind, PromptKind::Command) => {
+                    if let Some(older) = self.history.older(prompt.line.text()) {
+                        prompt.line.set(older);
                     }
                 }
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
-                    let line = std::mem::take(buffer);
-                    self.mode = Mode::Normal;
-                    self.run_line(&line);
+                KeyCode::Down if matches!(prompt.kind, PromptKind::Command) => {
+                    if let Some(newer) = self.history.newer() {
+                        prompt.line.set(newer);
+                    }
                 }
-                _ => {}
+                _ => {
+                    prompt.line.key(key);
+                }
             },
             Mode::Help => self.mode = Mode::Normal,
+        }
+    }
+
+    /// Pasted text goes into a line being typed and nowhere else: letters
+    /// are commands outside a prompt, so a paste there could do anything.
+    fn handle_paste(&mut self, text: &str) {
+        let Mode::Prompt(prompt) = &mut self.mode else {
+            self.status = "paste ignored: press : first to paste into the command line".to_string();
+            return;
+        };
+        let (first, rest) = match text.find(['\n', '\r']) {
+            Some(end) => (&text[..end], &text[end..]),
+            None => (text, ""),
+        };
+        prompt.line.insert(first);
+        if !rest.trim().is_empty() {
+            self.status = "pasted text was cut at its first line break".to_string();
+        }
+    }
+
+    /// Start typing a line, with `text` already on it.
+    fn open_prompt(&mut self, kind: PromptKind, text: &str) {
+        self.history.reset();
+        self.mode = Mode::Prompt(Prompt {
+            kind,
+            line: LineEdit::new(text),
+        });
+    }
+
+    /// Act on a line that was entered.
+    fn submit(&mut self, prompt: Prompt) {
+        match prompt.kind {
+            PromptKind::Command => {
+                self.history.push(prompt.line.text());
+                self.run_line(prompt.line.text());
+            }
         }
     }
 
@@ -123,16 +195,42 @@ impl App {
     /// Run one line typed on the command line.
     fn run_line(&mut self, line: &str) {
         let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
         // Leaving is an interface action, not a change to the data: not logged.
         if line == "q" || line == "quit" {
             self.quit = true;
             return;
         }
-        self.status = match Command::parse_line(line).and_then(|cmd| self.run_command(cmd)) {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let ran = Command::parse_line(line)
+            .map(|cmd| expand_home(cmd, home.as_deref()))
+            .and_then(|cmd| self.run_command(cmd));
+        self.status = match ran {
             Ok(message) => message,
             Err(error) => format!("error: {error}"),
         };
     }
+}
+
+/// Put the home directory in place of a leading `~` in the path a typed
+/// command names, so that the log holds a path that means the same thing
+/// to whoever replays it.
+fn expand_home(mut cmd: Command, home: Option<&Path>) -> Command {
+    let path = match &mut cmd {
+        Command::Open { path, .. } => path,
+        Command::Msa(MsaCmd::Extract { out, .. }) => out,
+        _ => return cmd,
+    };
+    if let (Some(home), Ok(rest)) = (home, path.strip_prefix("~")) {
+        *path = if rest.as_os_str().is_empty() {
+            home.to_path_buf()
+        } else {
+            home.join(rest)
+        };
+    }
+    cmd
 }
 
 #[cfg(test)]
@@ -159,6 +257,22 @@ mod tests {
     fn type_str(app: &mut App, text: &str) {
         for c in text.chars() {
             app.handle_event(&key(c));
+        }
+    }
+
+    fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn paste(text: &str) -> Event {
+        Event::Paste(text.to_string())
+    }
+
+    /// The text of the prompt being typed into, if one is open.
+    fn typed(app: &App) -> Option<&str> {
+        match &app.mode {
+            Mode::Prompt(prompt) => Some(prompt.line.text()),
+            _ => None,
         }
     }
 
@@ -235,10 +349,7 @@ mod tests {
 
         let (mut app, ..) = setup();
         type_str(&mut app, ":open");
-        app.handle_event(&Event::Key(KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
-        )));
+        app.handle_event(&ctrl('c'));
         assert!(app.quit);
     }
 
@@ -247,7 +358,7 @@ mod tests {
         let (mut app, ..) = setup();
         type_str(&mut app, ":open q");
         assert!(!app.quit);
-        assert!(matches!(&app.mode, Mode::Command(buffer) if buffer == "open q"));
+        assert_eq!(typed(&app), Some("open q"));
     }
 
     #[test]
@@ -263,7 +374,7 @@ mod tests {
 
         type_str(&mut app, ":é");
         app.handle_event(&press(KeyCode::Backspace));
-        assert!(matches!(&app.mode, Mode::Command(buffer) if buffer.is_empty()));
+        assert_eq!(typed(&app), Some(""));
     }
 
     #[test]
@@ -397,5 +508,98 @@ mod tests {
         enter(&mut app);
         assert_eq!(app.session.history().len(), 3);
         assert_eq!(app.active, 2);
+    }
+
+    #[test]
+    fn a_paste_outside_a_prompt_does_nothing() {
+        let (mut app, _dir) = with_two_alignments();
+        let before = app.session.history().len();
+        app.handle_event(&paste("dd\nq\n:msa delete-rows --rows 1\n"));
+        assert!(!app.quit && matches!(app.mode, Mode::Normal));
+        assert_eq!(app.session.history().len(), before);
+        assert_eq!(
+            app.status,
+            "paste ignored: press : first to paste into the command line"
+        );
+        app.mode = Mode::Help;
+        app.handle_event(&paste("q"));
+        assert!(!app.quit && matches!(app.mode, Mode::Help));
+    }
+
+    #[test]
+    fn a_paste_into_the_command_line_stops_at_the_first_line_break() {
+        let (mut app, ..) = setup();
+        type_str(&mut app, ":open ");
+        app.handle_event(&paste("/data/x.fa\nq\n"));
+        assert_eq!(typed(&app), Some("open /data/x.fa"));
+        assert_eq!(app.status, "pasted text was cut at its first line break");
+        assert!(app.session.history().is_empty(), "nothing ran");
+
+        // A line break at the very end is not worth a warning.
+        let (mut app, ..) = setup();
+        type_str(&mut app, ":");
+        app.handle_event(&paste("undo\r\n"));
+        assert_eq!((typed(&app), app.status.as_str()), (Some("undo"), ""));
+    }
+
+    #[test]
+    fn the_command_line_is_edited_in_place_and_remembers_lines() {
+        let (mut app, ..) = setup();
+        type_str(&mut app, ":opn x");
+        for _ in 0..3 {
+            app.handle_event(&press(KeyCode::Left));
+        }
+        type_str(&mut app, "e");
+        assert_eq!(typed(&app), Some("open x"));
+        enter(&mut app);
+        assert!(app.status.starts_with("error: "), "{}", app.status);
+        type_str(&mut app, ":");
+        app.handle_event(&press(KeyCode::Up));
+        assert_eq!(typed(&app), Some("open x"));
+        app.handle_event(&press(KeyCode::Down));
+        assert_eq!(typed(&app), Some(""));
+        // Leaving part-way through the history does not carry over.
+        app.handle_event(&press(KeyCode::Up));
+        app.handle_event(&press(KeyCode::Esc));
+        type_str(&mut app, ":");
+        app.handle_event(&ctrl('a'));
+        app.handle_event(&press(KeyCode::Up));
+        assert_eq!(typed(&app), Some("open x"));
+    }
+
+    #[test]
+    fn an_empty_command_line_is_not_an_error() {
+        let (mut app, ..) = setup();
+        app.status = "kept".to_string();
+        type_str(&mut app, ":  ");
+        enter(&mut app);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "kept");
+    }
+
+    #[test]
+    fn a_leading_tilde_becomes_the_home_directory() {
+        use std::path::Path;
+        let home = Path::new("/home/u");
+        let open = |path: &str| Command::Open {
+            path: path.into(),
+            kind: None,
+        };
+        assert_eq!(
+            expand_home(open("~/x.fa"), Some(home)),
+            open("/home/u/x.fa")
+        );
+        assert_eq!(expand_home(open("~"), Some(home)), open("/home/u"));
+        assert_eq!(
+            expand_home(open("~user/x.fa"), Some(home)),
+            open("~user/x.fa")
+        );
+        assert_eq!(expand_home(open("a~/x.fa"), Some(home)), open("a~/x.fa"));
+        assert_eq!(expand_home(open("~/x.fa"), None), open("~/x.fa"));
+        let extract = Command::parse_line("msa extract --out ~/o.fa").unwrap();
+        assert_eq!(
+            expand_home(extract, Some(home)).to_line().unwrap(),
+            "msa extract --out /home/u/o.fa"
+        );
     }
 }

@@ -1,6 +1,7 @@
 //! The `seqpeeq` command: interactive viewer, `replay` and `run`.
 
 mod app;
+mod line;
 mod term;
 mod ui;
 

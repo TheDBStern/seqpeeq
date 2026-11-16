@@ -31,7 +31,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     }
     let status = match app.mode {
-        Mode::Command(_) => Vec::new(),
+        Mode::Prompt(_) => Vec::new(),
         _ => wrap_columns(&app.status, area.width as usize),
     };
     let bottom_height = (status.len() as u16)
@@ -93,18 +93,26 @@ fn wrap_columns(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// The longest end of `text` that fits in `width` display columns.
-fn tail_columns(text: &str, width: usize) -> &str {
+/// The part of `text` to show in `width` columns so that the cursor, at
+/// byte `cursor`, is on screen with one column to spare for itself: the
+/// text and the column the cursor is drawn in.
+fn window(text: &str, cursor: usize, width: usize) -> (&str, usize) {
+    let columns = |part: &str| part.width();
+    // Start as far left as still shows the cursor.
+    let mut start = 0;
+    while columns(&text[start..cursor]) + 1 > width && start < cursor {
+        start += text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    let mut end = start;
     let mut used = 0;
-    let mut start = text.len();
-    for (index, c) in text.char_indices().rev() {
+    for c in text[start..].chars() {
         used += c.width().unwrap_or(0);
         if used > width {
             break;
         }
-        start = index;
+        end += c.len_utf8();
     }
-    &text[start..]
+    (&text[start..end], columns(&text[start..cursor]))
 }
 
 fn dim() -> Style {
@@ -180,14 +188,14 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_bottom(frame: &mut Frame, app: &App, status: &[String], area: Rect) {
-    if let Mode::Command(buffer) = &app.mode {
-        // Show the end of a long line, where the typing happens, and keep one
-        // column free for the cursor.
-        let text = format!(":{buffer}");
-        let visible = tail_columns(&text, area.width as usize - 1);
-        let cursor = area.x + visible.width() as u16;
+    if let Mode::Prompt(prompt) = &app.mode {
+        // Show the part of a long line where the typing happens.
+        let lead = prompt.kind.lead();
+        let text = format!("{lead}{}", prompt.line.text());
+        let cursor = lead.len() + prompt.line.cursor();
+        let (visible, column) = window(&text, cursor, area.width as usize);
         frame.render_widget(Paragraph::new(visible), area);
-        frame.set_cursor_position(Position::new(cursor, area.y));
+        frame.set_cursor_position(Position::new(area.x + column as u16, area.y));
         return;
     }
     let shown = status.len().min(area.height as usize);
@@ -269,14 +277,24 @@ pub fn tab_ranges(titles: &[String]) -> Vec<Range<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Mode;
+    use crate::app::{Mode, Prompt, PromptKind};
+    use crate::line::LineEdit;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Position;
     use seqpeeq_core::{Command, Session};
 
     fn terminal(width: u16, height: u16) -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(width, height)).unwrap()
+    }
+
+    /// The `:` line holding `text`, with the cursor at its end.
+    fn command_line(text: &str) -> Mode {
+        Mode::Prompt(Prompt {
+            kind: PromptKind::Command,
+            line: LineEdit::new(text),
+        })
     }
 
     fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -313,7 +331,7 @@ mod tests {
     #[test]
     fn command_mode() {
         let mut app = with_dataset();
-        app.mode = Mode::Command("open x".to_string());
+        app.mode = command_line("open x");
         let mut terminal = render(&app, 60, 12);
         insta::assert_snapshot!(terminal.backend());
         assert_eq!(
@@ -373,7 +391,7 @@ mod tests {
     #[test]
     fn long_command_line_shows_its_end() {
         let mut app = with_dataset();
-        app.mode = Mode::Command(format!("open {}END", "/long/path".repeat(5)));
+        app.mode = command_line(&format!("open {}END", "/long/path".repeat(5)));
         let mut terminal = render(&app, 20, 6);
         let screen = rows(&terminal);
         assert!(screen[5].ends_with("END"), "{screen:#?}");
@@ -387,10 +405,7 @@ mod tests {
     fn tiny_terminals_do_not_panic() {
         let mut app = with_dataset();
         app.show_log = true;
-        for mode in [
-            Mode::Help,
-            Mode::Command("open a very long command line".to_string()),
-        ] {
+        for mode in [Mode::Help, command_line("open a very long command line")] {
             app.mode = mode;
             for (width, height) in [(1, 1), (20, 3), (5, 40), (2, 2), (60, 7)] {
                 render(&app, width, height);
@@ -428,5 +443,29 @@ mod tests {
                 .any(|row| row.contains("2 sequences x 5 columns")),
             "{screen:?}"
         );
+    }
+
+    #[test]
+    fn the_cursor_is_drawn_where_the_typing_is() {
+        let mut app = with_dataset();
+        let mut line = LineEdit::new("open abc");
+        for _ in 0..4 {
+            line.key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        app.mode = Mode::Prompt(Prompt {
+            kind: PromptKind::Command,
+            line,
+        });
+        let mut terminal = render(&app, 60, 12);
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(5, 11)
+        );
+        assert_eq!(rows(&terminal)[11], ":open abc");
+        // In a narrow terminal the part around the cursor is shown.
+        let mut narrow = render(&app, 6, 4);
+        let x = narrow.get_cursor_position().unwrap().x;
+        assert!(x < 6);
+        assert!(rows(&narrow)[3].contains("en"), "{:?}", rows(&narrow));
     }
 }
