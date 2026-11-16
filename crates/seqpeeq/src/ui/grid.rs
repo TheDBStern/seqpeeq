@@ -170,7 +170,7 @@ pub fn draw_grid(
     } = layout;
     let buffer = frame.buffer_mut();
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let selected = view.region();
+    let selected = view.region(Shape::of(alignment));
     let is_selected = |cell: Cell| {
         selected
             .as_ref()

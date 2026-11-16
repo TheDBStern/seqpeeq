@@ -3,7 +3,9 @@
 
 use std::ops::Range;
 
-use seqpeeq_core::{MsaCmd, Ranges, RowSel, View};
+use seqpeeq_core::{Alignment, MsaCmd, Ranges, RowSel, View};
+
+use crate::zoom::Scale;
 
 /// One residue's place: a row and a column, counted from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,6 +19,16 @@ pub struct Cell {
 pub struct Shape {
     pub rows: usize,
     pub cols: usize,
+}
+
+impl Shape {
+    /// The rows and columns of an alignment as it now is.
+    pub fn of(alignment: &Alignment) -> Shape {
+        Shape {
+            rows: alignment.rows(),
+            cols: alignment.cols(),
+        }
+    }
 }
 
 /// How residues are coloured.
@@ -241,6 +253,12 @@ pub struct MsaView {
     pub append: bool,
     /// The last search of the names.
     pub search: Option<Search>,
+    /// The zoom level, an index into the app's levels; 0 is the grid.
+    #[allow(dead_code)] // Read by the overview, next.
+    pub zoom: usize,
+    /// Sequences per line and columns per cell at that level, set by the
+    /// app. [`Scale::ONE`] in the grid.
+    pub scale: Scale,
 }
 
 impl MsaView {
@@ -255,15 +273,21 @@ impl MsaView {
             typed: None,
             append: false,
             search: None,
+            zoom: 0,
+            scale: Scale::ONE,
         }
     }
 
-    /// What is selected: from the anchor to the cursor, both included.
-    pub fn region(&self) -> Option<Region> {
+    /// What is selected: from the anchor to the cursor, both included,
+    /// each end run out to the edge of its block and clipped to `aln`.
+    pub fn region(&self, aln: Shape) -> Option<Region> {
         let Select { kind, anchor } = self.select?;
-        let span = |a: usize, b: usize| a.min(b)..a.max(b) + 1;
-        let rows = span(anchor.row, self.cursor.row);
-        let cols = span(anchor.col, self.cursor.col);
+        let span = |a: usize, b: usize, per: usize, limit: usize| {
+            let end = ((a.max(b) / per + 1) * per).min(limit);
+            (a.min(b) / per * per).min(end)..end
+        };
+        let rows = span(anchor.row, self.cursor.row, self.scale.rows, aln.rows);
+        let cols = span(anchor.col, self.cursor.col, self.scale.cols, aln.cols);
         Some(match kind {
             SelKind::Block => Region {
                 rows: Some(rows),
@@ -280,24 +304,34 @@ impl MsaView {
         })
     }
 
-    /// What an action applies to: the selection, or else the cell under the
-    /// cursor.
-    pub fn target(&self) -> Region {
+    /// What an action applies to: the selection, or else the cursor's
+    /// block (the cell under it, in the grid).
+    pub fn target(&self, aln: Shape) -> Region {
         let Cell { row, col } = self.cursor;
-        self.region().unwrap_or(Region {
-            rows: Some(row..row + 1),
-            cols: Some(col..col + 1),
+        let Scale { rows, cols } = self.scale;
+        self.region(aln).unwrap_or(Region {
+            rows: Some(row..(row + rows).min(aln.rows)),
+            cols: Some(col..(col + cols).min(aln.cols)),
         })
     }
 
-    /// Move the cursor, stopping at the edges of the alignment.
+    /// Move the cursor by whole blocks, stopping at the edges of the
+    /// alignment.
     pub fn move_by(&mut self, rows: isize, cols: isize, aln: Shape) {
-        let row = self.cursor.row.saturating_add_signed(rows);
-        let col = self.cursor.col.saturating_add_signed(cols);
+        let steps = |n: isize, per: usize| n.saturating_mul(per as isize);
+        let row = self
+            .cursor
+            .row
+            .saturating_add_signed(steps(rows, self.scale.rows));
+        let col = self
+            .cursor
+            .col
+            .saturating_add_signed(steps(cols, self.scale.cols));
         self.move_to(Some(row), Some(col), aln);
     }
 
-    /// Put the cursor on a row, a column or both, stopping at the edges.
+    /// Put the cursor on a row, a column or both, stopping at the edges, at
+    /// the start of its block.
     pub fn move_to(&mut self, row: Option<usize>, col: Option<usize>, aln: Shape) {
         if let Some(row) = row {
             self.cursor.row = row.min(aln.rows.saturating_sub(1));
@@ -310,35 +344,68 @@ impl MsaView {
             };
             self.cursor.col = col.min(last);
         }
+        self.snap();
     }
 
-    /// Shift the screen without moving the cursor, as the mouse wheel does.
-    /// The last row and column never go further than the screen's edge.
+    /// Put the cursor, the screen's corner and the selection's anchor on
+    /// the starts of their blocks.
+    pub fn snap(&mut self) {
+        let Scale { rows, cols } = self.scale;
+        let start = |at: usize, per: usize| at / per * per;
+        self.cursor.row = start(self.cursor.row, rows);
+        self.cursor.col = start(self.cursor.col, cols);
+        self.top = start(self.top, rows);
+        self.left = start(self.left, cols);
+        if let Some(select) = &mut self.select {
+            select.anchor.row = start(select.anchor.row, rows);
+            select.anchor.col = start(select.anchor.col, cols);
+        }
+    }
+
+    /// Shift the screen by lines and cells without moving the cursor, as
+    /// the mouse wheel does. The last line and cell never go further than
+    /// the screen's edge.
     pub fn scroll(&mut self, rows: isize, cols: isize, aln: Shape, screen: Shape) {
-        let most = |total: usize, shown: usize| total.saturating_sub(shown);
-        self.top = self
-            .top
-            .saturating_add_signed(rows)
-            .min(most(aln.rows, screen.rows));
-        self.left = self
-            .left
-            .saturating_add_signed(cols)
-            .min(most(aln.cols, screen.cols));
+        let Scale {
+            rows: per_line,
+            cols: per_cell,
+        } = self.scale;
+        let shift = |first: usize, by: isize, total: usize, shown: usize, per: usize| {
+            let most = total.div_ceil(per).saturating_sub(shown);
+            (first / per).saturating_add_signed(by).min(most) * per
+        };
+        self.top = shift(self.top, rows, aln.rows, screen.rows, per_line);
+        self.left = shift(self.left, cols, aln.cols, screen.cols, per_cell);
     }
 
-    /// Shift the screen just enough to show the cursor.
+    /// Shift the screen of `screen` lines and cells just enough to show the
+    /// cursor.
     pub fn reveal(&mut self, screen: Shape) {
-        let fit = |first: usize, at: usize, shown: usize| {
-            if shown == 0 || at < first {
+        let fit = |first: usize, at: usize, shown: usize, per: usize| {
+            let (first, at) = (first / per, at / per);
+            let line = if shown == 0 || at < first {
                 at.min(first)
             } else if at >= first + shown {
                 at + 1 - shown
             } else {
                 first
-            }
+            };
+            line * per
         };
-        self.top = fit(self.top, self.cursor.row, screen.rows);
-        self.left = fit(self.left, self.cursor.col, screen.cols);
+        self.top = fit(self.top, self.cursor.row, screen.rows, self.scale.rows);
+        self.left = fit(self.left, self.cursor.col, screen.cols, self.scale.cols);
+    }
+
+    /// Scroll so that the cursor's block is in the middle of a screen of
+    /// `screen` lines and cells, as far as the edges allow.
+    #[allow(dead_code)] // Used by the overview's keys, next.
+    pub fn centre(&mut self, screen: Shape, aln: Shape) {
+        let middle = |at: usize, shown: usize, total: usize, per: usize| {
+            let most = total.div_ceil(per).saturating_sub(shown);
+            (at / per).saturating_sub(shown / 2).min(most) * per
+        };
+        self.top = middle(self.cursor.row, screen.rows, aln.rows, self.scale.rows);
+        self.left = middle(self.cursor.col, screen.cols, aln.cols, self.scale.cols);
     }
 
     /// Pull the cursor and the screen back inside an alignment that may
@@ -355,6 +422,7 @@ impl MsaView {
         {
             self.select = None;
         }
+        self.snap();
     }
 
     pub fn cycle_colouring(&mut self) {
@@ -419,6 +487,74 @@ mod tests {
         assert_eq!(view.cursor, Cell { row: 3, col: 49 });
         view.move_to(Some(1000), Some(1000), ALN);
         assert_eq!(view.cursor, Cell { row: 99, col: 49 });
+    }
+
+    #[test]
+    fn zoomed_moves_go_by_blocks_and_snap_to_their_starts() {
+        let aln = Shape {
+            rows: 100,
+            cols: 50,
+        };
+        let mut view = MsaView::new();
+        view.cursor = Cell { row: 13, col: 7 };
+        view.scale = Scale { rows: 4, cols: 8 };
+        view.snap();
+        assert_eq!(view.cursor, Cell { row: 12, col: 0 });
+        view.move_by(1, 2, aln);
+        assert_eq!(view.cursor, Cell { row: 16, col: 16 });
+        view.move_by(100, 100, aln);
+        assert_eq!(
+            view.cursor,
+            Cell { row: 96, col: 48 },
+            "the last, partial blocks"
+        );
+    }
+
+    #[test]
+    fn a_zoomed_selection_covers_whole_blocks_up_to_the_edge() {
+        let aln = Shape { rows: 10, cols: 50 };
+        let mut view = MsaView::new();
+        view.scale = Scale { rows: 4, cols: 8 };
+        view.select = Some(Select {
+            kind: SelKind::Block,
+            anchor: Cell { row: 0, col: 8 },
+        });
+        view.cursor = Cell { row: 8, col: 40 };
+        assert_eq!(
+            view.region(aln),
+            Some(Region {
+                rows: Some(0..10),
+                cols: Some(8..48)
+            })
+        );
+        view.select = None;
+        assert_eq!(
+            view.target(aln),
+            Region {
+                rows: Some(8..10),
+                cols: Some(40..48)
+            }
+        );
+    }
+
+    #[test]
+    fn the_zoomed_screen_follows_by_blocks() {
+        let aln = Shape {
+            rows: 100,
+            cols: 50,
+        };
+        let mut view = MsaView::new();
+        view.scale = Scale { rows: 4, cols: 8 };
+        view.cursor = Cell { row: 96, col: 0 };
+        view.reveal(Shape { rows: 10, cols: 7 });
+        assert_eq!(view.top, 60, "lines 15-24 of 25");
+        view.centre(Shape { rows: 10, cols: 7 }, aln);
+        assert_eq!(view.top, 60, "no further than the last line allows");
+        view.cursor = Cell { row: 48, col: 0 };
+        view.centre(Shape { rows: 10, cols: 7 }, aln);
+        assert_eq!(view.top, 28, "line 12 shown sixth of ten");
+        view.scroll(-100, 0, aln, Shape { rows: 10, cols: 7 });
+        assert_eq!(view.top, 0);
     }
 
     #[test]
@@ -548,9 +684,9 @@ mod tests {
         let aln = Shape { rows: 10, cols: 10 };
         let mut view = MsaView::new();
         view.move_to(Some(4), Some(6), aln);
-        assert_eq!(view.region(), None);
+        assert_eq!(view.region(aln), None);
         assert_eq!(
-            view.target(),
+            view.target(aln),
             Region {
                 rows: Some(4..5),
                 cols: Some(6..7)
@@ -565,14 +701,14 @@ mod tests {
             rows: Some(2..5),
             cols: Some(3..7),
         };
-        assert_eq!(view.region(), Some(block.clone()));
-        assert_eq!(view.target(), block);
+        assert_eq!(view.region(aln), Some(block.clone()));
+        assert_eq!(view.target(aln), block);
         view.select = Some(Select {
             kind: SelKind::Rows,
             anchor: Cell { row: 7, col: 0 },
         });
         assert_eq!(
-            view.region(),
+            view.region(aln),
             Some(Region {
                 rows: Some(2..8),
                 cols: None
@@ -583,7 +719,7 @@ mod tests {
             anchor: Cell { row: 0, col: 3 },
         });
         assert_eq!(
-            view.region(),
+            view.region(aln),
             Some(Region {
                 rows: None,
                 cols: Some(3..4)

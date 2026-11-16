@@ -314,10 +314,7 @@ impl App {
     /// The size of the alignment on the visible tab.
     fn shape(&self) -> Option<Shape> {
         let (alignment, _) = self.alignment()?;
-        Some(Shape {
-            rows: alignment.rows(),
-            cols: alignment.cols(),
-        })
+        Some(Shape::of(alignment))
     }
 
     fn view_mut(&mut self) -> Option<&mut MsaView> {
@@ -846,10 +843,11 @@ impl App {
     /// `d`: delete the selected sequences or columns; a block, or with no
     /// selection the cell under the cursor, is replaced with gaps.
     fn delete(&mut self) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
-        let cmd = match view.region() {
+        let aln = Shape::of(alignment);
+        let cmd = match view.region(aln) {
             Some(region @ Region { cols: None, .. }) => MsaCmd::DeleteRows {
                 rows: region.flags().0,
             },
@@ -858,7 +856,7 @@ impl App {
                 None => return,
             },
             _ => {
-                let (rows, cols) = view.target().flags();
+                let (rows, cols) = view.target(aln).flags();
                 MsaCmd::Fill {
                     rows,
                     cols,
@@ -872,21 +870,21 @@ impl App {
     /// `f` then a character: overwrite the selection, or the cell under the
     /// cursor, with it.
     fn fill(&mut self, with: char) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
-        let (rows, cols) = view.target().flags();
+        let (rows, cols) = view.target(Shape::of(alignment)).flags();
         self.act(Command::Msa(MsaCmd::Fill { rows, cols, with }));
     }
 
     /// `e`: open the command line holding the extract for the selection,
     /// ready for the file name.
     fn start_extract(&mut self) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
         let mut line = "msa extract".to_string();
-        if let Some(region) = view.region() {
+        if let Some(region) = view.region(Shape::of(alignment)) {
             let (rows, cols) = region.flags();
             if let Some(rows) = rows.rows {
                 line.push_str(&format!(" --rows {rows}"));
@@ -2201,7 +2199,7 @@ mod tests {
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), at(&app, 1, 4), NONE));
         app.handle_event(&mouse(MouseEventKind::Up(LEFT), at(&app, 1, 4), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(0..2),
                 cols: Some(2..5)
@@ -2210,7 +2208,7 @@ mod tests {
 
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), name_at(&app, 1), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(1..2),
                 cols: None
@@ -2218,7 +2216,7 @@ mod tests {
         );
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), name_at(&app, 2), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(1..3),
                 cols: None
@@ -2229,7 +2227,7 @@ mod tests {
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), ruler_at(&app, 3), NONE));
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), ruler_at(&app, 6), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: None,
                 cols: Some(3..7)
@@ -2254,7 +2252,7 @@ mod tests {
                 modifiers,
             ));
             assert_eq!(
-                view(&app).region(),
+                view(&app).region(Shape::of(app.alignment().unwrap().0)),
                 Some(Region {
                     rows: Some(0..3),
                     cols: Some(1..4)
@@ -2315,7 +2313,7 @@ mod tests {
             "the cell now under the pointer, last sequence"
         );
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(0..5),
                 cols: Some(40..44)

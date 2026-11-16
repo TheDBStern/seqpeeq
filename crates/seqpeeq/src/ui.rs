@@ -11,7 +11,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::msa_view::Cell;
+use crate::msa_view::{Cell, Shape};
 
 use crate::app::{App, Confirm, Mode, Typing};
 use grid::GridLayout;
@@ -277,7 +277,7 @@ pub fn info_text(app: &App) -> (String, String) {
             };
             left.push_str(&format!(" · {shown}"));
         }
-        if let Some(region) = view.region() {
+        if let Some(region) = view.region(Shape::of(alignment)) {
             let (rows, cols) = region.flags();
             let selected = match (rows.rows, cols) {
                 (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),

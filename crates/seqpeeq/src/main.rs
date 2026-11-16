@@ -7,6 +7,7 @@ mod palette;
 mod term;
 mod ui;
 mod worker;
+mod zoom;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
