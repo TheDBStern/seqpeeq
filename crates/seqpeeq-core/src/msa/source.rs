@@ -4,9 +4,6 @@
 //! lines are regular is afterwards read straight out of the mapped file; only
 //! untidy records are copied.
 
-// Used by the edit layer, which arrives with the next change.
-#![allow(dead_code)]
-
 use std::fs::File;
 use std::io::{self, Read};
 use std::ops::{Deref, Range};
@@ -98,6 +95,7 @@ impl Source {
 
     /// As [`Source::load`] for contents already in memory. `path` is used
     /// only in error messages.
+    #[cfg(test)]
     pub(crate) fn from_vec(bytes: Vec<u8>, path: &Path) -> Result<Source> {
         Source::from_bytes(Bytes::Memory(bytes), path)
     }
@@ -318,9 +316,8 @@ fn index(data: &[u8]) -> std::result::Result<(Vec<Record>, Vec<Vec<u8>>), String
 mod tests {
     use super::*;
     use crate::Error;
+    use crate::msa::testing::TRIO;
     use std::io::Write;
-
-    pub(crate) const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
 
     fn src(text: &str) -> Source {
         Source::from_vec(text.into(), Path::new("t.fa")).unwrap()
