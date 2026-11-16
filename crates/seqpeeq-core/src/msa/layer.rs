@@ -16,16 +16,26 @@ fn whole(len: usize) -> Vec<Range<u32>> {
     std::iter::once(0..len as u32).collect()
 }
 
-/// A block overwritten with one byte. It is tied to records and to columns
-/// of the file, so later deletions never have to rewrite it.
+/// What a fill writes.
+#[derive(Debug, Clone)]
+enum Paint {
+    /// One byte in every cell.
+    One(u8),
+    /// One byte per column of the fill's `cols`, in order.
+    Bytes(Arc<[u8]>),
+}
+
+/// A block overwritten. It is tied to records and to columns of the file,
+/// so later deletions never have to rewrite it.
 #[derive(Debug, Clone)]
 struct Fill {
     /// Record ids, as ascending runs. A fill of whole columns is one run,
     /// however many rows there are.
     ids: Vec<Range<u32>>,
-    /// Columns of the file, ascending.
+    /// Columns of the file, ascending. Columns at or past the source's
+    /// width are gap columns added at the end, not in the file.
     cols: Vec<Range<u32>>,
-    with: u8,
+    paint: Paint,
 }
 
 /// Rows and columns passed in are current ones, counted from 0, and must be
@@ -50,6 +60,11 @@ pub(crate) struct Layer {
     names: Arc<HashMap<u32, String>>,
     /// Overwritten blocks, oldest first.
     fills: Vec<Arc<Fill>>,
+    /// How many gap columns have been added at the end, deleted or not.
+    /// The next one added is file column `source.width() + added`, so a
+    /// column is never handed out twice.
+    #[allow(dead_code)]
+    added: u32,
     /// The number of this state, given by the alignment that owns it.
     pub(crate) revision: u64,
 }
@@ -65,6 +80,7 @@ impl Layer {
             aligned: source.width() == source.min_len(),
             names: Arc::default(),
             fills: Vec::new(),
+            added: 0,
             revision: 0,
         };
         if layer.aligned {
@@ -129,20 +145,37 @@ impl Layer {
                 fill.ids.get(run).is_some_and(|run| run.start <= id)
             })
             .collect();
+        let width = source.width() as u32;
         for segment in self.file_cols(&[cols]) {
             let at = out.len();
-            source.read(
-                id as usize,
-                segment.start as usize..segment.end as usize,
-                out,
-            );
+            // Added columns are ranges of their own, so a segment is either
+            // all in the file or all added.
+            if segment.start >= width {
+                out.resize(at + segment.len(), b'-');
+            } else {
+                source.read(
+                    id as usize,
+                    segment.start as usize..segment.end as usize,
+                    out,
+                );
+            }
             for fill in &fills {
+                // Where in a byte patch the current range of `cols` begins.
+                let mut offset = 0;
                 for cols in &fill.cols {
                     let (start, end) = (cols.start.max(segment.start), cols.end.min(segment.end));
                     if start < end {
                         let from = at + (start - segment.start) as usize;
-                        out[from..from + (end - start) as usize].fill(fill.with);
+                        let cells = &mut out[from..from + (end - start) as usize];
+                        match &fill.paint {
+                            Paint::One(with) => cells.fill(*with),
+                            Paint::Bytes(bytes) => {
+                                let first = offset + (start - cols.start) as usize;
+                                cells.copy_from_slice(&bytes[first..first + cells.len()]);
+                            }
+                        }
                     }
+                    offset += cols.len();
                 }
             }
         }
@@ -211,27 +244,34 @@ impl Layer {
         self.fills.push(Arc::new(Fill {
             ids: runs,
             cols: self.file_cols(cols.as_slice()),
-            with,
+            paint: Paint::One(with),
         }));
     }
 
     /// Replace the residues of `row` from `col` on with `bytes`. Aligned
-    /// files only. Stored as one fill per run of equal bytes.
+    /// files only. Stored as one patch, however varied the bytes.
     pub(crate) fn overwrite(&mut self, row: usize, col: usize, bytes: &[u8]) {
         let id = self.rows[row];
-        let mut start = 0;
-        while start < bytes.len() {
-            let with = bytes[start];
-            let len = bytes[start..].iter().take_while(|&&b| b == with).count();
-            let run = col + start..col + start + len;
-            let cols = self.file_cols(std::slice::from_ref(&run));
-            self.fills.push(Arc::new(Fill {
-                ids: std::iter::once(id..id + 1).collect(),
-                cols,
-                with,
-            }));
-            start += len;
-        }
+        let cols = self.file_cols(std::slice::from_ref(&(col..col + bytes.len())));
+        self.fills.push(Arc::new(Fill {
+            ids: std::iter::once(id..id + 1).collect(),
+            cols,
+            paint: Paint::Bytes(bytes.into()),
+        }));
+    }
+
+    /// Add `n` columns of gaps at the end. Aligned files only.
+    // Used by `msa insert`, next.
+    #[allow(dead_code)]
+    pub(crate) fn add_gap_cols(&mut self, source: &Source, n: usize) {
+        let first = source.width() as u32 + self.added;
+        self.added += n as u32;
+        let mut cols = Vec::with_capacity(self.cols.len() + 1);
+        cols.extend_from_slice(&self.cols);
+        // Never merged into the range before it, so that file and added
+        // columns are never read as one segment.
+        cols.push(first..first + n as u32);
+        self.set_cols(cols);
     }
 
     pub(crate) fn rename(&mut self, row: usize, name: String) {
@@ -343,6 +383,43 @@ mod tests {
     }
 
     #[test]
+    fn an_overwrite_is_one_patch_however_varied_its_bytes() {
+        let mut t = T::new(TRIO);
+        t.layer.overwrite(0, 2, b"TTAC-G");
+        assert_eq!(t.layer.fills.len(), 1);
+        assert_eq!(t.row(0), "ACTTAC-GTA");
+        t.delete_cols("4-5"); // through the middle of the patch
+        assert_eq!(t.row(0), "ACTC-GTA");
+        assert_eq!(t.window(0, 2..5), "TC-");
+    }
+
+    #[test]
+    fn added_gap_columns_read_as_gaps_and_take_edits_like_any_column() {
+        let mut t = T::new(TRIO);
+        t.layer.add_gap_cols(&t.source, 3);
+        assert_eq!((t.cols(), t.row(1)), (13, "ACGTTACG-A---".to_string()));
+        t.layer.overwrite(0, 9, b"AC");
+        assert_eq!(t.row(0), "ACGT-ACGTAC--");
+        t.delete_cols("11");
+        assert_eq!(t.row(0), "ACGT-ACGTA--");
+        // A column added later is a new one: the deleted one's edit stays gone.
+        t.layer.add_gap_cols(&t.source, 1);
+        assert_eq!(t.row(0), "ACGT-ACGTA---");
+        assert_eq!(t.window(0, 9..13), "A---");
+    }
+
+    #[test]
+    fn added_columns_lie_past_the_longest_record_even_after_it_is_deleted() {
+        let mut t = T::new(">a\nACGTAA\n>b\nAC\n>c\nTT\n");
+        t.delete_rows("1"); // now aligned, 2 wide; the file's widest record is 6
+        t.layer.add_gap_cols(&t.source, 2);
+        assert_eq!(
+            (t.row(0), t.row(1)),
+            ("AC--".to_string(), "TT--".to_string())
+        );
+    }
+
+    #[test]
     fn column_deletions_compose_in_current_coordinates() {
         let mut t = T::new(TRIO);
         t.delete_cols("2-3"); // s1 is now AT-ACGTA
@@ -423,6 +500,8 @@ mod tests {
         DeleteCols(Vec<(usize, usize)>),
         Fill(Vec<(usize, usize)>, Vec<(usize, usize)>, u8),
         Rename(usize, String),
+        Overwrite(usize, usize, Vec<u8>),
+        AddGapCols(usize),
     }
 
     /// Turn seeds into ranges inside `0..limit`.
@@ -445,6 +524,13 @@ mod tests {
             (seeds(), seeds(), proptest::sample::select(b"N-x".to_vec()))
                 .prop_map(|(rows, cols, with)| Op::Fill(rows, cols, with)),
             (any::<usize>(), "[a-z ]{1,6}").prop_map(|(row, name)| Op::Rename(row, name)),
+            (
+                any::<usize>(),
+                any::<usize>(),
+                proptest::collection::vec(proptest::sample::select(b"ACGT-n".to_vec()), 1..5)
+            )
+                .prop_map(|(row, col, bytes)| Op::Overwrite(row, col, bytes)),
+            (1..=3usize).prop_map(Op::AddGapCols),
         ]
     }
 
@@ -515,6 +601,18 @@ mod tests {
                     Op::Rename(row, name) => {
                         t.layer.rename(row % rows, name.clone());
                         model[row % rows].0 = name;
+                    }
+                    Op::Overwrite(row, col, bytes) => {
+                        let (row, col) = (row % rows, col % cols);
+                        let bytes = &bytes[..bytes.len().min(cols - col)];
+                        t.layer.overwrite(row, col, bytes);
+                        model[row].1[col..col + bytes.len()].copy_from_slice(bytes);
+                    }
+                    Op::AddGapCols(n) => {
+                        t.layer.add_gap_cols(&t.source, n);
+                        for (_, row) in &mut model {
+                            row.extend(std::iter::repeat_n(b'-', n));
+                        }
                     }
                 }
 
