@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
+use seqpeeq_core::Alphabet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Mode};
@@ -136,11 +137,27 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
         )],
-        Some(dataset) => vec![
-            Line::from(dataset.path.display().to_string()),
-            Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
-            Line::styled("viewer not built yet", dim()),
-        ],
+        Some(dataset) => {
+            let path = Line::from(dataset.path.display().to_string());
+            match dataset.msa() {
+                Some(alignment) => vec![
+                    path,
+                    Line::from(alignment.shape()),
+                    Line::styled(
+                        match alignment.alphabet() {
+                            Alphabet::Nucleotide => "nucleotide",
+                            Alphabet::Protein => "protein",
+                        },
+                        dim(),
+                    ),
+                ],
+                None => vec![
+                    path,
+                    Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
+                    Line::styled("viewer not built yet", dim()),
+                ],
+            }
+        }
     };
     let block = Block::new().padding(Padding::new(1, 1, 1, 0));
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -339,7 +356,7 @@ mod tests {
             "{screen:#?}"
         );
         assert_eq!(
-            screen[4], " viewer not built yet",
+            screen[4], " nucleotide",
             "the body keeps its rows above the status"
         );
     }
@@ -385,5 +402,31 @@ mod tests {
     fn tab_ranges_count_wide_characters_by_display_width() {
         // Two double-width characters: 4 columns of title plus the two spaces.
         assert_eq!(tab_ranges(&["配列".to_string()])[0], 0..6);
+    }
+
+    #[test]
+    fn alignment_body_shows_shape_and_alphabet() {
+        let mut app = with_dataset();
+        let screen = rows(&render(&app, 60, 8));
+        let at = screen
+            .iter()
+            .position(|row| row.contains("2 sequences x 8 columns") && !row.contains("opened"))
+            .expect("the body states the shape");
+        assert!(screen[at + 1].contains("nucleotide"), "{screen:?}");
+        assert!(
+            !screen
+                .iter()
+                .any(|row| row.contains("viewer not built yet"))
+        );
+
+        let cut = Command::parse_line("msa delete-cols --cols 1-3").unwrap();
+        app.session.execute(cut).unwrap();
+        let screen = rows(&render(&app, 60, 8));
+        assert!(
+            screen
+                .iter()
+                .any(|row| row.contains("2 sequences x 5 columns")),
+            "{screen:?}"
+        );
     }
 }

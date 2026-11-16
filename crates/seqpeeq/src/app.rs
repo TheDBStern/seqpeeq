@@ -99,6 +99,27 @@ impl App {
         }
     }
 
+    /// Execute a command on behalf of the user looking at the visible tab.
+    fn run_command(&mut self, cmd: Command) -> seqpeeq_core::Result<String> {
+        let chooses_file = matches!(cmd, Command::Open { .. } | Command::Use { .. });
+        // Data commands apply to the session's current file. If that is not
+        // the tab on screen, say so first, so the log shows which file each
+        // command changed.
+        if !chooses_file
+            && !self.session.datasets().is_empty()
+            && self.session.current() != Some(self.active)
+        {
+            self.session.execute(Command::Use {
+                dataset: self.active + 1,
+            })?;
+        }
+        let outcome = self.session.execute(cmd)?;
+        if chooses_file && let Some(current) = self.session.current() {
+            self.active = current;
+        }
+        Ok(outcome.message)
+    }
+
     /// Run one line typed on the command line.
     fn run_line(&mut self, line: &str) {
         let line = line.trim();
@@ -107,15 +128,10 @@ impl App {
             self.quit = true;
             return;
         }
-        let opened_before = self.session.datasets().len();
-        let result = Command::parse_line(line).and_then(|cmd| self.session.execute(cmd));
-        self.status = match result {
-            Ok(outcome) => outcome.message,
+        self.status = match Command::parse_line(line).and_then(|cmd| self.run_command(cmd)) {
+            Ok(message) => message,
             Err(error) => format!("error: {error}"),
         };
-        if self.session.datasets().len() > opened_before {
-            self.active = self.session.datasets().len() - 1;
-        }
     }
 }
 
@@ -315,5 +331,71 @@ mod tests {
         release.kind = KeyEventKind::Release;
         app.handle_event(&Event::Key(release));
         assert!(!app.quit);
+    }
+
+    const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+
+    /// An app with two ten-column alignments open; the second is visible.
+    fn with_two_alignments() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        for name in ["a.fa", "b.fa"] {
+            let path = dir.path().join(name);
+            fs::write(&path, TRIO).unwrap();
+            type_str(&mut app, &format!(":open {}", path.display()));
+            enter(&mut app);
+        }
+        (app, dir)
+    }
+
+    fn cols(app: &App, dataset: usize) -> usize {
+        app.session.datasets()[dataset].msa().unwrap().cols()
+    }
+
+    #[test]
+    fn a_typed_command_applies_to_the_visible_tab() {
+        let (mut app, _dir) = with_two_alignments();
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!((app.active, app.session.current()), (0, Some(1)));
+
+        type_str(&mut app, ":msa delete-cols --cols 1");
+        enter(&mut app);
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            ["use 1", "msa delete-cols --cols 1"]
+        );
+        assert_eq!((cols(&app, 0), cols(&app, 1)), (9, 10));
+
+        // The file is now current, so no second `use` is needed.
+        let before = app.session.history().len();
+        type_str(&mut app, ":msa delete-cols --cols 1");
+        enter(&mut app);
+        assert_eq!(app.session.history().len(), before + 1);
+        assert_eq!((cols(&app, 0), cols(&app, 1)), (8, 10));
+    }
+
+    #[test]
+    fn typed_use_moves_the_visible_tab() {
+        let (mut app, _dir) = with_two_alignments();
+        assert_eq!(app.active, 1);
+        type_str(&mut app, ":use 1");
+        enter(&mut app);
+        assert_eq!((app.active, app.status.as_str()), (0, "using 1: a.fa"));
+        type_str(&mut app, ":use 9");
+        enter(&mut app);
+        assert_eq!(app.status, "error: there is no file 9 (2 are open)");
+        assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn opening_a_file_does_not_log_a_use_first() {
+        let (mut app, dir) = with_two_alignments();
+        app.handle_event(&press(KeyCode::Tab));
+        let path = dir.path().join("a.fa");
+        type_str(&mut app, &format!(":open {}", path.display()));
+        enter(&mut app);
+        assert_eq!(app.session.history().len(), 3);
+        assert_eq!(app.active, 2);
     }
 }

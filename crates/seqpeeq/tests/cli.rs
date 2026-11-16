@@ -153,3 +153,100 @@ fn an_error_states_its_cause_once() {
         "seqpeeq: line 2: missing.fa: No such file or directory (os error 2)\n"
     );
 }
+
+const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+
+fn gzip(text: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(text.as_bytes()).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn gunzip(bytes: &[u8]) -> String {
+    use std::io::Read;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+/// A logged session, replayed in another directory holding the same inputs,
+/// writes the same bytes; and replaying never replaces a file.
+#[test]
+fn replay_reproduces_outputs_byte_for_byte() {
+    let root = tempfile::tempdir().unwrap();
+    let (a, b) = (root.path().join("A"), root.path().join("B"));
+    let compressed = gzip(TRIO);
+    for dir in [&a, &b] {
+        fs::create_dir(dir).unwrap();
+        fs::write(dir.join("in.fa"), TRIO).unwrap();
+        fs::write(dir.join("in.fa.gz"), &compressed).unwrap();
+    }
+    let inputs_untouched = |dir: &Path| {
+        assert_eq!(fs::read_to_string(dir.join("in.fa")).unwrap(), TRIO);
+        assert_eq!(fs::read(dir.join("in.fa.gz")).unwrap(), compressed);
+    };
+    let outputs = ["full.fa", "part.fa.gz", "copy.fa", "two.fa"];
+    let contents = |dir: &Path| -> Vec<Vec<u8>> {
+        outputs
+            .iter()
+            .map(|name| fs::read(dir.join(name)).unwrap())
+            .collect()
+    };
+
+    let session = seqpeeq(
+        &a,
+        &[
+            "run",
+            "--log",
+            "s.log",
+            "open in.fa",
+            "msa delete-cols --cols 2-3",
+            "msa rename --regex '^s' --replace seq_",
+            "msa fill --rows 1 --cols 1-2 --with N",
+            "msa delete-rows --match third",
+            "undo",
+            "msa extract --out full.fa",
+            "msa extract --rows 2 --cols 1-4 --wrap 3 --out part.fa.gz",
+            "open in.fa.gz",
+            "msa extract --out copy.fa",
+            "use 1",
+            "redo",
+            "msa extract --out two.fa",
+        ],
+    );
+    assert!(session.status.success(), "{}", stderr(&session));
+    assert_eq!(
+        fs::read_to_string(a.join("full.fa")).unwrap(),
+        ">seq_1\nNN-ACGTA\n>seq_2\nATTACG-A\n>seq_3 third one\nA-TACGTA\n"
+    );
+    assert_eq!(
+        gunzip(&fs::read(a.join("part.fa.gz")).unwrap()),
+        ">seq_2\nATT\nA\n"
+    );
+    assert_eq!(fs::read_to_string(a.join("copy.fa")).unwrap(), TRIO);
+    assert_eq!(
+        fs::read_to_string(a.join("two.fa")).unwrap(),
+        ">seq_1\nNN-ACGTA\n>seq_2\nATTACG-A\n"
+    );
+    inputs_untouched(&a);
+
+    let replayed = seqpeeq(&b, &["replay", "../A/s.log"]);
+    assert!(replayed.status.success(), "{}", stderr(&replayed));
+    assert_eq!(stdout(&replayed).trim(), "replayed 13 commands");
+    assert_eq!(contents(&a), contents(&b));
+    inputs_untouched(&b);
+
+    // A second replay would have to replace the outputs, so it is refused.
+    let again = seqpeeq(&b, &["replay", "../A/s.log"]);
+    assert_eq!(again.status.code(), Some(1));
+    let message = stderr(&again);
+    assert!(
+        message.contains("line ") && message.contains("already exists"),
+        "{message}"
+    );
+    assert_eq!(contents(&a), contents(&b));
+    inputs_untouched(&b);
+}

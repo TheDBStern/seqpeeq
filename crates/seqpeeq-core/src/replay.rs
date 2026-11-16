@@ -11,30 +11,42 @@ pub struct ReplayReport {
     pub warnings: Vec<String>,
 }
 
-/// Execute every command line of a log, in order, stopping at the first failure.
+/// Execute every command line of a log, in order.
 ///
-/// Lines are trimmed, so Windows line endings are fine; blank lines and `#`
-/// comments are skipped. An `open` followed by its `# input … size=N` comment
-/// is checked against the file's current size. Only size is compared, because
-/// copying a file between machines changes its modification time.
+/// Every line is parsed before anything is executed, so a log with a line
+/// that cannot be understood changes nothing. A command that parses but then
+/// fails stops the replay there; the commands before it have taken effect.
+///
+/// Lines are trimmed, so Windows line endings are fine; blank lines, `#`
+/// comments and a leading byte-order mark are skipped. An `open` followed by
+/// its `# input … size=N` comment is checked against the file's current size.
+/// Only size is compared, because copying a file between machines changes its
+/// modification time.
 pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let mut report = ReplayReport {
-        commands: 0,
-        warnings: Vec::new(),
+    let at_line = |index: usize| {
+        move |cause| Error::Replay {
+            line: index + 1,
+            cause: Box::new(cause),
+        }
     };
+
+    let mut commands = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let number = index + 1;
-        let at_line = |cause| Error::Replay {
-            line: number,
-            cause: Box::new(cause),
-        };
-        let cmd = Command::parse_line(line).map_err(at_line)?;
+        commands.push((index, Command::parse_line(line).map_err(at_line(index))?));
+    }
+
+    let mut report = ReplayReport {
+        commands: 0,
+        warnings: Vec::new(),
+    };
+    for (index, cmd) in commands {
         let opened_before = session.datasets().len();
-        session.execute(cmd).map_err(at_line)?;
+        session.execute(cmd).map_err(at_line(index))?;
         report.commands += 1;
 
         let recorded = lines.get(index + 1).and_then(|next| recorded_size(next));
@@ -42,7 +54,8 @@ pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
             && dataset.size != was
         {
             report.warnings.push(format!(
-                "line {number}: {} is {} bytes but was {was} when the log was written",
+                "line {}: {} is {} bytes but was {was} when the log was written",
+                index + 1,
                 dataset.path.display(),
                 dataset.size
             ));
@@ -90,15 +103,49 @@ mod tests {
         assert!(r.warnings.is_empty());
     }
 
+    /// A temp dir holding the ten-column TRIO alignment.
+    fn trio() -> (TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.fa");
+        fs::write(&path, crate::msa::testing::TRIO).unwrap();
+        (dir, path)
+    }
+
     #[test]
-    fn stops_at_bad_line() {
-        let (_dir, a, b) = setup();
+    fn nothing_runs_when_a_later_line_does_not_parse() {
+        let (_dir, a) = trio();
         let mut s = Session::new(None);
-        let text = format!("open {}\nbogus\nopen {}\n", a.display(), b.display());
+        let text = format!(
+            "open {}\nmsa delete-cols --cols 1\nmsa frobnicate\n",
+            a.display()
+        );
         let Err(Error::Replay { line, .. }) = replay(&text, &mut s) else {
             panic!()
         };
-        assert_eq!((line, s.datasets().len()), (2, 1));
+        assert_eq!(line, 3);
+        assert!(s.datasets().is_empty() && s.history().is_empty());
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_ignored() {
+        let (_dir, a) = trio();
+        let mut s = Session::new(None);
+        let text = format!("\u{feff}open {}\n", a.display());
+        assert_eq!(replay(&text, &mut s).unwrap().commands, 1);
+    }
+
+    #[test]
+    fn a_command_that_fails_while_running_reports_its_line_and_keeps_earlier_work() {
+        let (_dir, a) = trio();
+        let mut s = Session::new(None);
+        let text = format!("open {}\n# note\nmsa delete-cols --cols 99\n", a.display());
+        let error = replay(&text, &mut s).unwrap_err();
+        assert!(matches!(error, Error::Replay { line: 3, .. }));
+        assert_eq!(
+            error.to_string(),
+            "line 3: column 99 is past the last column (10)"
+        );
+        assert_eq!(s.datasets().len(), 1);
     }
 
     #[test]
