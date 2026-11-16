@@ -4,10 +4,6 @@
 //! rows and columns, never on their product, and undoing an edit is putting
 //! back a copy of the layer.
 
-// The editing methods are first called by the alignment commands, which
-// arrive with the next change.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::ops::Range;
 
