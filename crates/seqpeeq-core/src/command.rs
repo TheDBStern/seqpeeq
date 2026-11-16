@@ -309,6 +309,8 @@ mod tests {
         "msa rename --rows 5 --to 'Homo sapiens'",
         "msa rename --regex _ --replace ' '",
         "msa rename --regex=-x --replace ''",
+        "msa overwrite --row 3 --col 27 --seq ACG-T",
+        "msa overwrite --row 1 --col 1 --seq=-A",
     ];
 
     #[test]
@@ -444,6 +446,8 @@ mod tests {
                 regex: Some(regex),
                 replace: Some(replace)
             }),
+            (1..10_000usize, 1..10_000usize, "[!-=?-~]{1,12}")
+                .prop_map(|(row, col, seq)| MsaCmd::Overwrite { row, col, seq }),
         ]
     }
 
@@ -480,7 +484,7 @@ mod tests {
             ("msa rename --regex a", "missing --replace <REPLACE>"),
             (
                 "msa",
-                "msa needs one of: delete-rows, delete-cols, fill, extract, rename",
+                "msa needs one of: delete-rows, delete-cols, fill, overwrite, extract, rename",
             ),
         ] {
             let Err(Error::Parse(m)) = Command::parse_line(line) else {

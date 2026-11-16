@@ -201,6 +201,7 @@ impl Alignment {
             MsaCmd::DeleteRows { rows } => self.delete_rows(rows),
             MsaCmd::DeleteCols { cols } => self.delete_cols(cols),
             MsaCmd::Fill { rows, cols, with } => self.fill(rows, cols.as_ref(), *with),
+            MsaCmd::Overwrite { row, col, seq } => self.overwrite(*row, *col, seq),
             MsaCmd::Rename {
                 rows, to: Some(to), ..
             } => self.rename_one(rows, to),
@@ -386,6 +387,38 @@ impl Alignment {
             "filled {} x {} with '{with}'",
             count(rows.count(), "sequence"),
             count(cols.count(), "column")
+        )))
+    }
+
+    fn overwrite(&mut self, row: usize, col: usize, seq: &str) -> Result<Applied> {
+        if !self.is_aligned() {
+            return invalid(NOT_ALIGNED);
+        }
+        if row == 0 || col == 0 {
+            return invalid("positions start at 1");
+        }
+        if seq.is_empty() {
+            return invalid("--seq is empty");
+        }
+        if !seq.bytes().all(|b| b.is_ascii_graphic() && b != b'>') {
+            return invalid("--seq may hold only printable ASCII characters other than '>'");
+        }
+        if row > self.rows() {
+            return invalid(format!("row {row} is past the last row ({})", self.rows()));
+        }
+        let last = col - 1 + seq.len();
+        if last > self.cols() {
+            return invalid(format!(
+                "column {last} is past the last column ({})",
+                self.cols()
+            ));
+        }
+        self.edit("overwrite", |layer, _| {
+            layer.overwrite(row - 1, col - 1, seq.as_bytes())
+        });
+        Ok(Applied::new(format!(
+            "overwrote {} of row {row} from column {col}",
+            count(seq.len(), "column")
         )))
     }
 
@@ -828,5 +861,78 @@ mod tests {
         assert_eq!(a.name(0), "Homo $ sapiens");
         run(&mut a, r"rename --regex ' \$ ' --replace '$0$'").unwrap();
         assert_eq!(a.name(0), "Homo $ $sapiens");
+    }
+
+    fn seqs(aln: &Alignment) -> Vec<String> {
+        grid(aln).into_iter().map(|(_, seq)| seq).collect()
+    }
+
+    #[test]
+    fn overwrite_replaces_a_run_in_one_row() {
+        let mut aln = Alignment::from_text(TRIO);
+        let done = run(&mut aln, "overwrite --row 2 --col 4 --seq=-NNa").unwrap();
+        assert_eq!(done.message, "overwrote 4 columns of row 2 from column 4");
+        assert_eq!(seqs(&aln), ["ACGT-ACGTA", "ACG-NNaG-A", "AC--TACGTA"]);
+    }
+
+    #[test]
+    fn overwrite_is_one_undo_step() {
+        let mut aln = Alignment::from_text(TRIO);
+        run(&mut aln, "overwrite --row 1 --col 1 --seq NNNXX").unwrap();
+        assert_eq!(
+            aln.undo().unwrap().message,
+            "undid overwrite; now 3 sequences x 10 columns"
+        );
+        assert_eq!(seqs(&aln)[0], "ACGT-ACGTA");
+        assert!(aln.undo().is_err());
+    }
+
+    #[test]
+    fn overwrite_is_tied_to_the_columns_it_was_typed_into() {
+        // Typed after a deletion, or before it: the same cells end up changed.
+        let mut after = Alignment::from_text(TRIO);
+        run(&mut after, "delete-cols --cols 2-3").unwrap();
+        run(&mut after, "overwrite --row 1 --col 2 --seq XY").unwrap();
+        let mut before = Alignment::from_text(TRIO);
+        run(&mut before, "overwrite --row 1 --col 4 --seq XY").unwrap();
+        run(&mut before, "delete-cols --cols 2-3").unwrap();
+        assert_eq!(seqs(&after)[0], "AXYACGTA");
+        assert_eq!(seqs(&after), seqs(&before));
+    }
+
+    #[test]
+    fn overwrite_refusals_change_nothing() {
+        const BAD_SEQ: &str = "--seq may hold only printable ASCII characters other than '>'";
+        for (text, message) in [
+            (
+                "overwrite --row 4 --col 1 --seq A",
+                "row 4 is past the last row (3)",
+            ),
+            (
+                "overwrite --row 1 --col 9 --seq ACG",
+                "column 11 is past the last column (10)",
+            ),
+            ("overwrite --row 0 --col 1 --seq A", "positions start at 1"),
+            ("overwrite --row 1 --col 0 --seq A", "positions start at 1"),
+            ("overwrite --row 1 --col 1 --seq ''", "--seq is empty"),
+            ("overwrite --row 1 --col 1 --seq 'A>C'", BAD_SEQ),
+            ("overwrite --row 1 --col 1 --seq 'A C'", BAD_SEQ),
+        ] {
+            let mut aln = Alignment::from_text(TRIO);
+            assert_eq!(
+                run(&mut aln, text).unwrap_err().to_string(),
+                message,
+                "{text}"
+            );
+            assert_eq!(seqs(&aln)[0], "ACGT-ACGTA");
+            assert!(aln.undo().is_err(), "{text}");
+        }
+        let mut ragged = Alignment::from_text(">a\nAC\n>b\nACGT\n");
+        assert_eq!(
+            run(&mut ragged, "overwrite --row 1 --col 1 --seq A")
+                .unwrap_err()
+                .to_string(),
+            "sequences differ in length, so columns cannot be selected"
+        );
     }
 }

@@ -212,6 +212,25 @@ impl Layer {
         }));
     }
 
+    /// Replace the residues of `row` from `col` on with `bytes`. Aligned
+    /// files only. Stored as one fill per run of equal bytes.
+    pub(crate) fn overwrite(&mut self, row: usize, col: usize, bytes: &[u8]) {
+        let id = self.rows[row];
+        let mut start = 0;
+        while start < bytes.len() {
+            let with = bytes[start];
+            let len = bytes[start..].iter().take_while(|&&b| b == with).count();
+            let run = col + start..col + start + len;
+            let cols = self.file_cols(std::slice::from_ref(&run));
+            self.fills.push(Arc::new(Fill {
+                ids: std::iter::once(id..id + 1).collect(),
+                cols,
+                with,
+            }));
+            start += len;
+        }
+    }
+
     pub(crate) fn rename(&mut self, row: usize, name: String) {
         // Copies the names once if an earlier state still shares them.
         Arc::make_mut(&mut self.names).insert(self.rows[row], name);

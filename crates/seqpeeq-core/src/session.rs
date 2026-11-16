@@ -93,6 +93,12 @@ impl Session {
     /// cannot be logged refuses the command instead of changing state silently.
     pub fn execute(&mut self, cmd: Command) -> Result<Outcome> {
         let line = cmd.to_line()?;
+        // The log is replayed from this text, so it must mean this command.
+        if Command::parse_line(&line).ok().as_ref() != Some(&cmd) {
+            return Err(Error::Invalid(format!(
+                "internal error: '{line}' does not read back as the same command; nothing was done"
+            )));
+        }
         let now = (self.clock)();
         if let Some(log) = &mut self.log {
             log.ensure_open(&now)?;
@@ -673,5 +679,23 @@ mod tests {
         assert!(matches!(err, Error::Exists(_)), "{err}");
         assert_eq!(fs::read_to_string(&file).unwrap(), TRIO);
         assert_eq!(s.history().len(), 2);
+    }
+
+    #[test]
+    fn a_command_that_does_not_read_back_is_refused() {
+        use crate::{MsaCmd, RowSel};
+        let (_keep, dir) = trio_dir();
+        let mut session = opened(&dir, &["a.fa"]);
+        // `--to` and `--regex` cannot be combined, so this text does not parse.
+        let odd = Command::Msa(MsaCmd::Rename {
+            rows: RowSel::default(),
+            to: Some("x".into()),
+            regex: Some("a".into()),
+            replace: Some("b".into()),
+        });
+        let error = session.execute(odd).unwrap_err().to_string();
+        assert!(error.starts_with("internal error: "), "{error}");
+        assert_eq!(session.history().len(), 1);
+        assert_eq!(session.datasets()[0].msa().unwrap().name(0), "s1");
     }
 }

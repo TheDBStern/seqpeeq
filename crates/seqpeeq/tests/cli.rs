@@ -250,3 +250,33 @@ fn replay_reproduces_outputs_byte_for_byte() {
     assert_eq!(contents(&a), contents(&b));
     inputs_untouched(&b);
 }
+
+#[test]
+fn overwrite_is_logged_and_replayed() {
+    let root = tempfile::tempdir().unwrap();
+    let (a, b) = (root.path().join("A"), root.path().join("B"));
+    for dir in [&a, &b] {
+        fs::create_dir(dir).unwrap();
+        fs::write(dir.join("in.fa"), TRIO).unwrap();
+    }
+    let out = seqpeeq(
+        &a,
+        &[
+            "run",
+            "--log",
+            "s.log",
+            "open in.fa",
+            "msa overwrite --row 1 --col 1 --seq=-n",
+            "msa extract --out o.fa",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        commands(&a.join("s.log"))[1],
+        "msa overwrite --row 1 --col 1 --seq=-n"
+    );
+    assert!(seqpeeq(&b, &["replay", "../A/s.log"]).status.success());
+    let written = fs::read_to_string(b.join("o.fa")).unwrap();
+    assert!(written.starts_with(">s1\n-nGT-ACGTA\n"), "{written}");
+    assert_eq!(written, fs::read_to_string(a.join("o.fa")).unwrap());
+}

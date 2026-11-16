@@ -64,6 +64,16 @@ pub enum MsaCmd {
         #[arg(long = "with", allow_hyphen_values = true)]
         with: char,
     },
+    /// Replace residues in one row, starting at a column, with the
+    /// characters given.
+    Overwrite {
+        #[arg(long)]
+        row: usize,
+        #[arg(long)]
+        col: usize,
+        #[arg(long, allow_hyphen_values = true)]
+        seq: String,
+    },
     /// Write sequences, or parts of them, to a new FASTA file.
     #[command(alias = "save")]
     Extract {
@@ -97,6 +107,7 @@ impl MsaCmd {
             MsaCmd::DeleteRows { .. } => "delete-rows",
             MsaCmd::DeleteCols { .. } => "delete-cols",
             MsaCmd::Fill { .. } => "fill",
+            MsaCmd::Overwrite { .. } => "overwrite",
             MsaCmd::Extract { .. } => "extract",
             MsaCmd::Rename { .. } => "rename",
         }
@@ -113,6 +124,11 @@ impl MsaCmd {
                     words.flag("--cols", cols);
                 }
                 words.flag("--with", with);
+            }
+            MsaCmd::Overwrite { row, col, seq } => {
+                words.flag("--row", row);
+                words.flag("--col", col);
+                words.flag("--seq", seq);
             }
             MsaCmd::Extract {
                 rows,
