@@ -18,4 +18,4 @@ pub use log::SessionLog;
 pub use msa::{Alignment, Alphabet};
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
-pub use session::{Dataset, Outcome, Session};
+pub use session::{Content, Dataset, Outcome, Session};

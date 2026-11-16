@@ -1,9 +1,5 @@
 //! Alignments: a FASTA file read in place, under a layer of edits.
 
-// The commands are first called by the session, which arrives with a later
-// change.
-#![allow(dead_code)]
-
 pub(crate) mod layer;
 pub(crate) mod source;
 pub(crate) mod write;
