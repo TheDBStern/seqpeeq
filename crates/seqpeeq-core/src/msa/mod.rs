@@ -329,7 +329,7 @@ impl Alignment {
         if !self.is_aligned() {
             return invalid(NOT_ALIGNED);
         }
-        let all_cols = Ranges::new([0..self.cols()]);
+        let all_cols = Ranges::new(std::iter::once(0..self.cols()));
         let Some(cols) = cols.or(all_cols.as_ref()) else {
             return invalid("there are no columns to fill");
         };
