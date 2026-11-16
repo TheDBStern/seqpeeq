@@ -11,14 +11,28 @@ use ratatui::layout::Size;
 use seqpeeq_core::{Alignment, Command, Error, Finished, Job, MsaCmd, Progress, Session, Started};
 
 use crate::line::{History, LineEdit};
-use crate::msa_view::{MsaView, Shape, parse_goto};
+use crate::msa_view::{Cell, MsaView, Region, SelKind, Select, Shape, parse_goto};
 use crate::ui;
+use crate::ui::grid::{self, Hit};
 
 pub enum Mode {
     Normal,
     /// Typing one line at the bottom of the screen.
     Prompt(Prompt),
+    /// `f` was pressed: the next key is the character to fill with.
+    FillChar,
+    /// Waiting for `y` or anything else in answer to a question.
+    Confirm(Confirm),
     Help,
+}
+
+/// What the user is being asked to confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirm {
+    /// Quitting while an alignment has edits not written to a file.
+    Quit,
+    /// Closing such an alignment.
+    Close,
 }
 
 pub struct Prompt {
@@ -32,6 +46,8 @@ pub enum PromptKind {
     Command,
     /// Where to move the cursor: a column, or a row and a column.
     Goto,
+    /// A new name for the sequence in `row`.
+    Rename { row: usize },
 }
 
 impl PromptKind {
@@ -40,6 +56,7 @@ impl PromptKind {
         match self {
             PromptKind::Command => ":",
             PromptKind::Goto => "go to: ",
+            PromptKind::Rename { .. } => "name: ",
         }
     }
 }
@@ -90,6 +107,9 @@ pub struct App {
     pub views: HashMap<u64, MsaView>,
     /// Lines entered on the command line.
     history: History,
+    /// Whether the left button went down on the grid and is still held, so
+    /// that mouse movement is a drag across it.
+    dragging: bool,
 }
 
 impl App {
@@ -107,6 +127,7 @@ impl App {
             screen: Size::new(80, 24),
             views: HashMap::new(),
             history: History::default(),
+            dragging: false,
         }
     }
 
@@ -255,13 +276,17 @@ impl App {
         match &mut self.mode {
             Mode::Normal if ctrl => {}
             Mode::Normal => match key.code {
+                // Esc lets go of the selection if there is one; otherwise it
+                // stops the work running in the background.
                 KeyCode::Esc => {
-                    if let Some(busy) = &self.busy {
+                    if let Some(view) = self.view_mut().filter(|view| view.select.is_some()) {
+                        view.select = None;
+                    } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
                         self.status = "cancelling…".to_string();
                     }
                 }
-                KeyCode::Char('q') => self.quit = true,
+                KeyCode::Char('q') => self.ask_quit(),
                 KeyCode::Char(':') => self.open_prompt(PromptKind::Command, ""),
                 KeyCode::Char('?') => self.mode = Mode::Help,
                 KeyCode::Char('L') => self.show_log = !self.show_log,
@@ -293,8 +318,130 @@ impl App {
                     prompt.line.key(key);
                 }
             },
+            Mode::FillChar => {
+                self.mode = Mode::Normal;
+                if let (KeyCode::Char(with), false) = (key.code, ctrl) {
+                    self.fill(with);
+                }
+            }
+            Mode::Confirm(confirm) => {
+                let confirm = *confirm;
+                self.mode = Mode::Normal;
+                let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
+                match confirm {
+                    Confirm::Quit if yes => self.quit = true,
+                    Confirm::Quit => self.status = "not quitting".to_string(),
+                    Confirm::Close if yes => self.act(Command::Close),
+                    Confirm::Close => self.status = "not closed".to_string(),
+                }
+            }
             Mode::Help => self.mode = Mode::Normal,
         }
+    }
+
+    /// The names of the open alignments that have edits not written to a
+    /// file.
+    pub fn unwritten(&self) -> Vec<String> {
+        let titles = ui::tab_titles(self);
+        let datasets = self.session.datasets().iter();
+        datasets
+            .zip(titles)
+            .filter(|(dataset, _)| dataset.msa().is_some_and(Alignment::is_modified))
+            .map(|(_, title)| title)
+            .collect()
+    }
+
+    /// Quit, asking first if that would lose edits.
+    fn ask_quit(&mut self) {
+        if self.unwritten().is_empty() {
+            self.quit = true;
+        } else {
+            self.mode = Mode::Confirm(Confirm::Quit);
+        }
+    }
+
+    /// Run a command built from a gesture and show how it went.
+    fn act(&mut self, cmd: Command) {
+        let ran = self.run_command(cmd);
+        self.report(ran, false);
+        self.reveal();
+    }
+
+    /// `d`: delete the selected sequences or columns; a block, or with no
+    /// selection the cell under the cursor, is replaced with gaps.
+    fn delete(&mut self) {
+        let Some((_, view)) = self.alignment() else {
+            return;
+        };
+        let cmd = match view.region() {
+            Some(region @ Region { cols: None, .. }) => MsaCmd::DeleteRows {
+                rows: region.flags().0,
+            },
+            Some(region @ Region { rows: None, .. }) => match region.flags().1 {
+                Some(cols) => MsaCmd::DeleteCols { cols },
+                None => return,
+            },
+            _ => {
+                let (rows, cols) = view.target().flags();
+                MsaCmd::Fill {
+                    rows,
+                    cols,
+                    with: '-',
+                }
+            }
+        };
+        self.act(Command::Msa(cmd));
+    }
+
+    /// `f` then a character: overwrite the selection, or the cell under the
+    /// cursor, with it.
+    fn fill(&mut self, with: char) {
+        let Some((_, view)) = self.alignment() else {
+            return;
+        };
+        let (rows, cols) = view.target().flags();
+        self.act(Command::Msa(MsaCmd::Fill { rows, cols, with }));
+    }
+
+    /// `e`: open the command line holding the extract for the selection,
+    /// ready for the file name.
+    fn start_extract(&mut self) {
+        let Some((_, view)) = self.alignment() else {
+            return;
+        };
+        let mut line = "msa extract".to_string();
+        if let Some(region) = view.region() {
+            let (rows, cols) = region.flags();
+            if let Some(rows) = rows.rows {
+                line.push_str(&format!(" --rows {rows}"));
+            }
+            if let Some(cols) = cols {
+                line.push_str(&format!(" --cols {cols}"));
+            }
+        }
+        line.push_str(" --out ");
+        self.open_prompt(PromptKind::Command, &line);
+    }
+
+    /// Give the sequence in `row` the name that was typed, if it changed.
+    fn rename(&mut self, row: usize, name: &str) {
+        let Some((alignment, _)) = self.alignment() else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() || row >= alignment.rows() || name == alignment.name(row) {
+            return;
+        }
+        let rows = Region {
+            rows: Some(row..row + 1),
+            cols: None,
+        };
+        self.act(Command::Msa(MsaCmd::Rename {
+            rows: rows.flags().0,
+            to: Some(name.to_string()),
+            regex: None,
+            replace: None,
+        }));
     }
 
     /// A key that acts on the alignment on the visible tab.
@@ -302,9 +449,22 @@ impl App {
         let Some(aln) = self.shape() else {
             return;
         };
-        if key.code == KeyCode::Char('g') {
-            self.open_prompt(PromptKind::Goto, "");
-            return;
+        match key.code {
+            KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => return self.delete(),
+            KeyCode::Char('f') => return self.mode = Mode::FillChar,
+            KeyCode::Char('e') => return self.start_extract(),
+            KeyCode::Char('u') => return self.act(Command::Undo),
+            KeyCode::Char('U') => return self.act(Command::Redo),
+            KeyCode::Char('r') => {
+                let Some((alignment, view)) = self.alignment() else {
+                    return;
+                };
+                let row = view.cursor.row;
+                let name = alignment.name(row).to_string();
+                return self.open_prompt(PromptKind::Rename { row }, &name);
+            }
+            _ => {}
         }
         let page = self.screen_shape().rows.max(1) as isize;
         let Some(view) = self.view_mut() else {
@@ -319,6 +479,16 @@ impl App {
             KeyCode::PageDown => view.move_by(page, 0, aln),
             KeyCode::Home => view.move_to(None, Some(0), aln),
             KeyCode::End => view.move_to(None, Some(usize::MAX), aln),
+            KeyCode::Char(kind @ ('v' | 'V' | 'C')) => {
+                view.select = Some(Select {
+                    kind: match kind {
+                        'v' => SelKind::Block,
+                        'V' => SelKind::Rows,
+                        _ => SelKind::Cols,
+                    },
+                    anchor: view.cursor,
+                });
+            }
             KeyCode::Char('c') => view.cycle_colouring(),
             KeyCode::Char('[') => view.widen_names(-1),
             KeyCode::Char(']') => view.widen_names(1),
@@ -420,6 +590,7 @@ impl App {
                 self.run_line(prompt.line.text());
             }
             PromptKind::Goto => self.go_to(prompt.line.text()),
+            PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
         }
     }
 
@@ -429,12 +600,113 @@ impl App {
         }
         self.wheel(mouse);
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
-        if left_click && mouse.row == 0 && matches!(self.mode, Mode::Normal) {
+        if left_click && mouse.row == 0 {
             let ranges = ui::tab_ranges(&ui::tab_titles(self));
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
                 self.active = tab;
             }
         }
+        self.grid_mouse(mouse);
+    }
+
+    /// The mouse on the alignment: press to place the cursor or to select a
+    /// sequence or column, drag to select, right-click to extend.
+    fn grid_mouse(&mut self, mouse: &MouseEvent) {
+        let (Some(layout), Some(aln)) = (ui::grid_of(self), self.shape()) else {
+            return;
+        };
+        let screen = grid::screen_shape(&layout);
+        let was_dragging = self.dragging;
+        let Some(view) = self.view_mut() else {
+            return;
+        };
+        let at = grid::hit(&layout, view, aln, mouse.column, mouse.row);
+        // Many terminals keep Shift-click for their own selection, so the
+        // right button extends too.
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let mut dragging = was_dragging;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if !shift => {
+                dragging = at != Hit::Outside;
+                match at {
+                    Hit::Cell(cell) => {
+                        view.cursor = cell;
+                        view.select = None;
+                    }
+                    Hit::Name(row) => {
+                        view.cursor.row = row;
+                        view.select = Some(Select {
+                            kind: SelKind::Rows,
+                            anchor: view.cursor,
+                        });
+                    }
+                    Hit::Ruler(col) => {
+                        view.cursor.col = col;
+                        view.select = Some(Select {
+                            kind: SelKind::Cols,
+                            anchor: view.cursor,
+                        });
+                    }
+                    Hit::Outside => {}
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
+                let (kind, to) = match at {
+                    Hit::Cell(cell) => (SelKind::Block, cell),
+                    Hit::Name(row) => (SelKind::Rows, Cell { row, ..view.cursor }),
+                    Hit::Ruler(col) => (SelKind::Cols, Cell { col, ..view.cursor }),
+                    Hit::Outside => return,
+                };
+                view.select.get_or_insert(Select {
+                    kind,
+                    anchor: view.cursor,
+                });
+                view.cursor = to;
+            }
+            MouseEventKind::Drag(MouseButton::Left) if was_dragging => {
+                let kind = view.select.map_or(SelKind::Block, |select| select.kind);
+                let cells = layout.cells;
+                if cells.is_empty() {
+                    return;
+                }
+                // Past an edge, the screen first moves one step that way.
+                // There is nothing right of the cells to drag onto, so their
+                // last column stands in for "further right".
+                let (x, y) = (mouse.column, mouse.row);
+                let down = match () {
+                    _ if kind == SelKind::Cols => 0,
+                    _ if y < cells.top() => -1,
+                    _ if y >= cells.bottom() => 1,
+                    _ => 0,
+                };
+                let right = match () {
+                    _ if kind == SelKind::Rows => 0,
+                    _ if x < cells.left() => -1,
+                    _ if x + 1 >= cells.right() => 1,
+                    _ => 0,
+                };
+                view.scroll(down, right, aln, screen);
+                // Then the cursor goes to the cell nearest the pointer.
+                let column = x.clamp(cells.left(), cells.right() - 1) - cells.x;
+                let line = y.clamp(cells.top(), cells.bottom() - 1) - cells.y;
+                let to = Cell {
+                    row: (view.top + line as usize).min(aln.rows.saturating_sub(1)),
+                    col: (view.left + column as usize).min(aln.cols.saturating_sub(1)),
+                };
+                view.select.get_or_insert(Select {
+                    kind,
+                    anchor: view.cursor,
+                });
+                match kind {
+                    SelKind::Block => view.cursor = to,
+                    SelKind::Rows => view.cursor.row = to.row,
+                    SelKind::Cols => view.cursor.col = to.col,
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => dragging = false,
+            _ => {}
+        }
+        self.dragging = dragging;
     }
 
     /// Move `step` tabs right (negative: left), wrapping at the ends.
@@ -471,8 +743,18 @@ impl App {
             })?;
         }
         let follow = chooses_file || cmd == Command::Close;
+        // What these remove or bring back, a selection may have pointed at.
+        let unselects = matches!(
+            cmd,
+            Command::Undo
+                | Command::Redo
+                | Command::Msa(MsaCmd::DeleteRows { .. } | MsaCmd::DeleteCols { .. })
+        );
         match self.session.start(cmd)? {
             Started::Done(outcome) => {
+                if unselects && let Some(view) = self.view_mut() {
+                    view.select = None;
+                }
                 if follow {
                     self.active = self.session.current().unwrap_or(0);
                 }
@@ -498,15 +780,24 @@ impl App {
             return;
         }
         // Leaving is an interface action, not a change to the data: not logged.
-        if line == "q" || line == "quit" {
-            self.quit = true;
-            return;
+        match line {
+            "q" | "quit" => return self.ask_quit(),
+            "q!" | "quit!" => return self.quit = true,
+            _ => {}
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let ran = Command::parse_line(line)
-            .map(|cmd| expand_home(cmd, home.as_deref()))
-            .and_then(|cmd| self.run_command(cmd));
+        let parsed = Command::parse_line(line).map(|cmd| expand_home(cmd, home.as_deref()));
+        // Closing an alignment throws its edits away, so ask first.
+        let unwritten = self
+            .alignment()
+            .is_some_and(|(alignment, _)| alignment.is_modified());
+        if matches!(parsed, Ok(Command::Close)) && unwritten {
+            self.mode = Mode::Confirm(Confirm::Close);
+            return;
+        }
+        let ran = parsed.and_then(|cmd| self.run_command(cmd));
         self.report(ran, false);
+        self.reveal();
     }
 }
 
@@ -1140,5 +1431,443 @@ mod tests {
         }
         app.handle_event(&wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
         assert!(matches!(app.mode, Mode::Normal) && !app.quit);
+    }
+
+    use crate::msa_view::Region;
+    use ratatui::layout::Rect;
+
+    fn open_file(app: &mut App, path: &std::path::Path) {
+        app.enqueue(Command::Open {
+            path: path.to_path_buf(),
+            kind: None,
+        });
+        settle(app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+    }
+
+    /// An app showing `text`, saved as `a.fa`, on an 80 x 12 screen.
+    fn with_text(text: &str) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.fa");
+        fs::write(&path, text).unwrap();
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(80, 12));
+        open_file(&mut app, &path);
+        (app, dir)
+    }
+
+    fn with_trio() -> (App, TempDir) {
+        with_text(TRIO)
+    }
+
+    /// The newest line of the log.
+    fn last(app: &App) -> &str {
+        app.session.history().last().unwrap()
+    }
+
+    /// One whole row of the visible alignment.
+    fn seq(app: &App, row: usize) -> String {
+        let (alignment, _) = app.alignment().unwrap();
+        let mut out = Vec::new();
+        alignment.residues(row, 0..alignment.cols(), &mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Where on screen a cell is.
+    fn at(app: &App, row: usize, col: usize) -> (u16, u16) {
+        let (cells, view) = (active_layout(app).cells, view(app));
+        (
+            cells.x + (col - view.left) as u16,
+            cells.y + (row - view.top) as u16,
+        )
+    }
+
+    fn name_at(app: &App, row: usize) -> (u16, u16) {
+        (
+            active_layout(app).names.x + 1,
+            at(app, row, view(app).left).1,
+        )
+    }
+
+    fn ruler_at(app: &App, col: usize) -> (u16, u16) {
+        (at(app, view(app).top, col).0, active_layout(app).ruler.y)
+    }
+
+    fn mouse(kind: MouseEventKind, (column, row): (u16, u16), modifiers: KeyModifiers) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        })
+    }
+
+    const NONE: KeyModifiers = KeyModifiers::NONE;
+    const LEFT: MouseButton = MouseButton::Left;
+
+    #[test]
+    fn keys_select_and_d_does_the_right_thing_for_each_kind() {
+        // (keys typed, command logged, sequence 1 afterwards)
+        for (keys, logged, first) in [
+            ("jVd", "msa delete-rows --rows 2", "ACGT-ACGTA"),
+            ("jVjd", "msa delete-rows --rows 2-3", "ACGT-ACGTA"),
+            ("lllCld", "msa delete-cols --cols 4-5", "ACGACGTA"),
+            (
+                "lvljd",
+                "msa fill --rows 1-2 --cols 2-3 --with=-",
+                "A--T-ACGTA",
+            ),
+            ("d", "msa fill --rows 1 --cols 1 --with=-", "-CGT-ACGTA"),
+            ("fN", "msa fill --rows 1 --cols 1 --with N", "NCGT-ACGTA"),
+            ("VfN", "msa fill --rows 1 --with N", "NNNNNNNNNN"),
+            ("llClfx", "msa fill --cols 3-4 --with x", "ACxx-ACGTA"),
+        ] {
+            let (mut app, _dir) = with_trio();
+            type_str(&mut app, keys);
+            assert_eq!(last(&app), logged, "{keys}");
+            assert_eq!(seq(&app, 0), first, "{keys}");
+            assert!(!app.status.starts_with("error"), "{keys}: {}", app.status);
+        }
+    }
+
+    #[test]
+    fn delete_and_backspace_are_d() {
+        for code in [KeyCode::Delete, KeyCode::Backspace] {
+            let (mut app, _dir) = with_trio();
+            type_str(&mut app, "V");
+            app.handle_event(&press(code));
+            assert_eq!(last(&app), "msa delete-rows --rows 1");
+        }
+    }
+
+    #[test]
+    fn the_selection_goes_after_a_deletion_and_stays_after_a_fill() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjVd");
+        assert_eq!(view(&app).select, None);
+        assert_eq!(
+            view(&app).cursor.row,
+            1,
+            "the cursor was on the row that went"
+        );
+        type_str(&mut app, "vlfN");
+        assert!(view(&app).select.is_some());
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(view(&app).select, None);
+    }
+
+    #[test]
+    fn undo_redo_and_their_refusals() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "u");
+        assert_eq!(app.status, "error: nothing to undo");
+        type_str(&mut app, "du");
+        assert_eq!((last(&app), seq(&app, 0).as_str()), ("undo", "ACGT-ACGTA"));
+        type_str(&mut app, "U");
+        assert_eq!((last(&app), seq(&app, 0).as_str()), ("redo", "-CGT-ACGTA"));
+    }
+
+    #[test]
+    fn fill_waits_for_a_character_and_escape_cancels() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "f");
+        assert!(matches!(app.mode, Mode::FillChar));
+        app.handle_event(&press(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.session.history().len(), 1);
+        type_str(&mut app, "f>");
+        assert!(
+            app.status.starts_with("error: the fill character"),
+            "{}",
+            app.status
+        );
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn rename_edits_the_name_in_a_prompt() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjr");
+        assert_eq!(typed(&app), Some("s3 third one"));
+        app.handle_event(&ctrl('u'));
+        type_str(&mut app, "new name");
+        enter(&mut app);
+        assert_eq!(last(&app), "msa rename --rows 3 --to 'new name'");
+        let before = app.session.history().len();
+        type_str(&mut app, "r");
+        enter(&mut app);
+        type_str(&mut app, "r");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(
+            app.session.history().len(),
+            before,
+            "unchanged or cancelled: nothing logged"
+        );
+    }
+
+    #[test]
+    fn extract_opens_the_command_line_filled_in() {
+        for (keys, line) in [
+            ("e", "msa extract --out "),
+            ("jVe", "msa extract --rows 2 --out "),
+            ("lCle", "msa extract --cols 2-3 --out "),
+            ("vjle", "msa extract --rows 1-2 --cols 1-2 --out "),
+        ] {
+            let (mut app, _dir) = with_trio();
+            type_str(&mut app, keys);
+            assert_eq!(typed(&app), Some(line), "{keys}");
+        }
+        let (mut app, dir) = with_trio();
+        let out = dir.path().join("part.fa");
+        type_str(&mut app, "vjle");
+        type_str(&mut app, out.to_str().unwrap());
+        enter(&mut app);
+        assert_eq!(fs::read_to_string(&out).unwrap(), ">s1\nAC\n>s2\nAC\n");
+    }
+
+    #[test]
+    fn the_mouse_selects_blocks_sequences_and_columns() {
+        let (mut app, _dir) = with_trio();
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), at(&app, 0, 2), NONE));
+        assert_eq!(
+            (view(&app).cursor, view(&app).select),
+            (Cell { row: 0, col: 2 }, None)
+        );
+        app.handle_event(&mouse(MouseEventKind::Drag(LEFT), at(&app, 1, 4), NONE));
+        app.handle_event(&mouse(MouseEventKind::Up(LEFT), at(&app, 1, 4), NONE));
+        assert_eq!(
+            view(&app).region(),
+            Some(Region {
+                rows: Some(0..2),
+                cols: Some(2..5)
+            })
+        );
+
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), name_at(&app, 1), NONE));
+        assert_eq!(
+            view(&app).region(),
+            Some(Region {
+                rows: Some(1..2),
+                cols: None
+            })
+        );
+        app.handle_event(&mouse(MouseEventKind::Drag(LEFT), name_at(&app, 2), NONE));
+        assert_eq!(
+            view(&app).region(),
+            Some(Region {
+                rows: Some(1..3),
+                cols: None
+            })
+        );
+        app.handle_event(&mouse(MouseEventKind::Up(LEFT), name_at(&app, 2), NONE));
+
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), ruler_at(&app, 3), NONE));
+        app.handle_event(&mouse(MouseEventKind::Drag(LEFT), ruler_at(&app, 6), NONE));
+        assert_eq!(
+            view(&app).region(),
+            Some(Region {
+                rows: None,
+                cols: Some(3..7)
+            })
+        );
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "msa delete-cols --cols 4-7");
+    }
+
+    #[test]
+    fn right_click_and_shift_click_extend() {
+        for (button, modifiers) in [
+            (MouseButton::Right, NONE),
+            (MouseButton::Left, KeyModifiers::SHIFT),
+        ] {
+            let (mut app, _dir) = with_trio();
+            app.handle_event(&mouse(MouseEventKind::Down(LEFT), at(&app, 0, 1), NONE));
+            app.handle_event(&mouse(MouseEventKind::Up(LEFT), at(&app, 0, 1), NONE));
+            app.handle_event(&mouse(
+                MouseEventKind::Down(button),
+                at(&app, 2, 3),
+                modifiers,
+            ));
+            assert_eq!(
+                view(&app).region(),
+                Some(Region {
+                    rows: Some(0..3),
+                    cols: Some(1..4)
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn clicks_that_miss_the_alignment_do_nothing() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "lv");
+        let before = (view(&app).cursor, view(&app).select);
+        let regions = ui::regions(&app, Rect::new(0, 0, 80, 12));
+        let below = (at(&app, 2, 0).0, at(&app, 2, 0).1 + 2);
+        let right = (at(&app, 0, 9).0 + 5, at(&app, 0, 9).1);
+        for position in [
+            below,
+            right,
+            (3, regions.info.y),
+            (3, regions.bottom.y),
+            (79, 11),
+        ] {
+            for kind in [
+                MouseEventKind::Down(LEFT),
+                MouseEventKind::Down(MouseButton::Right),
+                MouseEventKind::Drag(LEFT),
+                MouseEventKind::Up(LEFT),
+            ] {
+                app.handle_event(&mouse(kind, position, NONE));
+            }
+        }
+        assert_eq!((view(&app).cursor, view(&app).select), before);
+        // During a prompt the mouse is ignored altogether.
+        let inside = at(&app, 2, 2);
+        type_str(&mut app, ":");
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), inside, NONE));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(view(&app).cursor, before.0);
+        // And a tiny screen has no cells to hit.
+        app.handle_event(&Event::Resize(5, 3));
+        for kind in [MouseEventKind::Down(LEFT), MouseEventKind::Drag(LEFT)] {
+            app.handle_event(&mouse(kind, (4, 2), NONE));
+        }
+    }
+
+    #[test]
+    fn a_drag_past_the_edge_is_clamped_and_scrolls() {
+        let mut app = with_grid(); // 60 columns, 43 on screen
+        app.handle_event(&mouse(MouseEventKind::Down(LEFT), at(&app, 0, 40), NONE));
+        // Column 69 is the last one on a 70-column screen; row 7 is the
+        // information row.
+        app.handle_event(&mouse(MouseEventKind::Drag(LEFT), (69, 7), NONE));
+        assert_eq!(view(&app).left, 1, "one step to the right");
+        assert_eq!(
+            view(&app).cursor,
+            Cell { row: 4, col: 43 },
+            "the cell now under the pointer, last sequence"
+        );
+        assert_eq!(
+            view(&app).region(),
+            Some(Region {
+                rows: Some(0..5),
+                cols: Some(40..44)
+            })
+        );
+    }
+
+    #[test]
+    fn actions_name_rows_and_columns_that_still_exist() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjV");
+        type_str(&mut app, ":msa delete-rows --rows 2-3");
+        enter(&mut app);
+        assert_eq!((view(&app).cursor.row, view(&app).select), (0, None));
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "msa fill --rows 1 --cols 1 --with=-");
+        type_str(&mut app, "uu");
+        type_str(&mut app, "jjV:close");
+        enter(&mut app); // both edits were undone, so there is no question
+        assert!(app.session.datasets().is_empty() && app.alignment().is_none());
+        type_str(&mut app, "dfNuUevVCr"); // no alignment: every key is harmless
+        assert!(!app.quit && matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn gestures_apply_to_the_visible_tab_and_are_refused_while_busy() {
+        let (mut app, dir) = with_two_alignments();
+        app.handle_event(&press(KeyCode::Tab));
+        type_str(&mut app, "d");
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            ["use 1", "msa fill --rows 1 --cols 1 --with=-"]
+        );
+
+        type_str(
+            &mut app,
+            &format!(":msa extract --out {}", dir.path().join("o.fa").display()),
+        );
+        app.handle_event(&press(KeyCode::Enter));
+        let before = app.session.history().len();
+        type_str(&mut app, "d");
+        type_str(&mut app, "u");
+        assert_eq!(app.status, "error: still busy: writing o.fa (Esc cancels)");
+        assert_eq!(app.session.history().len(), before);
+        settle(&mut app);
+        assert_eq!(
+            seq(&app, 0),
+            "-CGT-ACGTA",
+            "the refused undo was not applied later"
+        );
+    }
+
+    #[test]
+    fn column_actions_on_an_unaligned_file_are_explained() {
+        let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
+        type_str(&mut app, "d");
+        assert_eq!(
+            app.status,
+            "error: sequences differ in length, so columns cannot be selected"
+        );
+        type_str(&mut app, "jVd");
+        assert_eq!(last(&app), "msa delete-rows --rows 2");
+    }
+
+    #[test]
+    fn quitting_and_closing_ask_when_edits_are_unwritten() {
+        let (mut app, dir) = with_trio();
+        type_str(&mut app, "q");
+        assert!(app.quit, "nothing was changed, so no question");
+
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "dq");
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Quit)) && !app.quit);
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "not quitting");
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Close)));
+        type_str(&mut app, "x");
+        assert_eq!(
+            (app.status.as_str(), app.session.datasets().len()),
+            ("not closed", 1)
+        );
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        type_str(&mut app, "y");
+        assert!(app.session.datasets().is_empty());
+        assert_eq!(last(&app), "close");
+
+        // Writing it out is enough to quit without a question.
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "d");
+        type_str(
+            &mut app,
+            &format!(
+                ":msa extract --out {}",
+                dir.path().join("saved.fa").display()
+            ),
+        );
+        enter(&mut app);
+        type_str(&mut app, "q");
+        assert!(app.quit);
+
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "d:q");
+        enter(&mut app);
+        assert!(!app.quit);
+        type_str(&mut app, "y");
+        assert!(app.quit);
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "d:q!");
+        enter(&mut app);
+        assert!(app.quit);
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "d");
+        app.handle_event(&ctrl('c'));
+        assert!(app.quit);
     }
 }

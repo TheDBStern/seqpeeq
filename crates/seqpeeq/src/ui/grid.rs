@@ -76,7 +76,6 @@ pub fn screen_shape(layout: &GridLayout) -> Shape {
 }
 
 /// What a screen position is on.
-#[allow(dead_code)] // TEMP: the mouse (task 8) is the first user
 #[derive(Debug, PartialEq)]
 pub enum Hit {
     Cell(Cell),
@@ -89,7 +88,6 @@ pub enum Hit {
 
 /// What is drawn at screen position (`x`, `y`). Drawing and the mouse both
 /// go by the same layout, so they cannot disagree.
-#[allow(dead_code)] // TEMP: the mouse (task 8) is the first user
 pub fn hit(layout: &GridLayout, view: &MsaView, aln: Shape, x: u16, y: u16) -> Hit {
     let cells = layout.cells;
     let col = (cells.left()..cells.right())
@@ -164,23 +162,42 @@ pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body:
     } = layout;
     let buffer = frame.buffer_mut();
     let dim = Style::new().add_modifier(Modifier::DIM);
+    let selected = view.region();
+    let is_selected = |cell: Cell| {
+        selected
+            .as_ref()
+            .is_some_and(|region| region.contains(cell))
+    };
+    // Whole sequences and whole columns are marked on the names and on the
+    // ruler as well as in the cells.
+    let whole_rows = selected
+        .as_ref()
+        .is_some_and(|region| region.cols.is_none());
+    let whole_cols = selected
+        .as_ref()
+        .is_some_and(|region| region.rows.is_none());
 
     // Column numbers: at column 1 and every tenth, each starting on its own
     // column, left out where it would run into the next or off the edge.
     let mut free_from = ruler.x;
     for offset in 0..ruler.width {
-        let number = view.left + offset as usize + 1;
-        if number > alignment.cols() {
+        let col = view.left + offset as usize;
+        if col >= alignment.cols() {
             break;
         }
-        if number != 1 && !number.is_multiple_of(10) {
-            continue;
-        }
-        let label = number.to_string();
         let x = ruler.x + offset;
-        if x >= free_from && x + label.len() as u16 <= ruler.right() {
-            buffer.set_string(x, ruler.y, &label, dim);
-            free_from = x + label.len() as u16 + 1;
+        let number = col + 1;
+        if number == 1 || number.is_multiple_of(10) {
+            let label = number.to_string();
+            if x >= free_from && x + label.len() as u16 <= ruler.right() {
+                buffer.set_string(x, ruler.y, &label, dim);
+                free_from = x + label.len() as u16 + 1;
+            }
+        }
+        // Marked after any number is written, so that a number running on
+        // over the next column does not carry the mark with it.
+        if whole_cols && is_selected(Cell { row: 0, col }) {
+            buffer[(x, ruler.y)].set_style(palette::SELECTED);
         }
     }
 
@@ -196,30 +213,37 @@ pub fn draw_grid(frame: &mut Frame, alignment: &Alignment, view: &MsaView, body:
             break;
         }
         let y = cells.y + line;
+        let marked = whole_rows && is_selected(Cell { row, col: 0 });
         if numbers.width > 1 {
             let width = numbers.width as usize - 1;
-            buffer.set_stringn(numbers.x, y, format!("{:>width$}", row + 1), width, dim);
+            let number = format!("{:>width$}", row + 1);
+            buffer.set_stringn(numbers.x, y, number, width, dim);
         }
         if names.width > 1 {
             let width = names.width as usize - 1;
-            buffer.set_stringn(
-                names.x,
+            let name = fit(alignment.name(row), width);
+            buffer.set_stringn(names.x, y, name, width, Style::new());
+        }
+        if marked {
+            let label = Rect {
                 y,
-                fit(alignment.name(row), width),
-                width,
-                Style::new(),
-            );
+                height: 1,
+                width: (numbers.width + names.width).saturating_sub(1),
+                ..numbers
+            };
+            buffer.set_style(label, palette::SELECTED);
         }
         residues.clear();
-        alignment.residues(
-            row,
-            view.left..view.left + cells.width as usize,
-            &mut residues,
-        );
+        let on_screen = view.left..view.left + cells.width as usize;
+        alignment.residues(row, on_screen, &mut residues);
         for (offset, &residue) in residues.iter().enumerate() {
-            let style = match colouring {
-                Colouring::Plain => Style::new(),
-                _ => palette::residue(alignment.alphabet(), residue),
+            let col = view.left + offset;
+            let style = if is_selected(Cell { row, col }) {
+                palette::SELECTED
+            } else if colouring == Colouring::Plain {
+                Style::new()
+            } else {
+                palette::residue(alignment.alphabet(), residue)
             };
             let shown = if residue.is_ascii_graphic() {
                 residue as char

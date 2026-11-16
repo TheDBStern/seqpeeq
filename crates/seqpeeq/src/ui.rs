@@ -13,7 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::msa_view::Cell;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Confirm, Mode};
 use grid::GridLayout;
 
 /// Rows the log pane takes when shown, borders included.
@@ -59,7 +59,7 @@ pub fn regions(app: &App, area: Rect) -> Regions {
     }
     let status_rows = match app.mode {
         Mode::Prompt(_) => 1,
-        _ => wrap_columns(&app.status, area.width as usize).len() as u16,
+        _ => wrap_columns(&bottom_text(app), area.width as usize).len() as u16,
     };
     let bottom = status_rows
         .clamp(1, MAX_STATUS_ROWS)
@@ -255,6 +255,16 @@ pub fn info_text(app: &App) -> (String, String) {
             };
             left.push_str(&format!(" · {shown}"));
         }
+        if let Some(region) = view.region() {
+            let (rows, cols) = region.flags();
+            let selected = match (rows.rows, cols) {
+                (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),
+                (Some(rows), None) => format!("rows {rows}"),
+                (None, Some(cols)) => format!("cols {cols}"),
+                (None, None) => String::new(),
+            };
+            left.push_str(&format!(" · {selected}"));
+        }
         if alignment.is_modified() {
             right.push("unsaved".to_string());
         }
@@ -303,6 +313,29 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// What the bottom of the screen says when nothing is being typed there:
+/// the question being asked, or else the last outcome.
+fn bottom_text(app: &App) -> String {
+    let Mode::Confirm(confirm) = app.mode else {
+        return app.status.clone();
+    };
+    let unwritten = app.unwritten();
+    let subject = match (confirm, unwritten.as_slice()) {
+        (Confirm::Quit, [name]) => format!("{name} has edits"),
+        (Confirm::Quit, names) => format!("{} files have edits", names.len()),
+        (Confirm::Close, _) => {
+            let titles = tab_titles(app);
+            let name = titles.get(app.active).map_or("this file", String::as_str);
+            format!("{name} has edits")
+        }
+    };
+    let question = match confirm {
+        Confirm::Quit => "Quit anyway?",
+        Confirm::Close => "Close it anyway?",
+    };
+    format!("{subject} not written to a file. {question} (y/n)")
+}
+
 fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
     if let Mode::Prompt(prompt) = &app.mode {
         // Show the part of a long line where the typing happens.
@@ -314,7 +347,8 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
         frame.set_cursor_position(Position::new(area.x + column as u16, area.y));
         return;
     }
-    let status = wrap_columns(&app.status, area.width as usize);
+    let text = bottom_text(app);
+    let status = wrap_columns(&text, area.width as usize);
     let shown = status.len().min(area.height as usize);
     let mut lines: Vec<String> = status[..shown].to_vec();
     if shown < status.len()
@@ -323,7 +357,7 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
         last.pop();
         last.push('…');
     }
-    let style = if app.status.starts_with("error:") {
+    let style = if text.starts_with("error:") {
         Style::new().fg(Color::Red)
     } else {
         Style::new()
@@ -732,5 +766,76 @@ mod tests {
         );
         let screen = rows(&render(&app, 60, 8));
         assert!(screen[6].ends_with("opening grid.fa"), "{screen:#?}");
+    }
+
+    #[test]
+    fn the_selection_is_named_and_highlighted() {
+        use crate::msa_view::{SelKind, Select};
+        let mut app = with_file("tests/data/grid.fa");
+        let view = view_mut(&mut app);
+        view.cursor = Cell { row: 3, col: 29 };
+        view.select = Some(Select {
+            kind: SelKind::Block,
+            anchor: Cell { row: 1, col: 17 },
+        });
+        let terminal = render(&app, 70, 9);
+        assert_eq!(
+            rows(&terminal)[7],
+            "row 4/5 · col 30/60 · A · rows 2-4 × cols 18-30"
+        );
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(27 + 17, 3)].bg, Color::Indexed(240));
+        assert_ne!(buffer[(27 + 16, 3)].bg, Color::Indexed(240));
+        assert_ne!(buffer[(27 + 17, 2)].bg, Color::Indexed(240));
+        assert_ne!(
+            buffer[(3, 3)].bg,
+            Color::Indexed(240),
+            "names only for whole rows"
+        );
+
+        view_mut(&mut app).select = Some(Select {
+            kind: SelKind::Rows,
+            anchor: Cell { row: 3, col: 0 },
+        });
+        let terminal = render(&app, 70, 9);
+        assert_eq!(rows(&terminal)[7], "row 4/5 · col 30/60 · A · rows 4");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 5)].bg, Color::Indexed(240), "the name too");
+        assert_eq!(buffer[(40, 5)].bg, Color::Indexed(240));
+
+        view_mut(&mut app).select = Some(Select {
+            kind: SelKind::Cols,
+            anchor: Cell { row: 0, col: 27 },
+        });
+        let terminal = render(&app, 70, 9);
+        assert_eq!(rows(&terminal)[7], "row 4/5 · col 30/60 · A · cols 28-30");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(27 + 28, 1)].bg,
+            Color::Indexed(240),
+            "the ruler too"
+        );
+        assert_ne!(buffer[(27 + 30, 1)].bg, Color::Indexed(240));
+    }
+
+    #[test]
+    fn a_question_is_shown_on_the_bottom_line() {
+        use crate::app::Confirm;
+        let mut app = with_file("tests/data/grid.fa");
+        let edit = Command::parse_line("msa delete-cols --cols 1").unwrap();
+        app.session.execute(edit).unwrap();
+        app.mode = Mode::Confirm(Confirm::Quit);
+        let screen = rows(&render(&app, 70, 9));
+        assert_eq!(
+            screen[8],
+            "grid.fa has edits not written to a file. Quit anyway? (y/n)"
+        );
+        assert!(screen[7].ends_with("unsaved"), "{}", screen[7]);
+        app.mode = Mode::Confirm(Confirm::Close);
+        let screen = rows(&render(&app, 70, 9));
+        assert_eq!(
+            screen[8],
+            "grid.fa has edits not written to a file. Close it anyway? (y/n)"
+        );
     }
 }

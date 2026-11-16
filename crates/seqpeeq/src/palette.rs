@@ -4,6 +4,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use seqpeeq_core::Alphabet;
 
+/// Selected cells, names and ruler columns.
+pub const SELECTED: Style = Style::new().bg(Color::Indexed(240)).fg(Color::Indexed(255));
+
 /// The style of one residue when colouring by residue: black on a colour
 /// for the residues that have one, dim for gaps and everything else.
 pub fn residue(alphabet: Alphabet, residue: u8) -> Style {

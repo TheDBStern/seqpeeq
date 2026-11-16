@@ -1,6 +1,10 @@
 //! Where the user is in an alignment: cursor, scroll position and how it
 //! is shown. Pure state: nothing here draws or reads the terminal.
 
+use std::ops::Range;
+
+use seqpeeq_core::{Ranges, RowSel};
+
 /// One residue's place: a row and a column, counted from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cell {
@@ -25,6 +29,52 @@ pub enum Colouring {
     Plain,
 }
 
+/// What a selection is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelKind {
+    /// Some rows of some columns.
+    Block,
+    /// Whole sequences.
+    Rows,
+    /// Whole columns.
+    Cols,
+}
+
+/// A selection in the making: it runs from `anchor` to the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Select {
+    pub kind: SelKind,
+    pub anchor: Cell,
+}
+
+/// Rows and columns, counted from 0 and half-open. `None` means all of
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Region {
+    pub rows: Option<Range<usize>>,
+    pub cols: Option<Range<usize>>,
+}
+
+impl Region {
+    /// The flags that name this region in a command: `--rows` and `--cols`,
+    /// counted from 1.
+    pub fn flags(&self) -> (RowSel, Option<Ranges>) {
+        let ranges = |range: &Range<usize>| Ranges::new(std::iter::once(range.clone()));
+        let rows = RowSel {
+            rows: self.rows.as_ref().and_then(ranges),
+            ..RowSel::default()
+        };
+        (rows, self.cols.as_ref().and_then(ranges))
+    }
+
+    pub fn contains(&self, cell: Cell) -> bool {
+        let within = |range: &Option<Range<usize>>, at: usize| {
+            range.as_ref().is_none_or(|range| range.contains(&at))
+        };
+        within(&self.rows, cell.row) && within(&self.cols, cell.col)
+    }
+}
+
 /// The narrowest and widest the names column can be made, and the step.
 const NAME_WIDTHS: (u16, u16, u16) = (4, 60, 4);
 
@@ -37,6 +87,8 @@ pub struct MsaView {
     /// Columns given to sequence names.
     pub name_width: u16,
     pub colouring: Colouring,
+    /// The selection, if one has been started. Moving the cursor extends it.
+    pub select: Option<Select>,
 }
 
 impl MsaView {
@@ -47,7 +99,40 @@ impl MsaView {
             left: 0,
             name_width: 24,
             colouring: Colouring::Conserved,
+            select: None,
         }
+    }
+
+    /// What is selected: from the anchor to the cursor, both included.
+    pub fn region(&self) -> Option<Region> {
+        let Select { kind, anchor } = self.select?;
+        let span = |a: usize, b: usize| a.min(b)..a.max(b) + 1;
+        let rows = span(anchor.row, self.cursor.row);
+        let cols = span(anchor.col, self.cursor.col);
+        Some(match kind {
+            SelKind::Block => Region {
+                rows: Some(rows),
+                cols: Some(cols),
+            },
+            SelKind::Rows => Region {
+                rows: Some(rows),
+                cols: None,
+            },
+            SelKind::Cols => Region {
+                rows: None,
+                cols: Some(cols),
+            },
+        })
+    }
+
+    /// What an action applies to: the selection, or else the cell under the
+    /// cursor.
+    pub fn target(&self) -> Region {
+        let Cell { row, col } = self.cursor;
+        self.region().unwrap_or(Region {
+            rows: Some(row..row + 1),
+            cols: Some(col..col + 1),
+        })
     }
 
     /// Move the cursor, stopping at the edges of the alignment.
@@ -102,6 +187,14 @@ impl MsaView {
         self.move_to(Some(self.cursor.row), Some(self.cursor.col), aln);
         self.top = self.top.min(aln.rows.saturating_sub(1));
         self.left = self.left.min(aln.cols.saturating_sub(1));
+        // A selection anchored on a row or column that has gone means
+        // nothing any more.
+        if self
+            .select
+            .is_some_and(|select| select.anchor.row >= aln.rows || select.anchor.col >= aln.cols)
+        {
+            self.select = None;
+        }
     }
 
     pub fn cycle_colouring(&mut self) {
@@ -252,5 +345,92 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_selection_spans_anchor_and_cursor_in_either_direction() {
+        let aln = Shape { rows: 10, cols: 10 };
+        let mut view = MsaView::new();
+        view.move_to(Some(4), Some(6), aln);
+        assert_eq!(view.region(), None);
+        assert_eq!(
+            view.target(),
+            Region {
+                rows: Some(4..5),
+                cols: Some(6..7)
+            }
+        );
+        view.select = Some(Select {
+            kind: SelKind::Block,
+            anchor: view.cursor,
+        });
+        view.move_by(-2, -3, aln);
+        let block = Region {
+            rows: Some(2..5),
+            cols: Some(3..7),
+        };
+        assert_eq!(view.region(), Some(block.clone()));
+        assert_eq!(view.target(), block);
+        view.select = Some(Select {
+            kind: SelKind::Rows,
+            anchor: Cell { row: 7, col: 0 },
+        });
+        assert_eq!(
+            view.region(),
+            Some(Region {
+                rows: Some(2..8),
+                cols: None
+            })
+        );
+        view.select = Some(Select {
+            kind: SelKind::Cols,
+            anchor: Cell { row: 0, col: 3 },
+        });
+        assert_eq!(
+            view.region(),
+            Some(Region {
+                rows: None,
+                cols: Some(3..4)
+            })
+        );
+    }
+
+    #[test]
+    fn a_region_names_itself_in_flags_counted_from_one() {
+        let region = Region {
+            rows: Some(1..4),
+            cols: Some(17..30),
+        };
+        let (rows, cols) = region.flags();
+        assert_eq!(rows.rows.unwrap().to_string(), "2-4");
+        assert_eq!(cols.unwrap().to_string(), "18-30");
+        let columns = Region {
+            rows: None,
+            cols: Some(0..1),
+        };
+        let (rows, cols) = columns.flags();
+        assert!(rows.is_empty());
+        assert_eq!(cols.unwrap().to_string(), "1");
+        assert!(region.contains(Cell { row: 3, col: 17 }));
+        assert!(!region.contains(Cell { row: 4, col: 17 }));
+        assert!(!region.contains(Cell { row: 3, col: 30 }));
+        assert!(columns.contains(Cell { row: 99, col: 0 }));
+    }
+
+    #[test]
+    fn clamping_drops_a_selection_whose_anchor_is_gone() {
+        let mut view = MsaView::new();
+        view.select = Some(Select {
+            kind: SelKind::Rows,
+            anchor: Cell { row: 9, col: 0 },
+        });
+        view.clamp(Shape { rows: 3, cols: 3 });
+        assert_eq!(view.select, None);
+        view.select = Some(Select {
+            kind: SelKind::Block,
+            anchor: Cell { row: 2, col: 2 },
+        });
+        view.clamp(Shape { rows: 3, cols: 3 });
+        assert!(view.select.is_some());
     }
 }
