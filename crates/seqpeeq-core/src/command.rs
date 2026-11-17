@@ -6,6 +6,7 @@
 //! `seqpeeq run` takes, so the three can never drift apart.
 
 pub mod msa;
+pub mod tree;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use clap::{Parser, ValueEnum};
 
 use crate::{Error, Result};
 use msa::MsaCmd;
+use tree::TreeCmd;
 
 /// What a file holds, and therefore which viewer and commands apply to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -71,6 +73,9 @@ pub enum Command {
     /// Alignment commands.
     #[command(subcommand)]
     Msa(MsaCmd),
+    /// Tree commands.
+    #[command(subcommand)]
+    Tree(TreeCmd),
 }
 
 /// The words of a command's text form, before quoting.
@@ -102,6 +107,11 @@ impl Words {
             self.words.push(flag.to_string());
             self.words.push(value);
         }
+    }
+
+    /// A flag that takes no value.
+    fn switch(&mut self, flag: &str) {
+        self.words.push(flag.to_string());
     }
 
     fn positional(&mut self, value: impl Display) {
@@ -141,6 +151,11 @@ impl Command {
             Command::Redo => Words::new("redo"),
             Command::Msa(cmd) => {
                 let mut words = Words::new("msa");
+                cmd.write(&mut words)?;
+                words
+            }
+            Command::Tree(cmd) => {
+                let mut words = Words::new("tree");
                 cmd.write(&mut words)?;
                 words
             }
@@ -216,6 +231,7 @@ mod tests {
     use super::*;
     use crate::Error;
     use crate::command::msa::{MsaCmd, RowSel};
+    use crate::command::tree::{NodeSel, TreeCmd};
     use crate::ranges::Ranges;
     use proptest::prelude::*;
     use std::path::Path;
@@ -318,7 +334,53 @@ mod tests {
         "msa insert --row 3 --col 27 --seq AC",
         "msa insert --row 1 --col 1 --seq=-",
         "msa remove --row 3 --col 27 --count 2",
+        "tree extract --mrca A --mrca B --out sub.nwk --seqs sub.fa --wrap 60",
+        "tree extract --out all.nwk",
+        "tree prune --tip 'Homo sapiens (human)'",
+        "tree prune --node 12",
+        "tree reroot --outgroup A --outgroup 'x, y'",
+        "tree reroot --midpoint",
+        "tree reroot --tip=-odd",
+        "tree ladderize",
+        "tree ladderize --reverse",
+        "tree rename --tip A --to 'New name'",
+        "tree rename --node 3 --to x",
+        "tree rename --regex _ --replace ' '",
+        "tree link aln.fa",
+        "tree link -- -odd.fa",
+        "tree unlink",
     ];
+
+    #[test]
+    fn tree_commands_are_typed_in_several_ways_but_logged_in_one() {
+        for (typed, logged) in [
+            ("tree save -o t.nwk", "tree extract --out t.nwk"),
+            (
+                "tree extract -o t.nwk --tip A",
+                "tree extract --tip A --out t.nwk",
+            ),
+            (
+                "tree reroot --midpoint --outgroup B",
+                "tree reroot --outgroup B --midpoint",
+            ),
+        ] {
+            assert_eq!(
+                Command::parse_line(typed).unwrap().to_line().unwrap(),
+                logged
+            );
+        }
+        assert_eq!(
+            Command::parse_line("tree").unwrap_err().to_string(),
+            "tree needs one of: extract, prune, reroot, ladderize, rename, link, unlink"
+        );
+        for bad in [
+            "tree prune --tip A --node 2",
+            "tree prune --mrca A --tip B",
+            "tree link",
+        ] {
+            assert!(Command::parse_line(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn canonical_lines_round_trip() {
@@ -475,6 +537,68 @@ mod tests {
             Just(Command::Redo),
             Just(Command::Close),
             msa_cmd().prop_map(Command::Msa),
+            tree_cmd().prop_map(Command::Tree),
+        ]
+    }
+
+    fn node_sel() -> impl Strategy<Value = NodeSel> {
+        prop_oneof![
+            Just(NodeSel::default()),
+            text().prop_map(|tip| NodeSel {
+                tip: Some(tip),
+                ..NodeSel::default()
+            }),
+            (text(), text()).prop_map(|(a, b)| NodeSel {
+                mrca: vec![a, b],
+                ..NodeSel::default()
+            }),
+            any::<usize>().prop_map(|node| NodeSel {
+                node: Some(node),
+                ..NodeSel::default()
+            }),
+        ]
+    }
+
+    fn tree_cmd() -> impl Strategy<Value = TreeCmd> {
+        prop_oneof![
+            (
+                node_sel(),
+                path(),
+                proptest::option::of(path()),
+                proptest::option::of(any::<usize>())
+            )
+                .prop_map(|(at, out, seqs, wrap)| TreeCmd::Extract {
+                    at,
+                    out,
+                    seqs,
+                    wrap
+                }),
+            node_sel().prop_map(|at| TreeCmd::Prune { at }),
+            (
+                node_sel(),
+                proptest::collection::vec(text(), 0..3),
+                any::<bool>()
+            )
+                .prop_map(|(at, outgroup, midpoint)| TreeCmd::Reroot {
+                    at,
+                    outgroup,
+                    midpoint
+                }),
+            any::<bool>().prop_map(|reverse| TreeCmd::Ladderize { reverse }),
+            (node_sel(), proptest::option::of(text())).prop_map(|(at, to)| TreeCmd::Rename {
+                at,
+                to,
+                regex: None,
+                replace: None
+            }),
+            (text(), text()).prop_map(|(regex, replace)| TreeCmd::Rename {
+                at: NodeSel::default(),
+                to: None,
+                regex: Some(regex),
+                replace: Some(replace)
+            }),
+            path().prop_map(|file| TreeCmd::Link { file }),
+            Just(TreeCmd::Unlink),
         ]
     }
 

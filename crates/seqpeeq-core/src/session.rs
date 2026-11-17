@@ -567,6 +567,7 @@ impl Session {
             Command::Undo => self.current_alignment()?.undo(),
             Command::Redo => self.current_alignment()?.redo(),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
+            Command::Tree(_) => Err(Error::Invalid("tree commands are not ready".to_string())),
         }
     }
 }

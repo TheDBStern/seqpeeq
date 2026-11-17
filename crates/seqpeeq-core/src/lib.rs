@@ -17,6 +17,7 @@ pub mod tree;
 mod write;
 
 pub use command::msa::{MsaCmd, RowSel};
+pub use command::tree::{NodeSel, TreeCmd};
 pub use command::{Command, Kind};
 pub use error::{Error, Result};
 pub use log::SessionLog;
