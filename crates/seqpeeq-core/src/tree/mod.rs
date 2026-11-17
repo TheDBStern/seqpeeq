@@ -197,7 +197,6 @@ impl Tree {
     }
 
     /// Unlink `n` from its parent; it and its clade leave the tree.
-    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn detach(&mut self, n: NodeId) {
         let i = n as usize;
         let parent = *self.parent.get(i);
@@ -237,7 +236,6 @@ impl Tree {
 
     /// Put `parent`'s children in the given order. `children` must be
     /// exactly its children.
-    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
         let mut prev = NONE;
         for &child in children {
@@ -259,7 +257,6 @@ impl Tree {
     }
 
     /// Make `n` the root, detaching it from its parent first.
-    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn set_root(&mut self, n: NodeId) {
         self.detach(n);
         self.root = n;
@@ -325,7 +322,6 @@ impl TreeDoc {
 
     /// A tree from Newick text that must be valid.
     #[cfg(test)]
-    #[allow(dead_code)] // used by the edit tests in the next tasks
     pub(crate) fn from_text(text: &str) -> TreeDoc {
         TreeDoc::new(newick::parse(text.as_bytes()).unwrap())
     }
@@ -375,6 +371,70 @@ impl TreeDoc {
     pub(crate) fn apply(&mut self, cmd: &TreeCmd) -> Result<Applied> {
         match cmd {
             TreeCmd::Extract { .. } => unreachable!("the session runs extracts as jobs"),
+            TreeCmd::Prune { at } => {
+                let n = resolve(&self.tree, at)?;
+                self.edit("prune", |tree| {
+                    let removed = tree.prune(n)?;
+                    Ok(format!(
+                        "pruned {}; now {}",
+                        count(removed, "tip"),
+                        count(tree.tip_count(), "tip")
+                    ))
+                })
+            }
+            TreeCmd::Ladderize { reverse } => self.edit("ladderize", |tree| {
+                tree.ladderize(*reverse);
+                Ok(if *reverse {
+                    "ladderized, most tips first".to_string()
+                } else {
+                    "ladderized".to_string()
+                })
+            }),
+            TreeCmd::Rename {
+                at, to: Some(to), ..
+            } => {
+                if at.is_empty() {
+                    return invalid("say which tip: --tip or --node");
+                }
+                let n = resolve(&self.tree, at)?;
+                if !self.tree.is_tip(n) {
+                    return match at.node {
+                        Some(number) => invalid(format!("--node {number} is not a tip")),
+                        None => {
+                            invalid("--mrca names a clade; rename one tip with --tip or --node")
+                        }
+                    };
+                }
+                let mut was = String::new();
+                let mut applied = self.edit("rename", |tree| {
+                    was = tree.rename_tip(n, to)?;
+                    Ok(format!("renamed '{was}' to '{}'", to.trim()))
+                })?;
+                applied.note = Some(format!("was: {was}"));
+                Ok(applied)
+            }
+            TreeCmd::Rename {
+                at,
+                regex: Some(pattern),
+                replace: Some(replace),
+                ..
+            } => {
+                if !at.is_empty() {
+                    return invalid(
+                        "--regex renames every tip; leave out --tip, --mrca and --node",
+                    );
+                }
+                self.edit("rename", |tree| {
+                    let changed = tree.rename_matching(pattern, replace)?;
+                    Ok(format!(
+                        "renamed {changed} of {}",
+                        count(tree.tip_count(), "tip")
+                    ))
+                })
+            }
+            TreeCmd::Rename { .. } => {
+                invalid("say the new name with --to, or use --regex with --replace")
+            }
             other => invalid(format!("tree {} is not built yet", other.name())),
         }
     }
@@ -401,7 +461,6 @@ impl TreeDoc {
 
     /// Change the tree, remembering the state before for undo. A change
     /// that fails leaves the tree as it was.
-    #[allow(dead_code)] // the edits arrive in the next tasks
     pub(crate) fn edit(
         &mut self,
         name: &'static str,

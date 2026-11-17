@@ -119,7 +119,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::Invalid(message.into()))
 }
 
-fn regex(pattern: &str) -> Result<Regex> {
+pub(crate) fn regex(pattern: &str) -> Result<Regex> {
     // The library's own message runs over several lines.
     Regex::new(pattern).or_else(|_| invalid(format!("bad regular expression '{pattern}'")))
 }
@@ -127,7 +127,7 @@ fn regex(pattern: &str) -> Result<Regex> {
 /// Refuse a replacement that names a group the pattern does not have. The
 /// regex library would silently put nothing there, and it reads `$2_` as a
 /// group called `2_`, so the common `$2_$1` would quietly delete text.
-fn check_replacement(re: &Regex, replace: &str) -> Result<()> {
+pub(crate) fn check_replacement(re: &Regex, replace: &str) -> Result<()> {
     let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let exists = |name: &str| match name.parse::<usize>() {
         Ok(index) => index < re.captures_len(),
