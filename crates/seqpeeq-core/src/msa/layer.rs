@@ -271,6 +271,13 @@ impl Layer {
         self.set_cols(cols);
     }
 
+    pub(crate) fn gap_cols_fit(&self, source: &Source, n: usize) -> bool {
+        (source.width() as u128)
+            .checked_add(u128::from(self.added))
+            .and_then(|first| first.checked_add(n as u128))
+            .is_some_and(|end| end <= u128::from(u32::MAX))
+    }
+
     pub(crate) fn rename(&mut self, row: usize, name: String) {
         // Copies the names once if an earlier state still shares them.
         Arc::make_mut(&mut self.names).insert(self.rows[row], name);
@@ -414,6 +421,16 @@ mod tests {
             (t.row(0), t.row(1)),
             ("AC--".to_string(), "TT--".to_string())
         );
+    }
+
+    #[test]
+    fn added_column_ids_must_fit_the_column_range() {
+        let mut t = T::new(TRIO);
+        assert!(t.layer.gap_cols_fit(&t.source, 1));
+        t.layer.added = u32::MAX - t.source.width() as u32;
+        assert!(t.layer.gap_cols_fit(&t.source, 0));
+        assert!(!t.layer.gap_cols_fit(&t.source, 1));
+        assert!(!t.layer.gap_cols_fit(&t.source, usize::MAX));
     }
 
     #[test]

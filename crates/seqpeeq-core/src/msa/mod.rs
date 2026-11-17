@@ -552,6 +552,9 @@ impl Alignment {
             ));
         }
         let shift = self.view.plan_insert(row - 1, col - 1, seq.as_bytes());
+        if shift.added > 0 && !self.view.layer.gap_cols_fit(&self.view.source, shift.added) {
+            return invalid("insert would exceed the maximum column ID");
+        }
         self.edit("insert", |layer, source| {
             if shift.added > 0 {
                 layer.add_gap_cols(source, shift.added);

@@ -226,6 +226,23 @@ impl App {
     /// state it is in, while its lines hold several sequences. It waits for
     /// a count of exactly that state.
     fn refresh_summary(&mut self) {
+        let current = self
+            .session
+            .datasets()
+            .get(self.active)
+            .and_then(|dataset| {
+                let (alignment, view) = (dataset.msa()?, self.views.get(&dataset.id)?);
+                (view.zoom > 0
+                    && alignment.is_aligned()
+                    && summary_block(alignment.rows(), alignment.cols()).is_some())
+                .then_some((dataset.id, alignment.revision()))
+            });
+        if let Some((id, revision, progress)) = &self.summarising
+            && current != Some((*id, *revision))
+        {
+            progress.cancel();
+            self.summarising = None;
+        }
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
@@ -958,7 +975,13 @@ impl App {
                     (next, false, col + 1)
                 }
             },
-            KeyCode::Delete if col >= aln.cols => {
+            KeyCode::Delete
+                if col
+                    >= aln.cols.saturating_add(match &pending {
+                        Some(Pending::Insert { added, .. }) => *added,
+                        _ => 0,
+                    }) =>
+            {
                 self.status = "error: nothing under the cursor to remove".to_string();
                 return;
             }
@@ -1057,6 +1080,7 @@ impl App {
             && self.removes_nothing(row, col)
         {
             self.status = "error: nothing to remove: the row would stay the same".to_string();
+            self.set_typed(None, cursor);
             return;
         }
         self.set_typed(Some(next), cursor);
@@ -2985,8 +3009,11 @@ mod tests {
             panic!("a summary was asked for")
         };
         assert!(app.wants_tick(), "a summary is running");
-        type_str(&mut app, "fA");
         let stale = view.summary(&conserved, &progress);
+        type_str(&mut app, "fA");
+        app.pump();
+        assert!(progress.is_cancelled(), "the old summary is cancelled");
+        assert!(app.summarising.is_none(), "the old job is cleared");
         let stale_revision = stale.as_ref().unwrap().revision();
         app.handle_done(Done::Summary {
             dataset,
@@ -3088,6 +3115,17 @@ mod tests {
         assert_eq!(shown(&app, 0), "NCGT-ACGT-");
         type_str(&mut app, "uu");
         assert_eq!(shown(&app, 0), "ACGT-ACGTA", "two undos reach the fill");
+    }
+
+    #[test]
+    fn a_no_op_backspace_still_moves_left_without_logging() {
+        let (mut app, _dir) = with_text(">a\nA--T\n");
+        type_str(&mut app, "lli");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 1);
+        assert_eq!(shown(&app, 0), "A--T");
+        assert_eq!(app.session.history().len(), before);
     }
 
     #[test]
@@ -3274,6 +3312,27 @@ mod tests {
         assert_eq!(view(&app).cursor.col, 11, "back inside the alignment");
         type_str(&mut app, "u");
         assert_eq!(seq(&app, 0), "ACGT-ACGTA", "one undo takes the whole run");
+    }
+
+    #[test]
+    fn delete_can_remove_a_residue_after_pending_added_columns() {
+        let (mut app, _dir) = with_text(">a\nACGT\n");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "iXX");
+        assert_eq!(shown(&app, 0), "ACGXXT");
+        app.handle_event(&press(KeyCode::Delete));
+        assert_ne!(app.status, "error: nothing under the cursor to remove");
+        assert_eq!(shown(&app, 0), "ACGXX-");
+        app.handle_event(&press(KeyCode::Esc));
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa insert --row 1 --col 4 --seq XX",
+                "msa remove --row 1 --col 6 --count 1",
+            ]
+        );
+        assert_eq!(seq(&app, 0), "ACGXX-");
     }
 
     #[test]

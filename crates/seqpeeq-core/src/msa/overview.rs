@@ -47,10 +47,12 @@ pub const SUMMARY_BYTES: usize = 48 << 20;
 /// `None` when even one block per sequence would not: there are too many
 /// sequences to summarise.
 pub fn summary_block(rows: usize, cols: usize) -> Option<usize> {
+    let totals = (rows as u128).saturating_mul(std::mem::size_of::<Tally>() as u128);
     let bytes = |block: usize| {
         (rows as u128)
             .saturating_mul(cols.div_ceil(block) as u128)
             .saturating_mul(4)
+            .saturating_add(totals)
     };
     let mut block = 1usize;
     while bytes(block) > SUMMARY_BYTES as u128 {
@@ -286,17 +288,23 @@ mod tests {
     fn the_summary_block_keeps_the_tables_within_budget() {
         assert_eq!(summary_block(3, 10), Some(1));
         assert_eq!(summary_block(100_000, 30_000), Some(256));
+        assert_eq!(summary_block(1_000_000, 10), Some(2));
         // Even one block per sequence is over budget: no summary at all.
         assert_eq!(summary_block(13_000_000, 100), None);
         assert_eq!(summary_block(usize::MAX, usize::MAX), None);
         for (rows, cols) in [(100_000, 30_000), (1_000, 1_000_000), (1, 1)] {
             let b = summary_block(rows, cols).unwrap();
             assert!(
-                rows * cols.div_ceil(b) * 4 <= SUMMARY_BYTES,
+                (rows as u128) * (cols.div_ceil(b) as u128) * 4
+                    + (rows as u128) * (std::mem::size_of::<Tally>() as u128)
+                    <= SUMMARY_BYTES as u128,
                 "{rows} x {cols}"
             );
             assert!(
-                b == 1 || rows * cols.div_ceil(b / 2) * 4 > SUMMARY_BYTES,
+                b == 1
+                    || (rows as u128) * (cols.div_ceil(b / 2) as u128) * 4
+                        + (rows as u128) * (std::mem::size_of::<Tally>() as u128)
+                        > SUMMARY_BYTES as u128,
                 "the smallest"
             );
         }
