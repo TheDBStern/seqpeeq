@@ -11,8 +11,11 @@ pub mod progress;
 pub mod ranges;
 pub mod replay;
 pub mod session;
+pub mod tree;
+mod write;
 
 pub use command::msa::{MsaCmd, RowSel};
+pub use command::tree::{NodeSel, TreeCmd};
 pub use command::{Command, Kind};
 pub use error::{Error, Result};
 pub use log::SessionLog;
@@ -23,3 +26,4 @@ pub use progress::Progress;
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
 pub use session::{Content, Dataset, Finished, Job, Outcome, Session, Started, check_input};
+pub use tree::{NodeId, Parsed, Tree, TreeDoc};

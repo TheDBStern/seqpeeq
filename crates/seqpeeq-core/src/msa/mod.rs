@@ -101,8 +101,8 @@ pub(crate) struct Applied {
     pub message: String,
     /// A comment to write to the log after the command.
     pub note: Option<String>,
-    /// A file the command created.
-    pub created: Option<PathBuf>,
+    /// The files the command created.
+    pub created: Vec<PathBuf>,
 }
 
 impl Applied {
@@ -110,7 +110,7 @@ impl Applied {
         Applied {
             message,
             note: None,
-            created: None,
+            created: Vec::new(),
         }
     }
 }
@@ -119,7 +119,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::Invalid(message.into()))
 }
 
-fn regex(pattern: &str) -> Result<Regex> {
+pub(crate) fn regex(pattern: &str) -> Result<Regex> {
     // The library's own message runs over several lines.
     Regex::new(pattern).or_else(|_| invalid(format!("bad regular expression '{pattern}'")))
 }
@@ -127,7 +127,7 @@ fn regex(pattern: &str) -> Result<Regex> {
 /// Refuse a replacement that names a group the pattern does not have. The
 /// regex library would silently put nothing there, and it reads `$2_` as a
 /// group called `2_`, so the common `$2_$1` would quietly delete text.
-fn check_replacement(re: &Regex, replace: &str) -> Result<()> {
+pub(crate) fn check_replacement(re: &Regex, replace: &str) -> Result<()> {
     let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let exists = |name: &str| match name.parse::<usize>() {
         Ok(index) => index < re.captures_len(),
@@ -453,7 +453,7 @@ impl Alignment {
                 self.shape()
             ),
             note: Some(note),
-            created: None,
+            created: Vec::new(),
         })
     }
 
@@ -622,7 +622,7 @@ impl Alignment {
         Ok(Applied {
             message: format!("renamed row {} to '{to}'", row + 1),
             note: Some(format!("was: {was}")),
-            created: None,
+            created: Vec::new(),
         })
     }
 
@@ -741,7 +741,7 @@ impl Extraction {
         Ok(Applied {
             message: format!("wrote {} ({shape})", out.display()),
             note: Some(format!("output {} size={size}", full.display())),
-            created: Some(out.to_path_buf()),
+            created: vec![out.to_path_buf()],
         })
     }
 }
