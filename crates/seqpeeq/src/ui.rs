@@ -2,6 +2,7 @@
 
 pub mod grid;
 pub mod overview;
+pub mod tree;
 
 use std::ops::Range;
 
@@ -79,7 +80,7 @@ pub fn regions(app: &App, area: Rect) -> Regions {
             height: area.height - 1 - bottom,
             ..area
         };
-        let wanted = app.busy.is_some() || app.alignment().is_some();
+        let wanted = app.busy.is_some() || app.alignment().is_some() || app.tree().is_some();
         let info = u16::from(wanted && middle.height >= 3);
         let log = if app.show_log && middle.height - info > LOG_HEIGHT {
             LOG_HEIGHT
@@ -268,31 +269,29 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         }
         return;
     }
+    if let Some((dataset, doc, view)) = app.tree() {
+        let name = |d: &seqpeeq_core::Dataset| {
+            d.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let linked = app
+            .session
+            .link_of(dataset.id)
+            .and_then(|id| app.session.datasets().iter().find(|d| d.id == id))
+            .map(name);
+        let header = tree::header_text(&name(dataset), doc, view, linked.as_deref());
+        tree::draw_tree(frame, doc, view, &header, area);
+        return;
+    }
     let lines = match app.session.datasets().get(app.active) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
         )],
         Some(dataset) => match dataset.tree() {
-            Some(tree) => {
-                let edited = if tree.is_modified() { ", edited" } else { "" };
-                let mut lines = vec![
-                    Line::from(dataset.path.display().to_string()),
-                    Line::from(format!("tree, {}{edited}", tree.shape())),
-                ];
-                let linked = app.session.link_of(dataset.id).and_then(|id| {
-                    let datasets = app.session.datasets().iter();
-                    datasets.into_iter().find(|d| d.id == id)
-                });
-                if let Some(alignment) = linked {
-                    let name = alignment.path.file_name().unwrap_or_default();
-                    lines.push(Line::from(format!("linked to {}", name.to_string_lossy())));
-                }
-                lines.push(Line::styled(
-                    "the tree view comes in phase 2b; use :tree … commands",
-                    dim(),
-                ));
-                lines
-            }
+            Some(_) => Vec::new(),
             None => vec![
                 Line::from(dataset.path.display().to_string()),
                 Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
@@ -380,6 +379,42 @@ pub fn info_text(app: &App) -> (String, String) {
             left.push_str(&format!(" · {selected}"));
         }
         if alignment.is_modified() {
+            right.push("unsaved".to_string());
+        }
+    }
+    if let Some((_, doc, view)) = app.tree() {
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = view.cursor;
+        let tips = |k: u32| {
+            if k == 1 {
+                "1 tip".to_string()
+            } else {
+                format!("{k} tips")
+            }
+        };
+        let mut parts = Vec::new();
+        if tree.is_tip(n) {
+            parts.push(tree.label(n).unwrap_or_default().to_string());
+        } else {
+            let name = |n| tree.label(n).unwrap_or_default();
+            parts.push(format!(
+                "{}: {} … {}",
+                tips(facts.tips(n)),
+                name(facts.first_tip(n)),
+                name(facts.last_tip(n))
+            ));
+            if let Some(support) = tree.support(n) {
+                parts.push(format!("support {support}"));
+            }
+        }
+        if let Some(length) = tree.length(n) {
+            parts.push(format!("length {length}"));
+        }
+        left = parts.join(" · ");
+        if let Some(select) = view.select {
+            right.push(format!("selected: {}", tips(facts.tips(select))));
+        }
+        if doc.is_modified() {
             right.push("unsaved".to_string());
         }
     }
@@ -521,6 +556,10 @@ const HELP: &[&str] = &[
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
     "          :rescue FILE if the log has failed",
+    "Tree      jk rows  h parent  l back  Enter open/close",
+    "          + - z zoom  b lengths  / n N find  v select",
+    "          d prune  e extract  r rename  o re-root",
+    "          s ladderize  u U undo redo  a to the alignment",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -700,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_tab_says_what_it_holds_and_how_to_work_on_it() {
+    fn a_tree_tab_draws_the_tree_under_its_header() {
         let dir = tempfile::tempdir().unwrap();
         let (fa, nwk) = (dir.path().join("a.fa"), dir.path().join("t.nwk"));
         std::fs::write(&fa, ">a\nA\n").unwrap();
@@ -716,17 +755,14 @@ mod tests {
             settle(&mut app);
         }
         let screen = rows(&render(&app, 80, 12)).join("\n");
-        for text in [
-            "tree, 2 tips",
-            "linked to a.fa",
-            "the tree view comes in phase 2b",
-        ] {
-            assert!(screen.contains(text), "{text}\n{screen}");
-        }
-        assert!(!screen.contains("edited"), "{screen}");
+        assert!(
+            screen.contains("t.nwk · 2 tips · linked to a.fa (1 of 2)"),
+            "{screen}"
+        );
+        assert!(screen.contains("─ a") && screen.contains("─ b"), "{screen}");
+        assert!(!info_text(&app).1.contains("unsaved"));
         run(&mut app, "tree ladderize --reverse");
-        let screen = rows(&render(&app, 80, 12)).join("\n");
-        assert!(screen.contains("tree, 2 tips, edited"), "{screen}");
+        assert!(info_text(&app).1.contains("unsaved"));
     }
 
     #[test]
@@ -1479,6 +1515,7 @@ mod tests {
             pattern: "pan".into(),
             matches: vec![1],
             revision: 0,
+            names: None,
         });
         let terminal = render(&app, 70, 9);
         let buffer = terminal.backend().buffer();
@@ -1492,5 +1529,18 @@ mod tests {
                 .modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn help_has_a_tree_section() {
+        let help = HELP.join("\n");
+        for text in [
+            "Enter open/close",
+            "b lengths",
+            "o re-root",
+            "a to the alignment",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
     }
 }

@@ -9,14 +9,15 @@ use std::sync::Arc;
 
 use ratatui::layout::Size;
 use seqpeeq_core::{
-    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
-    Started, Summary, View, summary_block,
+    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
+    Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
 };
 
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
     Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
+use crate::tree_view::{TreeSearch, TreeView, common_ancestor};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
@@ -67,6 +68,12 @@ pub enum PromptKind {
     Rename { row: usize },
     /// A regular expression to look for in the sequence names.
     Search,
+    /// A new name for the tip `node` of the visible tree.
+    RenameTip { node: NodeId },
+    /// The file to write the clade at `at` to.
+    TreeOut { at: NodeSel },
+    /// The file for that clade's sequences, or nothing.
+    TreeSeqs { at: NodeSel, out: String },
 }
 
 impl PromptKind {
@@ -77,6 +84,9 @@ impl PromptKind {
             PromptKind::Goto => "go to: ",
             PromptKind::Rename { .. } => "name: ",
             PromptKind::Search => "/",
+            PromptKind::RenameTip { .. } => "name: ",
+            PromptKind::TreeOut { .. } => "tree file: ",
+            PromptKind::TreeSeqs { .. } => "sequence file (Enter for none): ",
         }
     }
 }
@@ -155,6 +165,8 @@ pub struct App {
     ///
     /// [`Dataset::id`]: seqpeeq_core::Dataset::id
     pub views: HashMap<u64, MsaView>,
+    /// Where the user is in each open tree, by [`Dataset::id`].
+    pub trees: HashMap<u64, TreeView>,
     /// The largest alignment, in residues, to count on the spot.
     pub inline_cells: usize,
     /// The newest count of each alignment's columns, by [`Dataset::id`].
@@ -188,6 +200,7 @@ impl App {
             queue: VecDeque::new(),
             screen: Size::new(80, 24),
             views: HashMap::new(),
+            trees: HashMap::new(),
             inline_cells: INLINE_CELLS,
             conserved: HashMap::new(),
             counting: None,
@@ -540,8 +553,95 @@ impl App {
         }
     }
 
+    /// The tree on the visible tab and where the user is in it.
+    pub fn tree(&self) -> Option<(&Dataset, &TreeDoc, &TreeView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        Some((dataset, dataset.tree()?, self.trees.get(&dataset.id)?))
+    }
+
+    fn tree_view_mut(&mut self) -> Option<(&TreeDoc, &mut TreeView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        Some((dataset.tree()?, self.trees.get_mut(&dataset.id)?))
+    }
+
+    /// The rows the tree view of dataset `id` has on screen.
+    fn tree_height(&self, id: u64) -> Option<usize> {
+        let doc = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)?
+            .tree()?;
+        let view = self.trees.get(&id)?;
+        let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
+        let body = ui::regions(self, screen).body;
+        Some(ui::tree::tree_layout(body, doc, view).rows.height as usize)
+    }
+
+    /// Keep one view per open tree, fitted to the screen and following
+    /// every edit, undo and redo of its tree.
+    fn sync_trees(&mut self) {
+        let ids: Vec<u64> = self
+            .session
+            .datasets()
+            .iter()
+            .filter(|d| d.tree().is_some())
+            .map(|d| d.id)
+            .collect();
+        self.trees.retain(|id, _| ids.contains(id));
+        for id in ids {
+            // The counts walk every tip: work them out again only when the
+            // tree or its alignment has changed.
+            let key = self.session.link_of(id).and_then(|aln| {
+                let datasets = self.session.datasets();
+                let tree = datasets.iter().find(|d| d.id == id)?.tree()?.revision();
+                let msa = datasets.iter().find(|d| d.id == aln)?.msa()?.revision();
+                Some((tree, aln, msa))
+            });
+            let link = match self.trees.get(&id) {
+                Some(view) if view.link_key == key => view.link,
+                _ => self.session.link_summary(id),
+            };
+            let fresh = !self.trees.contains_key(&id);
+            let Some(doc) = self.session.datasets().iter().find(|d| d.id == id) else {
+                continue;
+            };
+            let Some(doc) = doc.tree() else {
+                continue;
+            };
+            if fresh {
+                let mut view = TreeView::new(doc.tree());
+                view.revision = doc.revision();
+                self.trees.insert(id, view);
+            }
+            let height = self.tree_height(id).unwrap_or(1);
+            let doc = self.session.datasets().iter().find(|d| d.id == id);
+            let (Some(doc), Some(view)) = (doc.and_then(Dataset::tree), self.trees.get_mut(&id))
+            else {
+                continue;
+            };
+            view.link = link;
+            view.link_key = key;
+            let (tree, facts) = (doc.tree(), doc.facts());
+            if fresh {
+                // The cursor starts on the first row.
+                view.refit(tree, facts, height);
+                if let Some(first) = view.rows.first() {
+                    view.cursor = first.node;
+                }
+                view.refit(tree, facts, height);
+            } else if view.revision != doc.revision() {
+                view.height = height;
+                view.repair(tree, facts, doc.revision());
+            } else if view.height != height {
+                view.refit(tree, facts, height);
+            }
+        }
+    }
+
     /// Scroll the visible alignment just enough to show its cursor.
     fn reveal(&mut self) {
+        self.sync_trees();
         self.rescale();
         let screen = self.screen_shape();
         if let Some(view) = self.view_mut() {
@@ -564,6 +664,7 @@ impl App {
             }
         }
         self.views.retain(|id, _| open.contains(id));
+        self.sync_trees();
         self.conserved.retain(|id, _| open.contains(id));
         self.summaries.retain(|id, _| open.contains(id));
         for job in [&mut self.counting, &mut self.summarising] {
@@ -597,7 +698,7 @@ impl App {
             // Nothing more can be logged, so nothing more will be done;
             // say how to get the work out all the same.
             Err(error @ Error::Log { .. }) => {
-                format!("error: {error}; :rescue FILE still writes the alignment")
+                format!("error: {error}; :rescue FILE still writes the file")
             }
             Err(error) => format!("error: {error}"),
         };
@@ -615,6 +716,8 @@ impl App {
             Event::Resize(width, height) => self.resize(Size::new(*width, *height)),
             _ => {}
         }
+        // Tabs, the log pane and the status line change the rows a tree has.
+        self.sync_trees();
     }
 
     fn handle_key(&mut self, key: &KeyEvent) {
@@ -629,7 +732,12 @@ impl App {
                 // Esc lets go of the selection if there is one; otherwise it
                 // stops the work running in the background.
                 KeyCode::Esc => {
-                    if let Some(view) = self.view_mut().filter(|view| view.select.is_some()) {
+                    if let Some((_, view)) = self.tree_view_mut()
+                        && view.select.is_some()
+                    {
+                        view.select = None;
+                    } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
+                    {
                         view.select = None;
                     } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
@@ -642,6 +750,7 @@ impl App {
                 KeyCode::Char('L') => self.show_log = !self.show_log,
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
+                _ if self.tree().is_some() => self.tree_key(key),
                 _ => self.grid_key(key),
             },
             Mode::Prompt(prompt) => match key.code {
@@ -726,6 +835,9 @@ impl App {
         if pattern.is_empty() {
             return;
         }
+        if self.tree().is_some() {
+            return self.tree_search(Some(pattern), true);
+        }
         let Some((alignment, view)) = self.alignment() else {
             return;
         };
@@ -738,6 +850,7 @@ impl App {
                 pattern: pattern.to_string(),
                 matches,
                 revision: alignment.revision(),
+                names: None,
             },
             Err(error) => {
                 self.status = format!("error: {error}");
@@ -753,6 +866,9 @@ impl App {
 
     /// `n` and `N`: go to the next or the previous match.
     fn search_step(&mut self, forward: bool) {
+        if self.tree().is_some() {
+            return self.tree_search(None, forward);
+        }
         let Some((alignment, view)) = self.alignment() else {
             return;
         };
@@ -764,11 +880,11 @@ impl App {
         let fresh = if search.revision == alignment.revision() {
             None
         } else {
-            let matches = alignment.find_names(&search.pattern).unwrap_or_default();
             Some(Search {
                 pattern: search.pattern.clone(),
-                matches,
+                matches: search.rows_in(alignment),
                 revision: alignment.revision(),
+                names: search.names.clone(),
             })
         };
         // Step from the match last gone to while the cursor is still on
@@ -1382,6 +1498,18 @@ impl App {
             PromptKind::Goto => self.go_to(prompt.line.text()),
             PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
             PromptKind::Search => self.search(prompt.line.text()),
+            PromptKind::RenameTip { node } => self.rename_tip(node, prompt.line.text()),
+            PromptKind::TreeOut { at } => self.tree_out(at, prompt.line.text()),
+            PromptKind::TreeSeqs { at, out } => {
+                let seqs = prompt.line.text().trim();
+                let seqs = (!seqs.is_empty()).then(|| PathBuf::from(seqs));
+                self.act(Command::Tree(TreeCmd::Extract {
+                    at,
+                    out: PathBuf::from(out),
+                    seqs,
+                    wrap: None,
+                }));
+            }
         }
     }
 
@@ -1405,15 +1533,272 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
-        self.wheel(mouse);
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         if left_click && mouse.row == 0 {
             let ranges = ui::tab_ranges(&ui::tab_titles(self), self.screen.width, self.active);
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
                 self.active = tab;
+                return;
             }
         }
+        if self.tree().is_some() {
+            return self.tree_mouse(mouse);
+        }
+        self.wheel(mouse);
         self.grid_mouse(mouse);
+    }
+
+    /// A key on the tree tab.
+    fn tree_key(&mut self, key: &KeyEvent) {
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let page = view.height.max(1) as isize;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => view.step(tree, facts, -1),
+            KeyCode::Down | KeyCode::Char('j') => view.step(tree, facts, 1),
+            KeyCode::PageUp => view.step(tree, facts, -page),
+            KeyCode::PageDown => view.step(tree, facts, page),
+            KeyCode::Left | KeyCode::Char('h') => view.go_parent(tree, facts),
+            KeyCode::Right | KeyCode::Char('l') => view.go_child(tree, facts),
+            KeyCode::Enter => view.toggle(tree, facts),
+            KeyCode::Char('+' | '=') => view.zoom_in(tree, facts),
+            KeyCode::Char('-') => view.zoom_out(tree, facts),
+            KeyCode::Char('z') => view.zoom_whole(tree, facts),
+            KeyCode::Char('b') => view.equal = !view.equal,
+            KeyCode::Char('v') => view.select = Some(view.cursor),
+            KeyCode::Char('/') => self.open_prompt(PromptKind::Search, ""),
+            KeyCode::Char('n') => self.search_step(true),
+            KeyCode::Char('N') => self.search_step(false),
+            KeyCode::Char('u') => self.act(Command::Undo),
+            KeyCode::Char('U') => self.act(Command::Redo),
+            KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
+            KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
+            KeyCode::Char('a') => self.show_sequences(),
+            _ => {}
+        }
+    }
+
+    /// `d` `o` `r` `e`: act on the selected clade, or the cursor's.
+    fn tree_act(&mut self, code: KeyCode) {
+        let Some((_, doc, view)) = self.tree() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = view.select.unwrap_or(view.cursor);
+        let at = tree.sel_for(n, facts);
+        match code {
+            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at })),
+            KeyCode::Char('o') => self.act(Command::Tree(TreeCmd::Reroot {
+                at,
+                outgroup: Vec::new(),
+                midpoint: false,
+            })),
+            KeyCode::Char('r') if tree.is_tip(n) => {
+                let name = tree.label(n).unwrap_or_default().to_string();
+                self.open_prompt(PromptKind::RenameTip { node: n }, &name);
+            }
+            KeyCode::Char('r') => {
+                self.status =
+                    "error: r renames a tip; to rename many, :tree rename --regex … --replace …"
+                        .to_string();
+            }
+            _ => {
+                // The whole tree is written with no node named: a save.
+                let at = if n == tree.root() {
+                    NodeSel::default()
+                } else {
+                    at
+                };
+                self.open_prompt(PromptKind::TreeOut { at }, "");
+            }
+        }
+    }
+
+    /// `a`: show the linked alignment with the sequences of the selected
+    /// clade (or the cursor's) marked as search matches.
+    fn show_sequences(&mut self) {
+        let Some((dataset, doc, view)) = self.tree() else {
+            return;
+        };
+        let Some(linked) = self.session.link_of(dataset.id) else {
+            self.status = "error: this tree is not linked; :tree link FILE".to_string();
+            return;
+        };
+        let datasets = self.session.datasets();
+        let Some(index) = datasets.iter().position(|d| d.id == linked) else {
+            return;
+        };
+        let Some(alignment) = datasets[index].msa() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = view.select.unwrap_or(view.cursor);
+        let name = |n| tree.label(n).unwrap_or_default();
+        let tips = facts.tips(n) as usize;
+        let names: std::collections::HashSet<String> = tree
+            .preorder_from(n)
+            .into_iter()
+            .filter(|&n| tree.is_tip(n))
+            .map(|n| name(n).to_string())
+            .collect();
+        let search = Search {
+            pattern: format!(
+                "tips of {} … {}",
+                name(facts.first_tip(n)),
+                name(facts.last_tip(n))
+            ),
+            matches: Vec::new(),
+            revision: alignment.revision(),
+            names: Some(Arc::new(names)),
+        };
+        let matches = search.rows_in(alignment);
+        if matches.is_empty() {
+            let file = datasets[index].path.file_name().unwrap_or_default();
+            self.status = format!(
+                "error: none of these {tips} tips has a sequence in {}",
+                file.to_string_lossy()
+            );
+            return;
+        }
+        let found: std::collections::HashSet<&str> =
+            matches.iter().map(|&row| alignment.name(row)).collect();
+        let have = if tips == 1 { "tip has" } else { "tips have" };
+        let message = format!(
+            "{} of {tips} {have} a sequence; n N step through them",
+            found.len()
+        );
+        let first = matches[0];
+        self.active = index;
+        if let Some(view) = self.views.get_mut(&linked) {
+            view.search = Some(Search { matches, ..search });
+        }
+        self.go_to_match(Some((0, first)));
+        self.status = message;
+    }
+
+    /// Give the tip `node` the name typed, if it changed.
+    fn rename_tip(&mut self, node: NodeId, name: &str) {
+        let Some((_, doc, _)) = self.tree() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let name = name.trim();
+        if name.is_empty() || !facts.contains(node) || tree.label(node) == Some(name) {
+            return;
+        }
+        let at = tree.sel_for(node, facts);
+        self.act(Command::Tree(TreeCmd::Rename {
+            at,
+            to: Some(name.to_string()),
+            regex: None,
+            replace: None,
+        }));
+    }
+
+    /// The tree file for `e` was typed: write it, or first ask for a
+    /// sequence file when the tree is linked.
+    fn tree_out(&mut self, at: NodeSel, out: &str) {
+        let out = out.trim();
+        if out.is_empty() {
+            return;
+        }
+        let linked = self
+            .tree()
+            .is_some_and(|(dataset, _, _)| self.session.link_of(dataset.id).is_some());
+        if linked {
+            let out = out.to_string();
+            return self.open_prompt(PromptKind::TreeSeqs { at, out }, "");
+        }
+        self.act(Command::Tree(TreeCmd::Extract {
+            at,
+            out: PathBuf::from(out),
+            seqs: None,
+            wrap: None,
+        }));
+    }
+
+    /// Search the tree's tip names: a new `pattern` from the cursor on, or
+    /// (with `None`) the next or previous match, searching again if the
+    /// tree has changed. The cursor goes to the match, its path opened.
+    fn tree_search(&mut self, pattern: Option<&str>, forward: bool) {
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let again = match (pattern, &view.search) {
+            (Some(pattern), _) => Some(pattern.to_string()),
+            (None, Some(search)) if search.revision != doc.revision() => {
+                Some(search.pattern.clone())
+            }
+            (None, Some(_)) => None,
+            (None, None) => {
+                self.status = "error: nothing to search for; press / first".to_string();
+                return;
+            }
+        };
+        if let Some(pattern) = again {
+            match TreeSearch::find(doc, &pattern) {
+                Ok(search) if search.matches.is_empty() => {
+                    self.status = format!("error: no tip name matches '{pattern}'");
+                    return;
+                }
+                Ok(search) => view.search = Some(search),
+                Err(error) => {
+                    self.status = format!("error: {error}");
+                    return;
+                }
+            }
+        }
+        let search = view.search.as_ref().expect("a search");
+        let Some((index, tip)) = search.next(facts, view.cursor, forward, pattern.is_some()) else {
+            return;
+        };
+        let total = search.matches.len();
+        if common_ancestor(tree, facts, view.zoom, tip) != view.zoom {
+            view.zoom = tree.root();
+        }
+        view.cursor = tip;
+        view.found = Some(tip);
+        view.refit(tree, facts, view.height);
+        self.status = format!(
+            "match {} of {total}: {}",
+            index + 1,
+            tree.label(tip).unwrap_or_default()
+        );
+    }
+
+    /// The mouse on the tree tab: click selects, right-click or
+    /// Shift-click extends, the wheel moves the cursor three rows.
+    fn tree_mouse(&mut self, mouse: &MouseEvent) {
+        const ROWS: isize = 3;
+        let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
+        let body = ui::regions(self, screen).body;
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let extend = match mouse.kind {
+            MouseEventKind::ScrollUp => return view.step(tree, facts, -ROWS),
+            MouseEventKind::ScrollDown => return view.step(tree, facts, ROWS),
+            MouseEventKind::Down(MouseButton::Left) => shift,
+            MouseEventKind::Down(MouseButton::Right) => true,
+            _ => return,
+        };
+        let layout = ui::tree::tree_layout(body, doc, view);
+        let Some(n) = ui::tree::hit(&layout, doc, view, mouse.column, mouse.row) else {
+            return;
+        };
+        if extend {
+            let from = view.select.unwrap_or(view.cursor);
+            view.select = Some(common_ancestor(tree, facts, from, n));
+        } else {
+            view.select = Some(n);
+            view.cursor = n;
+            view.refit(tree, facts, view.height);
+        }
     }
 
     /// The mouse on the alignment: press to place the cursor or to select a
@@ -2199,6 +2584,10 @@ mod tests {
     /// The view of the alignment on the visible tab.
     fn view(app: &App) -> &MsaView {
         app.alignment().expect("an alignment is shown").1
+    }
+
+    fn view_of(app: &App) -> &MsaView {
+        view(app)
     }
 
     fn active_layout(app: &App) -> GridLayout {
@@ -3700,8 +4089,7 @@ mod tests {
             app.status
         );
         assert!(
-            app.status
-                .ends_with("; :rescue FILE still writes the alignment"),
+            app.status.ends_with("; :rescue FILE still writes the file"),
             "{}",
             app.status
         );
@@ -3743,5 +4131,490 @@ mod tests {
         assert_eq!(app.active, 4);
         app.handle_event(&click(0, 0));
         assert_eq!(app.active, 3);
+    }
+
+    // The tree tab.
+
+    /// An app showing `t.nwk` holding `text`, on an 80 x 24 screen.
+    fn with_tree(text: &str) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let nwk = dir.path().join("t.nwk");
+        fs::write(&nwk, text).unwrap();
+        let mut app = App::new(Session::new(None));
+        type_str(&mut app, &format!(":open {}", nwk.display()));
+        enter(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        (app, dir)
+    }
+
+    const T6: &str = "((A,B),(C,(D,E)),F);";
+
+    fn tree_view(app: &App) -> &TreeView {
+        app.tree().expect("a tree is shown").2
+    }
+
+    fn shown_tree(app: &App) -> &seqpeeq_core::Tree {
+        app.tree().expect("a tree is shown").1.tree()
+    }
+
+    fn tip_of(app: &App, name: &str) -> NodeId {
+        crate::tree_view::tests::tip(shown_tree(app), name)
+    }
+
+    fn parent_of(app: &App, name: &str) -> NodeId {
+        shown_tree(app).parent(tip_of(app, name)).unwrap()
+    }
+
+    fn root_of(app: &App) -> NodeId {
+        shown_tree(app).root()
+    }
+
+    /// The text of the tree's rows on screen.
+    fn rows_of(app: &App) -> Vec<String> {
+        let (_, doc, view) = app.tree().unwrap();
+        view.rows
+            .iter()
+            .map(|row| ui::tree::row_text(doc, view, row))
+            .collect()
+    }
+
+    fn tree_layout_of(app: &App) -> ui::tree::TreeLayout {
+        let (_, doc, view) = app.tree().unwrap();
+        let screen = ratatui::layout::Rect::new(0, 0, app.screen.width, app.screen.height);
+        ui::tree::tree_layout(ui::regions(app, screen).body, doc, view)
+    }
+
+    /// Click the tip `name` with `button`.
+    fn click_node(app: &mut App, name: &str, modifiers: KeyModifiers, button: MouseButton) {
+        let n = tip_of(app, name);
+        let layout = tree_layout_of(app);
+        let (_, doc, view) = app.tree().unwrap();
+        let at = ui::tree::node_position(&layout, doc, view, n).expect("on screen");
+        app.handle_event(&mouse(MouseEventKind::Down(button), at, modifiers));
+    }
+
+    /// The screen's rows as text, trailing spaces removed.
+    fn render_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tree_tab_moves_opens_and_zooms_with_keys() {
+        let (mut app, _dir) = with_tree(T6);
+        let (c, cde) = (tip_of(&app, "C"), parent_of(&app, "C"));
+        assert_eq!(
+            tree_view(&app).cursor,
+            tip_of(&app, "A"),
+            "on the first row"
+        );
+        type_str(&mut app, "jj");
+        assert_eq!(tree_view(&app).cursor, c);
+        type_str(&mut app, "h");
+        assert_eq!(tree_view(&app).cursor, cde);
+        enter(&mut app);
+        assert!(tree_view(&app).closed.contains(&cde));
+        assert!(rows_of(&app).contains(&"▸ 3 tips  C … E".to_string()));
+        enter(&mut app);
+        type_str(&mut app, "+");
+        assert_eq!(tree_view(&app).shown, cde);
+        type_str(&mut app, "-");
+        assert_eq!(tree_view(&app).shown, root_of(&app));
+        type_str(&mut app, "+z");
+        assert_eq!(tree_view(&app).shown, root_of(&app));
+        type_str(&mut app, "b");
+        assert!(tree_view(&app).equal);
+        type_str(&mut app, "l");
+        assert_eq!(tree_view(&app).cursor, c, "back down to where h came from");
+    }
+
+    #[test]
+    fn clicks_select_extend_and_escape_clears() {
+        let (mut app, _dir) = with_tree(T6);
+        click_node(&mut app, "A", NONE, LEFT);
+        assert_eq!(tree_view(&app).select, Some(tip_of(&app, "A")));
+        click_node(&mut app, "B", KeyModifiers::SHIFT, LEFT);
+        assert_eq!(tree_view(&app).select, Some(parent_of(&app, "A")));
+        click_node(&mut app, "C", NONE, MouseButton::Right);
+        assert_eq!(tree_view(&app).select, Some(root_of(&app)));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(tree_view(&app).select, None);
+        type_str(&mut app, "v");
+        assert_eq!(tree_view(&app).select, Some(tree_view(&app).cursor));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor_three_rows() {
+        let (mut app, _dir) = with_tree(T6);
+        app.handle_event(&wheel(MouseEventKind::ScrollDown, NONE));
+        assert_eq!(tree_view(&app).cursor, tip_of(&app, "D"));
+    }
+
+    #[test]
+    fn the_tab_shows_the_tree_header_and_the_cursor_in_the_information_row() {
+        let (app, _dir) = with_tree("((A:1,B:2)90:3,C:1);");
+        let screen = render_rows(&app, 80, 24);
+        assert!(screen[1].contains("t.nwk · 3 tips"), "{screen:?}");
+        let (left, right) = ui::info_text(&app);
+        assert_eq!((left.as_str(), right.as_str()), ("A · length 1", ""));
+    }
+
+    #[test]
+    fn the_tree_fits_the_rows_the_screen_leaves_it() {
+        let (mut app, _dir) = with_tree(T6);
+        app.resize(Size::new(80, 8));
+        let rows = tree_layout_of(&app).rows.height as usize;
+        assert_eq!(tree_view(&app).height, rows);
+        assert!(tree_view(&app).rows.len() <= rows.max(3));
+    }
+
+    /// `/pattern` and Enter.
+    fn search_for(app: &mut App, pattern: &str) {
+        type_str(app, &format!("/{pattern}"));
+        enter(app);
+    }
+
+    /// `:line` and Enter.
+    fn run_typed(app: &mut App, line: &str) {
+        type_str(app, &format!(":{line}"));
+        enter(app);
+    }
+
+    #[test]
+    fn search_finds_tips_opens_the_path_and_steps_through_matches() {
+        let (mut app, _dir) = with_tree("((a1,b),((c,a2),(d,(e,a3))));");
+        // Tabs, header, 3 rows, information row, bottom line: the open
+        // message, with a long temp path, would take two.
+        app.status.clear();
+        app.resize(Size::new(80, 7));
+        assert_eq!(tree_view(&app).height, 3);
+        search_for(&mut app, "A");
+        assert_eq!(app.status, "match 1 of 3: a1");
+        type_str(&mut app, "n");
+        assert_eq!(
+            (app.status.as_str(), tree_view(&app).cursor),
+            ("match 2 of 3: a2", tip_of(&app, "a2"))
+        );
+        assert!(
+            rows_of(&app).contains(&"a2".to_string()),
+            "its path is open"
+        );
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "match 3 of 3: a3");
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "match 1 of 3: a1");
+        type_str(&mut app, "N");
+        assert_eq!(app.status, "match 3 of 3: a3");
+        run_typed(&mut app, "tree prune --tip a2");
+        type_str(&mut app, "n");
+        assert_eq!(
+            app.status, "match 1 of 2: a1",
+            "the tree changed: searched again"
+        );
+        search_for(&mut app, "zzz");
+        assert_eq!(app.status, "error: no tip name matches 'zzz'");
+        search_for(&mut app, "(");
+        assert_eq!(app.status, "error: bad regular expression '('");
+    }
+
+    #[test]
+    fn a_match_outside_the_zoomed_clade_shows_the_whole_tree() {
+        let (mut app, _dir) = with_tree(T6);
+        type_str(&mut app, "+"); // the cursor is on A: zoom to A and B
+        assert_eq!(tree_view(&app).zoom, parent_of(&app, "A"));
+        search_for(&mut app, "^E$");
+        assert_eq!(tree_view(&app).zoom, root_of(&app));
+        assert_eq!(tree_view(&app).cursor, tip_of(&app, "E"));
+    }
+
+    fn tree_doc(app: &App) -> &TreeDoc {
+        app.tree().expect("a tree is shown").1
+    }
+
+    /// Put the cursor on `n` and refit, as moving there would.
+    fn put_cursor_on(app: &mut App, n: NodeId) {
+        let (doc, view) = app.tree_view_mut().unwrap();
+        view.cursor = n;
+        view.refit(doc.tree(), doc.facts(), view.height);
+    }
+
+    fn put_cursor(app: &mut App, name: &str) {
+        let n = tip_of(app, name);
+        put_cursor_on(app, n);
+    }
+
+    fn put_cursor_root(app: &mut App) {
+        let n = root_of(app);
+        put_cursor_on(app, n);
+    }
+
+    fn put_cursor_row(app: &mut App, row: usize) {
+        let n = tree_view(app).rows[row].node;
+        put_cursor_on(app, n);
+    }
+
+    /// The cursor to the smallest clade holding `a` and `b`, then `v`.
+    fn select_node(app: &mut App, a: &str, b: &str) {
+        let (doc, _) = app.tree_view_mut().unwrap();
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = common_ancestor(
+            tree,
+            facts,
+            crate::tree_view::tests::tip(tree, a),
+            crate::tree_view::tests::tip(tree, b),
+        );
+        put_cursor_on(app, n);
+        type_str(app, "v");
+    }
+
+    fn prompt_lead(app: &App) -> &'static str {
+        match &app.mode {
+            Mode::Prompt(prompt) => prompt.kind.lead(),
+            _ => panic!("no prompt is open"),
+        }
+    }
+
+    fn prompt_text(app: &App) -> String {
+        format!("{}{}", prompt_lead(app), typed(app).unwrap())
+    }
+
+    fn clear_prompt_and_type(app: &mut App, text: &str) {
+        for _ in 0..typed(app).unwrap().chars().count() {
+            app.handle_event(&press(KeyCode::Backspace));
+        }
+        type_str(app, text);
+    }
+
+    /// Open `a.fa` holding `fasta`, go back to the tree and link them.
+    fn link_alignment(app: &mut App, dir: &TempDir, fasta: &str) {
+        let fa = dir.path().join("a.fa");
+        fs::write(&fa, fasta).unwrap();
+        run_typed(app, &format!("open {}", fa.display()));
+        run_typed(app, "use 1");
+        run_typed(app, &format!("tree link {}", fa.display()));
+        assert!(app.status.starts_with("linked "), "{}", app.status);
+    }
+
+    /// The text of `tree extract` as logged.
+    fn extract_line(at: NodeSel, out: PathBuf, seqs: Option<PathBuf>) -> String {
+        Command::Tree(TreeCmd::Extract {
+            at,
+            out,
+            seqs,
+            wrap: None,
+        })
+        .to_line()
+        .unwrap()
+    }
+
+    /// The tree as the app has it now, written to a file and read back.
+    fn saved_newick(app: &mut App, dir: &TempDir) -> String {
+        let out = dir.path().join("now.nwk");
+        run_typed(app, &format!("tree extract --out {}", out.display()));
+        fs::read_to_string(out).unwrap()
+    }
+
+    /// Run the app's logged lines in a new session and write its tree.
+    fn replay_into_fresh_session(app: &App, dir: &TempDir) -> String {
+        let mut session = Session::new(None);
+        for line in app.session.history() {
+            session.execute(Command::parse_line(line).unwrap()).unwrap();
+        }
+        let out = dir.path().join("replayed.nwk");
+        let line = format!("tree extract --out {}", out.display());
+        session
+            .execute(Command::parse_line(&line).unwrap())
+            .unwrap();
+        fs::read_to_string(out).unwrap()
+    }
+
+    #[test]
+    fn keys_act_on_the_selection_or_the_cursor_and_are_logged() {
+        let (mut app, _dir) = with_tree("((A,B),(C,D),E);");
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "tree prune --mrca A --mrca B");
+        assert!(tree_doc(&app).facts().contains(tree_view(&app).cursor));
+        put_cursor(&mut app, "C");
+        type_str(&mut app, "o");
+        assert_eq!(last(&app), "tree reroot --tip C");
+        type_str(&mut app, "s");
+        assert_eq!(last(&app), "tree ladderize");
+        type_str(&mut app, "u");
+        assert_eq!(last(&app), "undo");
+        type_str(&mut app, "U");
+        assert_eq!(last(&app), "redo");
+    }
+
+    #[test]
+    fn rename_and_extract_ask_in_the_bottom_line() {
+        let (mut app, dir) = with_tree("((A,B),(C,D));");
+        put_cursor(&mut app, "A");
+        type_str(&mut app, "r");
+        assert_eq!(prompt_text(&app), "name: A");
+        clear_prompt_and_type(&mut app, "x y");
+        enter(&mut app);
+        assert_eq!(last(&app), "tree rename --tip A --to 'x y'");
+        put_cursor_root(&mut app);
+        type_str(&mut app, "r");
+        assert_eq!(
+            app.status,
+            "error: r renames a tip; to rename many, :tree rename --regex … --replace …"
+        );
+        type_str(&mut app, "e");
+        assert_eq!(prompt_lead(&app), "tree file: ");
+        let out = dir.path().join("o.nwk");
+        type_str(&mut app, &out.display().to_string());
+        enter(&mut app);
+        assert_eq!(last(&app), extract_line(NodeSel::default(), out, None));
+        link_alignment(&mut app, &dir, ">C\nAA\n>D\nCC\n");
+        select_node(&mut app, "C", "D");
+        type_str(&mut app, "e");
+        let (out, seqs) = (dir.path().join("c.nwk"), dir.path().join("c.fa"));
+        type_str(&mut app, &out.display().to_string());
+        enter(&mut app);
+        assert_eq!(prompt_lead(&app), "sequence file (Enter for none): ");
+        type_str(&mut app, &seqs.display().to_string());
+        enter(&mut app);
+        let at = NodeSel {
+            mrca: vec!["C".to_string(), "D".to_string()],
+            ..NodeSel::default()
+        };
+        assert_eq!(last(&app), extract_line(at, out, Some(seqs.clone())));
+        assert!(seqs.exists());
+    }
+
+    #[test]
+    fn shared_names_are_acted_on_by_number_and_replay_to_the_same_tree() {
+        let (mut app, dir) = with_tree("((A,A),(B,C));");
+        put_cursor_row(&mut app, 1); // the second A
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "tree prune --node 4");
+        let replayed = replay_into_fresh_session(&app, &dir);
+        assert_eq!(replayed, saved_newick(&mut app, &dir));
+        assert_eq!(replayed, "(A,(B,C));\n");
+    }
+
+    #[test]
+    fn an_edit_that_removes_the_cursor_or_shown_clade_leaves_a_working_view() {
+        let (mut app, _dir) = with_tree("((A,B),(C,(D,E)),F);");
+        put_cursor(&mut app, "D");
+        type_str(&mut app, "h+"); // show (D,E)
+        put_cursor(&mut app, "D");
+        type_str(&mut app, "d");
+        let facts = tree_doc(&app).facts();
+        let view = tree_view(&app);
+        assert!(facts.contains(view.cursor) && facts.contains(view.shown));
+        assert!(!view.rows.is_empty());
+        type_str(&mut app, "u");
+        let facts = tree_doc(&app).facts();
+        let view = tree_view(&app);
+        assert!(facts.contains(view.cursor) && facts.contains(view.shown));
+        assert!(!view.rows.is_empty());
+    }
+
+    /// Show the tree's tab again: it is the first file.
+    fn to_tree_tab(app: &mut App) {
+        run_typed(app, "use 1");
+        assert!(app.tree().is_some());
+    }
+
+    #[test]
+    fn a_marks_the_clades_sequences_in_the_linked_alignment() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n>D\nTT\n");
+        select_node(&mut app, "C", "X");
+        type_str(&mut app, "a");
+        let (alignment, view) = app.alignment().expect("the alignment's tab is visible");
+        assert_eq!(view.search.as_ref().unwrap().matches, [2]);
+        assert_eq!(view.cursor.row, 2);
+        assert_eq!(alignment.name(2), "C");
+        assert_eq!(
+            app.status,
+            "1 of 2 tips have a sequence; n N step through them"
+        );
+        run_typed(&mut app, "msa rename --rows 3 --to Q");
+        type_str(&mut app, "n");
+        assert_eq!(
+            app.status,
+            "error: no sequence name matches 'tips of C … X'"
+        );
+        to_tree_tab(&mut app);
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "a");
+        assert_eq!(view_of(&app).search.as_ref().unwrap().matches, [0, 1]);
+        run_typed(&mut app, "close");
+        type_str(&mut app, "y");
+        to_tree_tab(&mut app);
+        type_str(&mut app, "a");
+        assert_eq!(
+            app.status,
+            "error: this tree is not linked; :tree link FILE"
+        );
+    }
+
+    #[test]
+    fn a_says_when_no_tip_of_the_clade_has_a_sequence() {
+        let (mut app, dir) = with_tree("((A,B),(Y,Z));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n");
+        select_node(&mut app, "Y", "Z");
+        type_str(&mut app, "a");
+        assert_eq!(
+            app.status,
+            "error: none of these 2 tips has a sequence in a.fa"
+        );
+        assert!(app.tree().is_some(), "the tree's tab stays");
+    }
+
+    #[test]
+    fn the_link_counts_are_worked_out_again_only_when_something_changed() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n");
+        let key = tree_view(&app).link_key;
+        assert!(key.is_some());
+        assert_eq!(tree_view(&app).link.unwrap().matched, 3);
+        type_str(&mut app, "jjk");
+        assert_eq!(tree_view(&app).link_key, key, "moving changes nothing");
+        run_typed(&mut app, "use 2");
+        run_typed(&mut app, "msa rename --rows 1 --to Q");
+        let view = &app.trees[&app.session.datasets()[0].id];
+        assert_ne!(view.link_key, key, "the alignment changed");
+        assert_eq!(view.link.unwrap().matched, 2);
+    }
+
+    #[test]
+    #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored keys_on"]
+    fn keys_on_a_large_linked_tree_stay_fast() {
+        use std::time::Instant;
+        let n = 1_000_000;
+        let mut text = String::with_capacity(n * 12);
+        for i in 0..n - 1 {
+            text.push_str(&format!("(t{i},"));
+        }
+        text.push_str(&format!("t{}", n - 1));
+        text.push_str(&")".repeat(n - 1));
+        text.push(';');
+        let (mut app, dir) = with_tree(&text);
+        let fasta: String = (0..1000).map(|i| format!(">t{i}\nACGT\n")).collect();
+        link_alignment(&mut app, &dir, &fasta);
+        for tab in ["use 1", "use 2"] {
+            run_typed(&mut app, tab);
+            let mut slowest = std::time::Duration::ZERO;
+            for _ in 0..20 {
+                let started = Instant::now();
+                type_str(&mut app, "j");
+                slowest = slowest.max(started.elapsed());
+            }
+            println!("{tab}: slowest key {slowest:?}");
+            assert!(slowest.as_millis() < 10, "{tab}: {slowest:?}");
+        }
     }
 }

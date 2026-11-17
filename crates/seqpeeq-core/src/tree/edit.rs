@@ -21,9 +21,54 @@ impl Tree {
             (None, _) => invalid(format!("no tip is named '{name}'")),
             (Some(tip), 0) => Ok(tip),
             (Some(_), more) => invalid(format!(
-                "'{name}' names {} tips; name one with --node (see the tree view)",
+                "'{name}' names {} tips; name one with --node N (the tree view writes it for you)",
                 more + 1
             )),
+        }
+    }
+
+    /// How to name `n` in a command: a tip by `--tip`, a clade by
+    /// `--mrca` of its first and last tip, or by `--node` (its place in
+    /// pre-order, counting from 1) when a name needed is shared or empty,
+    /// or when the clade's first and last tip have a lower common ancestor.
+    pub fn sel_for(&self, n: NodeId, facts: &super::TreeFacts) -> NodeSel {
+        let by_number = || NodeSel {
+            node: facts.order(n).map(|order| order as usize + 1),
+            ..NodeSel::default()
+        };
+        let names: Vec<&str> = if self.is_tip(n) {
+            vec![self.label(n).unwrap_or_default()]
+        } else if self.children(n).nth(1).is_some() {
+            [facts.first_tip(n), facts.last_tip(n)]
+                .iter()
+                .map(|&tip| self.label(tip).unwrap_or_default())
+                .collect()
+        } else {
+            return by_number();
+        };
+        if names.iter().any(|name| name.is_empty()) {
+            return by_number();
+        }
+        let mut uses = [0u32; 2];
+        for tip in self.tips() {
+            if let Some(label) = self.label(tip) {
+                for (i, name) in names.iter().enumerate() {
+                    uses[i] += u32::from(label == *name);
+                }
+            }
+        }
+        if uses[..names.len()].iter().any(|&used| used > 1) {
+            return by_number();
+        }
+        match names.as_slice() {
+            [tip] => NodeSel {
+                tip: Some(tip.to_string()),
+                ..NodeSel::default()
+            },
+            _ => NodeSel {
+                mrca: names.iter().map(|name| name.to_string()).collect(),
+                ..NodeSel::default()
+            },
         }
     }
 
@@ -540,5 +585,44 @@ pub(crate) mod tests {
         let t0 = tip(&t, "t0");
         t.prune(t0).unwrap();
         assert_eq!(t.tip_count(), 200_000);
+    }
+
+    #[test]
+    fn a_node_is_named_by_tip_or_mrca_and_by_number_when_names_are_shared() {
+        use crate::tree::TreeFacts;
+        let t = tree("((A,B),(C,'D d'),E);");
+        let f = TreeFacts::of(&t);
+        let line = |n| {
+            Command::Tree(TreeCmd::Prune {
+                at: t.sel_for(n, &f),
+            })
+        };
+        let cd = t.parent(t.tip_named("C").unwrap()).unwrap();
+        assert_eq!(
+            line(t.tip_named("E").unwrap()).to_line().unwrap(),
+            "tree prune --tip E"
+        );
+        assert_eq!(
+            line(cd).to_line().unwrap(),
+            "tree prune --mrca C --mrca 'D d'"
+        );
+        let t = tree("((A,A),(B,C));");
+        let f = TreeFacts::of(&t);
+        let first = t.children(t.root()).next().unwrap();
+        assert_eq!(
+            t.sel_for(first, &f),
+            NodeSel {
+                node: Some(2),
+                ..NodeSel::default()
+            }
+        );
+        let a = t.children(first).next().unwrap();
+        assert_eq!(
+            t.sel_for(a, &f),
+            NodeSel {
+                node: Some(3),
+                ..NodeSel::default()
+            }
+        );
     }
 }

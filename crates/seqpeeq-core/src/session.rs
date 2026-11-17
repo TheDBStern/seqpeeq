@@ -142,6 +142,16 @@ struct LinkCounts {
     unmatched: String,
 }
 
+/// How a tree's tips match the alignment it is linked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkSummary {
+    /// The alignment's dataset id.
+    pub alignment: u64,
+    /// Tips whose name is a sequence name in the alignment.
+    pub matched: usize,
+    pub tips: usize,
+}
+
 /// What a successfully executed command reports back to the interface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -657,6 +667,27 @@ impl Session {
     /// The alignment linked to the tree `tree` (dataset ids).
     pub fn link_of(&self, tree: u64) -> Option<u64> {
         self.links.get(&tree).copied()
+    }
+
+    /// How the tree with dataset id `tree` matches its linked alignment;
+    /// `None` when it is not linked.
+    pub fn link_summary(&self, tree: u64) -> Option<LinkSummary> {
+        let alignment = *self.links.get(&tree)?;
+        let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
+        let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
+        let names: std::collections::HashSet<&str> =
+            (0..msa.rows()).map(|row| msa.name(row)).collect();
+        let tree = doc.tree();
+        let matched = tree
+            .tips()
+            .into_iter()
+            .filter(|&n| names.contains(tree.label(n).unwrap_or_default()))
+            .count();
+        Some(LinkSummary {
+            alignment,
+            matched,
+            tips: doc.tips(),
+        })
     }
 
     /// How the current tree's tips match its linked alignment's names.
@@ -1325,11 +1356,11 @@ mod tests {
         let err = |s: &mut Session, line| ex_in(s, &dir, line).unwrap_err().to_string();
         assert_eq!(
             err(&mut s, "tree extract --tip A --out {}/x.nwk"),
-            "'A' names 2 tips; name one with --node (see the tree view)"
+            "'A' names 2 tips; name one with --node N (the tree view writes it for you)"
         );
         assert_eq!(
             err(&mut s, "tree extract --mrca A --mrca B --out {}/x.nwk"),
-            "'A' names 2 tips; name one with --node (see the tree view)"
+            "'A' names 2 tips; name one with --node N (the tree view writes it for you)"
         );
         ex_in(&mut s, &dir, "tree extract --node 2 --out {}/x.nwk").unwrap();
         assert_eq!(fs::read_to_string(dir.join("x.nwk")).unwrap(), "(A,A);\n");
@@ -1368,6 +1399,20 @@ mod tests {
             "((A:1,B:2)90:3,C:4);\n"
         );
         assert!(!dir.join("y.nwk").exists());
+    }
+
+    #[test]
+    fn link_summary_counts_tips_with_a_sequence() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        let tree = s.datasets()[1].id;
+        assert_eq!(s.link_summary(tree), None);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        let got = s.link_summary(tree).unwrap();
+        assert_eq!(
+            (got.alignment, got.matched, got.tips),
+            (s.datasets()[0].id, 3, 3)
+        );
     }
 
     #[test]

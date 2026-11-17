@@ -13,6 +13,7 @@ use portable_pty::{Child, CommandBuilder, ExitStatus, PtySize, native_pty_system
 use tempfile::TempDir;
 
 const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+const TREE: &str = "((A:1,B:2)90:3,(C:2,(D:1,E:1):1)70:1,F:0.5);\n";
 const PATIENCE: Duration = Duration::from_secs(10);
 
 /// Everything the program has written, raw and as a screen.
@@ -35,6 +36,7 @@ impl Pty {
     fn start(args: &[&str]) -> Pty {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.fa"), TRIO).unwrap();
+        std::fs::write(dir.path().join("t.nwk"), TREE).unwrap();
         let size = PtySize {
             rows: 24,
             cols: 80,
@@ -185,4 +187,17 @@ fn the_grid_is_drawn_and_an_edit_reaches_the_log() {
     run.assert_terminal_restored("after quitting with edits");
     let log = std::fs::read_to_string(run.dir().join("s.log")).unwrap();
     assert!(log.contains("\nmsa delete-rows --rows 2\n"), "{log}");
+}
+
+#[test]
+fn a_tree_opens_and_is_drawn() {
+    let mut run = Pty::start(&["--no-log", "t.nwk"]);
+    run.wait_for("6 tips");
+    run.wait_for("┤");
+    run.wait_for("─ F");
+    run.send("j");
+    run.wait_for("B · length 2");
+    run.send("q");
+    assert!(run.wait_exit().success());
+    run.assert_terminal_restored("after q on a tree");
 }

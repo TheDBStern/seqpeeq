@@ -25,5 +25,7 @@ pub use msa::{
 pub use progress::Progress;
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
-pub use session::{Content, Dataset, Finished, Job, Outcome, Session, Started, check_input};
-pub use tree::{NodeId, Parsed, Tree, TreeDoc};
+pub use session::{
+    Content, Dataset, Finished, Job, LinkSummary, Outcome, Session, Started, check_input,
+};
+pub use tree::{NodeId, Parsed, Tree, TreeDoc, TreeFacts};
