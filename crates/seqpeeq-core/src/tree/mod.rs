@@ -3,9 +3,9 @@
 mod cols;
 pub(crate) mod edit;
 pub(crate) mod newick;
-mod reroot;
+pub(crate) mod reroot;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -14,7 +14,8 @@ pub use newick::Parsed;
 
 use crate::Result;
 use crate::command::tree::{NodeSel, TreeCmd};
-use crate::msa::{Applied, UNDO_LEVELS, count};
+use crate::msa::write::write_fasta;
+use crate::msa::{Alignment, Applied, UNDO_LEVELS, View, count};
 use crate::progress::Progress;
 use edit::{invalid, resolve};
 
@@ -139,8 +140,13 @@ impl Tree {
     /// Every node reachable from the root, parents before children,
     /// children in order.
     pub fn preorder(&self) -> Vec<NodeId> {
+        self.preorder_from(self.root)
+    }
+
+    /// The clade at `n` in pre-order.
+    pub fn preorder_from(&self, n: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        let mut stack = vec![self.root];
+        let mut stack = vec![n];
         while let Some(n) = stack.pop() {
             out.push(n);
             let mut child = *self.last_child.get(n as usize);
@@ -547,6 +553,7 @@ impl TreeDoc {
             tree: self.tree.clone(),
             from,
             out: out.to_path_buf(),
+            seqs: None,
         })
     }
 }
@@ -555,7 +562,7 @@ fn applied(message: String) -> Applied {
     Applied {
         message,
         note: None,
-        created: None,
+        created: Vec::new(),
     }
 }
 
@@ -571,11 +578,30 @@ fn shared_names(tree: &Tree) -> usize {
 }
 
 /// A `tree extract` checked and ready to write.
-#[derive(Debug)]
 pub(crate) struct TreeExtraction {
     tree: Tree,
     from: NodeId,
     out: PathBuf,
+    seqs: Option<SeqsOut>,
+}
+
+/// The sequences of an extracted clade, from the linked alignment.
+struct SeqsOut {
+    view: View,
+    /// In tree order, top to bottom.
+    rows: Vec<usize>,
+    wrap: Option<usize>,
+    out: PathBuf,
+    /// Tips of the clade with no sequence of their name.
+    missing: Vec<String>,
+    /// Names used that the alignment has more than once.
+    repeated: usize,
+}
+
+/// The full path, so the log says where a file went whatever the working
+/// directory was.
+fn full_path(out: &Path) -> PathBuf {
+    std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf())
 }
 
 impl TreeExtraction {
@@ -588,21 +614,123 @@ impl TreeExtraction {
         self.from == self.tree.root()
     }
 
-    /// Write the file.
+    /// Also write the clade's sequences from `alignment` (called `name` in
+    /// messages) to `out`, whole rows of the alignment as it now is.
+    pub(crate) fn add_seqs(
+        &mut self,
+        alignment: &Alignment,
+        name: &str,
+        out: &Path,
+        wrap: Option<usize>,
+    ) -> Result<()> {
+        if wrap == Some(0) {
+            return invalid("--wrap must be at least 1");
+        }
+        if out == self.out {
+            return invalid("the tree and its sequences need two different files");
+        }
+        let mut first: HashMap<&str, usize> = HashMap::new();
+        let mut repeated_names: HashSet<&str> = HashSet::new();
+        // The first row of each name is the one used.
+        for row in 0..alignment.rows() {
+            let seq = alignment.name(row);
+            if first.contains_key(seq) {
+                repeated_names.insert(seq);
+            } else {
+                first.insert(seq, row);
+            }
+        }
+        let (mut rows, mut missing, mut repeated) = (Vec::new(), Vec::new(), 0);
+        for tip in self.tree.preorder_from(self.from) {
+            if !self.tree.is_tip(tip) {
+                continue;
+            }
+            let label = self.tree.label(tip).unwrap_or_default();
+            match first.get(label) {
+                Some(&row) => {
+                    rows.push(row);
+                    repeated += usize::from(repeated_names.contains(label));
+                }
+                None => missing.push(label.to_string()),
+            }
+        }
+        if rows.is_empty() {
+            return invalid(format!("no tip in the clade has a sequence in {name}"));
+        }
+        self.seqs = Some(SeqsOut {
+            view: alignment.view().clone(),
+            rows,
+            wrap,
+            out: out.to_path_buf(),
+            missing,
+            repeated,
+        });
+        Ok(())
+    }
+
+    /// Refuse output files that exist, before either is written.
+    pub(crate) fn check_outputs(&self) -> Result<()> {
+        let seqs = self.seqs.as_ref().map(|seqs| seqs.out.as_path());
+        for out in std::iter::once(self.out.as_path()).chain(seqs) {
+            if out.symlink_metadata().is_ok() {
+                return Err(crate::Error::Exists(out.to_path_buf()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the file, or both files. If the sequences cannot be written
+    /// the tree file is removed again.
     pub(crate) fn run(&self, progress: &Progress) -> Result<Applied> {
         if progress.is_cancelled() {
             return Err(crate::Error::Cancelled);
         }
         let size = newick::save_newick(&self.tree, self.from, &self.out)?;
         let tips = self.tree.tip_counts()[self.from as usize] as usize;
-        // The full path, so the log says where the file went whatever the
-        // working directory was.
         let out = &self.out;
-        let full = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+        let mut message = format!("wrote {} ({})", out.display(), count(tips, "tip"));
+        let mut note = format!("output {} size={size}", full_path(out).display());
+        let mut created = vec![out.to_path_buf()];
+        if let Some(seqs) = &self.seqs {
+            let written = write_fasta(&seqs.view, &seqs.rows, None, seqs.wrap, &seqs.out, progress);
+            let size = match written {
+                Ok(size) => size,
+                Err(error) => {
+                    let _ = std::fs::remove_file(out);
+                    return Err(error);
+                }
+            };
+            message.push_str(&format!(
+                " and {} ({})",
+                seqs.out.display(),
+                count(seqs.rows.len(), "sequence")
+            ));
+            if !seqs.missing.is_empty() {
+                let names: Vec<&str> = seqs.missing.iter().map(String::as_str).collect();
+                let has = if names.len() == 1 { "has" } else { "have" };
+                message.push_str(&format!(
+                    "; {} {has} no sequence: {}",
+                    count(names.len(), "tip"),
+                    reroot::some_names(&names)
+                ));
+            }
+            if seqs.repeated > 0 {
+                let is = if seqs.repeated == 1 { "is" } else { "are" };
+                message.push_str(&format!(
+                    "; {} {is} in the alignment more than once; its first row was used",
+                    count(seqs.repeated, "name")
+                ));
+            }
+            note.push_str(&format!(
+                "; output {} size={size}",
+                full_path(&seqs.out).display()
+            ));
+            created.push(seqs.out.clone());
+        }
         Ok(Applied {
-            message: format!("wrote {} ({})", out.display(), count(tips, "tip")),
-            note: Some(format!("output {} size={size}", full.display())),
-            created: Some(out.to_path_buf()),
+            message,
+            note: Some(note),
+            created,
         })
     }
 }

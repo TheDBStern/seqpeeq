@@ -1,5 +1,6 @@
 //! A session: the open datasets, and the one place commands are executed.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -7,9 +8,10 @@ use jiff::{Timestamp, Zoned};
 
 use crate::log::stamp;
 use crate::msa::layer::Layer;
-use crate::msa::{Alignment, Applied, Extraction, write};
+use crate::msa::{Alignment, Applied, Extraction, count, write};
 use crate::progress::Progress;
 use crate::tree::newick::save_newick;
+use crate::tree::reroot::some_names;
 use crate::tree::{Tree, TreeDoc, TreeExtraction};
 use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog, TreeCmd};
 
@@ -133,6 +135,13 @@ impl Input {
     }
 }
 
+/// A link's counts for messages: `3 of 3 tips have a sequence`, then the
+/// names on either side that have no match, each part starting `; `.
+struct LinkCounts {
+    matched: String,
+    unmatched: String,
+}
+
 /// What a successfully executed command reports back to the interface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -167,7 +176,7 @@ enum Work {
     },
     TreeExtract {
         dataset: u64,
-        extraction: TreeExtraction,
+        extraction: Box<TreeExtraction>,
     },
 }
 
@@ -275,6 +284,8 @@ pub struct Session {
     history: Vec<String>,
     log: Option<SessionLog>,
     clock: fn() -> Zoned,
+    /// Trees linked to alignments, by dataset id.
+    links: HashMap<u64, u64>,
 }
 
 /// Enough of the state before a command to put it back if the command
@@ -284,6 +295,7 @@ struct Checkpoint {
     current: Option<usize>,
     /// The current file's state, when the command may change it.
     snapshot: Option<Snapshot>,
+    links: HashMap<u64, u64>,
 }
 
 enum Snapshot {
@@ -307,6 +319,7 @@ impl Session {
             history: Vec::new(),
             log,
             clock,
+            links: HashMap::new(),
         }
     }
 
@@ -377,19 +390,35 @@ impl Session {
                 at,
                 out,
                 seqs,
-                wrap: _,
+                wrap,
             }) => {
-                let extraction = self.current_tree()?.plan_extract(&at, &out)?;
-                if seqs.is_some() {
-                    return Err(Error::Invalid(
-                        "--seqs needs the tree linked to an alignment: tree link FILE".to_string(),
-                    ));
-                }
+                let mut extraction = self.current_tree()?.plan_extract(&at, &out)?;
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                match (&seqs, wrap) {
+                    (None, Some(_)) => {
+                        return Err(Error::Invalid("--wrap is for --seqs".to_string()));
+                    }
+                    (None, None) => {}
+                    (Some(seqs), wrap) => {
+                        let linked = self
+                            .links
+                            .get(&dataset)
+                            .and_then(|&id| self.datasets.iter().find(|d| d.id == id));
+                        let Some((linked, alignment)) = linked.and_then(|d| Some((d, d.msa()?)))
+                        else {
+                            return Err(Error::Invalid(
+                                "--seqs needs the tree linked to an alignment: tree link FILE"
+                                    .to_string(),
+                            ));
+                        };
+                        extraction.add_seqs(alignment, &linked.file_name(), seqs, wrap)?;
+                    }
+                }
+                extraction.check_outputs()?;
                 let label = format!("writing {}", file_name(extraction.out()));
                 let work = Work::TreeExtract {
                     dataset,
-                    extraction,
+                    extraction: Box::new(extraction),
                 };
                 return Ok(self.hand_out(label, line, work));
             }
@@ -442,7 +471,7 @@ impl Session {
                     && let Err(error) = log.record(&line, applied.note.as_deref(), &now)
                 {
                     // A file that is not in the log must not stand.
-                    if let Some(path) = &applied.created {
+                    for path in &applied.created {
                         let _ = std::fs::remove_file(path);
                     }
                     return Err(error);
@@ -588,6 +617,7 @@ impl Session {
             datasets: self.datasets.len(),
             current: self.current,
             snapshot,
+            links: self.links.clone(),
         }
     }
 
@@ -600,6 +630,7 @@ impl Session {
             self.datasets.insert(at, dataset);
         }
         self.current = checkpoint.current;
+        self.links = checkpoint.links;
         let content = self.current.map(|index| &mut self.datasets[index].content);
         match (checkpoint.snapshot, content) {
             (Some(Snapshot::Msa(layer)), Some(Content::Msa(alignment))) => alignment.restore(layer),
@@ -621,6 +652,119 @@ impl Session {
                 "{name} is not an alignment; switch with use N"
             ))),
         }
+    }
+
+    /// The alignment linked to the tree `tree` (dataset ids).
+    pub fn link_of(&self, tree: u64) -> Option<u64> {
+        self.links.get(&tree).copied()
+    }
+
+    /// How the current tree's tips match its linked alignment's names.
+    fn link_counts(&self) -> Option<LinkCounts> {
+        let tree_set = &self.datasets[self.current?];
+        let tree = tree_set.tree()?.tree();
+        let aln_id = self.links.get(&tree_set.id)?;
+        let alignment = self.datasets.iter().find(|d| d.id == *aln_id)?.msa()?;
+        let names: std::collections::HashSet<&str> = (0..alignment.rows())
+            .map(|row| alignment.name(row))
+            .collect();
+        let tips = tree.tips();
+        let tip_names: std::collections::HashSet<&str> =
+            tips.iter().filter_map(|&n| tree.label(n)).collect();
+        let without: Vec<&str> = tips
+            .iter()
+            .map(|&n| tree.label(n).unwrap_or_default())
+            .filter(|name| !names.contains(name))
+            .collect();
+        let no_tip: Vec<&str> = (0..alignment.rows())
+            .map(|row| alignment.name(row))
+            .filter(|name| !tip_names.contains(name))
+            .collect();
+        let have = if tips.len() == 1 {
+            "tip has"
+        } else {
+            "tips have"
+        };
+        let mut unmatched = String::new();
+        if !without.is_empty() {
+            unmatched.push_str(&format!("; tips without one: {}", some_names(&without)));
+        }
+        if !no_tip.is_empty() {
+            let has = if no_tip.len() == 1 { "has" } else { "have" };
+            unmatched.push_str(&format!(
+                "; {} {has} no tip: {}",
+                count(no_tip.len(), "sequence"),
+                some_names(&no_tip)
+            ));
+        }
+        Some(LinkCounts {
+            matched: format!(
+                "{} of {} {have} a sequence",
+                tips.len() - without.len(),
+                tips.len()
+            ),
+            unmatched,
+        })
+    }
+
+    /// `tree link FILE`: pair the current tree with an open alignment.
+    fn link(&mut self, file: &Path) -> Result<Applied> {
+        self.current_tree()?;
+        let index = self.current.expect("there is a current tree");
+        let same = |path: &Path| {
+            path == file
+                || matches!(
+                    (std::fs::canonicalize(path), std::fs::canonicalize(file)),
+                    (Ok(a), Ok(b)) if a == b
+                )
+        };
+        let Some(target) = self.datasets.iter().find(|d| same(&d.path)) else {
+            return Err(Error::Invalid(format!(
+                "{} is not open; open it first",
+                file.display()
+            )));
+        };
+        if target.msa().is_none() {
+            return Err(Error::Invalid(format!(
+                "{} is not an alignment",
+                target.file_name()
+            )));
+        }
+        let (tree_id, aln_id) = (self.datasets[index].id, target.id);
+        let message = format!(
+            "linked {} to {}",
+            self.datasets[index].file_name(),
+            target.file_name()
+        );
+        self.links.insert(tree_id, aln_id);
+        let counts = self.link_counts().expect("just linked");
+        Ok(Applied {
+            message: format!("{message}: {}{}", counts.matched, counts.unmatched),
+            note: None,
+            created: Vec::new(),
+        })
+    }
+
+    /// `tree unlink`.
+    fn unlink(&mut self) -> Result<Applied> {
+        self.current_tree()?;
+        let tree = &self.datasets[self.current.expect("there is a current tree")];
+        let Some(aln_id) = self.links.remove(&tree.id) else {
+            return Err(Error::Invalid(format!(
+                "{} is not linked",
+                tree.file_name()
+            )));
+        };
+        let alignment = self.datasets.iter().find(|d| d.id == aln_id);
+        Ok(Applied {
+            message: format!(
+                "unlinked {} from {}",
+                tree.file_name(),
+                alignment.map(Dataset::file_name).unwrap_or_default()
+            ),
+            note: None,
+            created: Vec::new(),
+        })
     }
 
     fn current_is_tree(&self) -> bool {
@@ -663,10 +807,31 @@ impl Session {
                 self.datasets[index].file_name()
             ));
         }
+        let name_of = |id: u64| {
+            let open = self.datasets.iter().chain(std::iter::once(&dataset));
+            open.into_iter()
+                .find(|d| d.id == id)
+                .map(Dataset::file_name)
+                .unwrap_or_default()
+        };
+        let dropped: Vec<(u64, u64)> = self
+            .links
+            .iter()
+            .filter(|&(&tree, &aln)| tree == dataset.id || aln == dataset.id)
+            .map(|(&tree, &aln)| (tree, aln))
+            .collect();
+        for (tree, aln) in dropped {
+            self.links.remove(&tree);
+            message.push_str(&format!(
+                "; the link between {} and {} is dropped",
+                name_of(tree),
+                name_of(aln)
+            ));
+        }
         let applied = Applied {
             message,
             note: None,
-            created: None,
+            created: Vec::new(),
         };
         Ok((applied, at, dataset))
     }
@@ -695,7 +860,7 @@ impl Session {
                         self.datasets[dataset - 1].file_name()
                     ),
                     note: None,
-                    created: None,
+                    created: Vec::new(),
                 })
             }
             Command::Undo if self.current_is_tree() => self.current_tree()?.undo(),
@@ -703,7 +868,17 @@ impl Session {
             Command::Undo => self.current_alignment()?.undo(),
             Command::Redo => self.current_alignment()?.redo(),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
-            Command::Tree(cmd) => self.current_tree()?.apply(&cmd),
+            Command::Tree(TreeCmd::Link { file }) => self.link(&file),
+            Command::Tree(TreeCmd::Unlink) => self.unlink(),
+            Command::Tree(cmd) => {
+                let mut applied = self.current_tree()?.apply(&cmd)?;
+                if matches!(cmd, TreeCmd::Rename { .. })
+                    && let Some(counts) = self.link_counts()
+                {
+                    applied.message.push_str(&format!("; {}", counts.matched));
+                }
+                Ok(applied)
+            }
         }
     }
 }
@@ -1193,6 +1368,209 @@ mod tests {
             "((A:1,B:2)90:3,C:4);\n"
         );
         assert!(!dir.join("y.nwk").exists());
+    }
+
+    #[test]
+    fn a_linked_clade_is_written_with_its_sequences_in_tree_order() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap().message,
+            "linked t.nwk to a.fa: 3 of 3 tips have a sequence; 1 sequence has no tip: Z"
+        );
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa fill --name A --cols 1 --with N").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "tree reroot --tip B").unwrap();
+        let out = ex_in(&mut s, &dir, "tree extract --out {}/s.nwk --seqs {}/s.fa").unwrap();
+        assert_eq!(
+            out.message,
+            format!(
+                "wrote {} (3 tips) and {} (3 sequences)",
+                dir.join("s.nwk").display(),
+                dir.join("s.fa").display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("s.nwk")).unwrap(),
+            "(B:1,(A:1,C:7):1);\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("s.fa")).unwrap(),
+            ">B\nACGT\n>A\nNC-T\n>C\nTTTT\n",
+            "tree order, the alignment as it now is"
+        );
+        ex_in(
+            &mut s,
+            &dir,
+            "tree extract --tip C --out {}/c.nwk --seqs {}/c.fa --wrap 3",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("c.fa")).unwrap(),
+            ">C\nTTT\nT\n"
+        );
+        assert!(!s.datasets()[1].is_modified(), "the whole tree was written");
+    }
+
+    #[test]
+    fn missing_and_repeated_names_are_reported() {
+        let (_keep, dir) = trees();
+        fs::write(dir.join("d.fa"), ">A\nAAAA\n>B\nCCCC\n>B\nGGGG\n").unwrap();
+        let mut s = opened(&dir, &["d.fa", "t.nwk"]);
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/d.fa").unwrap().message,
+            "linked t.nwk to d.fa: 2 of 3 tips have a sequence; tips without one: C"
+        );
+        let out = ex_in(&mut s, &dir, "tree extract --out {}/s.nwk --seqs {}/s.fa").unwrap();
+        assert!(
+            out.message.ends_with(
+                "(2 sequences); 1 tip has no sequence: C; 1 name is in the alignment more than once; its first row was used"
+            ),
+            "{}",
+            out.message
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("s.fa")).unwrap(),
+            ">A\nAAAA\n>B\nCCCC\n"
+        );
+        assert_eq!(
+            ex_in(
+                &mut s,
+                &dir,
+                "tree extract --tip C --out {}/x.nwk --seqs {}/x.fa"
+            )
+            .unwrap_err()
+            .to_string(),
+            "no tip in the clade has a sequence in d.fa"
+        );
+        assert!(!dir.join("x.nwk").exists());
+    }
+
+    #[test]
+    fn nothing_is_written_when_either_file_exists_or_the_link_is_gone() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        fs::write(dir.join("taken.fa"), "").unwrap();
+        let err = |s: &mut Session, line| ex_in(s, &dir, line).unwrap_err().to_string();
+        assert_eq!(
+            err(&mut s, "tree extract --out {}/new.nwk --seqs {}/taken.fa"),
+            format!(
+                "{} already exists; choose another name or remove it first",
+                dir.join("taken.fa").display()
+            )
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --out {}/new.nwk --seqs {}/new.nwk"),
+            "the tree and its sequences need two different files"
+        );
+        assert_eq!(
+            err(
+                &mut s,
+                "tree extract --out {}/new.nwk --seqs {}/n.fa --wrap 0"
+            ),
+            "--wrap must be at least 1"
+        );
+        assert!(!dir.join("new.nwk").exists());
+        ex(&mut s, "use 1").unwrap();
+        assert!(
+            ex(&mut s, "close")
+                .unwrap()
+                .message
+                .ends_with("; the link between t.nwk and a.fa is dropped")
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --out {}/new.nwk --seqs {}/n.fa"),
+            "--seqs needs the tree linked to an alignment: tree link FILE"
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --out {}/new.nwk --wrap 60"),
+            "--wrap is for --seqs"
+        );
+        assert!(!dir.join("new.nwk").exists());
+    }
+
+    #[test]
+    fn a_link_is_not_an_edit_and_counts_follow_renames() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/b.fa")
+                .unwrap_err()
+                .to_string(),
+            format!("{} is not open; open it first", dir.join("b.fa").display())
+        );
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/t.nwk")
+                .unwrap_err()
+                .to_string(),
+            "t.nwk is not an alignment"
+        );
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        assert_eq!(s.link_of(s.datasets()[1].id), Some(s.datasets()[0].id));
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "nothing to undo"
+        );
+        assert!(!s.datasets()[1].is_modified());
+        let renamed = ex(&mut s, "tree rename --tip A --to Q").unwrap().message;
+        assert!(
+            renamed.ends_with("; 2 of 3 tips have a sequence"),
+            "{renamed}"
+        );
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap().message,
+            "linked t.nwk to a.fa: 2 of 3 tips have a sequence; tips without one: Q; 2 sequences have no tip: A, Z"
+        );
+        assert_eq!(
+            ex(&mut s, "tree unlink").unwrap().message,
+            "unlinked t.nwk from a.fa"
+        );
+        assert_eq!(
+            ex(&mut s, "tree unlink").unwrap_err().to_string(),
+            "t.nwk is not linked"
+        );
+        assert_eq!(s.link_of(s.datasets()[1].id), None);
+        ex(&mut s, "use 1").unwrap();
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree link {}/a.fa")
+                .unwrap_err()
+                .to_string(),
+            "a.fa is not a tree; switch with use N"
+        );
+    }
+
+    #[test]
+    fn a_failed_log_write_removes_both_extracted_files_and_undoes_a_link() {
+        let (_keep, dir) = trees();
+        let lines = [
+            format!("open {}", dir.join("a.fa").display()),
+            format!("open {}", dir.join("t.nwk").display()),
+            format!("tree link {}", dir.join("a.fa").display()),
+        ];
+        let room = |count: usize| {
+            let (log, buffer) = limited_log(100_000);
+            let mut s = Session::with_clock(Some(log), fixed);
+            for line in &lines[..count] {
+                ex(&mut s, line).unwrap();
+            }
+            limited_log(buffer.lock().unwrap().len() + 10).0
+        };
+        let mut s = Session::with_clock(Some(room(2)), fixed);
+        for line in &lines[..2] {
+            ex(&mut s, line).unwrap();
+        }
+        assert!(matches!(ex(&mut s, &lines[2]), Err(Error::Log { .. })));
+        assert_eq!(s.link_of(s.datasets()[1].id), None);
+
+        let mut s = Session::with_clock(Some(room(3)), fixed);
+        for line in &lines {
+            ex(&mut s, line).unwrap();
+        }
+        let err = ex_in(&mut s, &dir, "tree extract --out {}/s.nwk --seqs {}/s.fa").unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert!(!dir.join("s.nwk").exists() && !dir.join("s.fa").exists());
     }
 
     #[test]

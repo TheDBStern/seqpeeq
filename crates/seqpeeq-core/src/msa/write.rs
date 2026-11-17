@@ -123,7 +123,7 @@ mod tests {
             note.starts_with("output /") && note.ends_with("x.fa size=55"),
             "{note}"
         );
-        assert_eq!(done.created, Some(out));
+        assert_eq!(done.created, [out]);
     }
 
     #[test]

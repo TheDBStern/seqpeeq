@@ -101,8 +101,8 @@ pub(crate) struct Applied {
     pub message: String,
     /// A comment to write to the log after the command.
     pub note: Option<String>,
-    /// A file the command created.
-    pub created: Option<PathBuf>,
+    /// The files the command created.
+    pub created: Vec<PathBuf>,
 }
 
 impl Applied {
@@ -110,7 +110,7 @@ impl Applied {
         Applied {
             message,
             note: None,
-            created: None,
+            created: Vec::new(),
         }
     }
 }
@@ -453,7 +453,7 @@ impl Alignment {
                 self.shape()
             ),
             note: Some(note),
-            created: None,
+            created: Vec::new(),
         })
     }
 
@@ -622,7 +622,7 @@ impl Alignment {
         Ok(Applied {
             message: format!("renamed row {} to '{to}'", row + 1),
             note: Some(format!("was: {was}")),
-            created: None,
+            created: Vec::new(),
         })
     }
 
@@ -741,7 +741,7 @@ impl Extraction {
         Ok(Applied {
             message: format!("wrote {} ({shape})", out.display()),
             note: Some(format!("output {} size={size}", full.display())),
-            created: Some(out.to_path_buf()),
+            created: vec![out.to_path_buf()],
         })
     }
 }
