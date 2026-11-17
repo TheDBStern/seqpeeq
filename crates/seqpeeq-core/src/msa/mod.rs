@@ -377,7 +377,6 @@ impl Alignment {
     }
 
     /// Every row whose name is a key of `map`, with its new name.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn renames_for(&self, map: &HashMap<String, String>) -> Vec<(usize, String)> {
         (0..self.rows())
             .filter_map(|row| map.get(self.name(row)).map(|to| (row, to.clone())))
@@ -386,7 +385,6 @@ impl Alignment {
 
     /// `pattern` replaced in every row's name; nothing when no name
     /// matches. A name left empty is refused.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn regex_renames(
         &self,
         pattern: &str,

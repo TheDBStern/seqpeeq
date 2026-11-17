@@ -612,7 +612,6 @@ impl TreeDoc {
     }
 
     /// The name of the tip a `tree rename --to` names.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn tip_name(&self, at: &NodeSel) -> Result<String> {
         let n = self.rename_target(at)?;
         Ok(self.tree.label(n).unwrap_or_default().to_string())
@@ -644,7 +643,6 @@ impl TreeDoc {
     /// Rename every tip whose name is a key of `map`, as one undo step
     /// called `step`. `None`, and no step, when no tip has such a name; a
     /// rename giving one name to several tips is refused.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn rename_names(
         &mut self,
         step: &'static str,

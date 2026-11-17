@@ -282,7 +282,6 @@ impl Tree {
 
     /// Give each tip its new name, refused (with no change) when that would
     /// give one name to more than one tip.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn rename_all(&mut self, renames: Vec<(NodeId, String)>) -> Result<()> {
         if let Some((n, _)) = renames.iter().find(|(_, to)| to.trim().is_empty()) {
             let name = self.label(*n).unwrap_or_default();
