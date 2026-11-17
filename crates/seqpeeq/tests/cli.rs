@@ -282,6 +282,43 @@ fn overwrite_is_logged_and_replayed() {
 }
 
 #[test]
+fn insert_and_remove_are_logged_and_replayed() {
+    let root = tempfile::tempdir().unwrap();
+    let (a, b) = (root.path().join("A"), root.path().join("B"));
+    for dir in [&a, &b] {
+        fs::create_dir(dir).unwrap();
+        fs::write(dir.join("in.fa"), TRIO).unwrap();
+    }
+    let out = seqpeeq(
+        &a,
+        &[
+            "run",
+            "--log",
+            "s.log",
+            "open in.fa",
+            "msa insert --row 2 --col 10 --seq GG",
+            "msa remove --row 3 --col 5 --count 2",
+            "msa extract --out o.fa",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        commands(&a.join("s.log"))[1..3],
+        [
+            "msa insert --row 2 --col 10 --seq GG",
+            "msa remove --row 3 --col 5 --count 2"
+        ]
+    );
+    assert!(seqpeeq(&b, &["replay", "../A/s.log"]).status.success());
+    let written = fs::read_to_string(a.join("o.fa")).unwrap();
+    assert_eq!(
+        written,
+        ">s1\nACGT-ACGTA--\n>s2\nACGTTACG-GGA\n>s3 third one\nAC--CGTA----\n"
+    );
+    assert_eq!(fs::read_to_string(b.join("o.fa")).unwrap(), written);
+}
+
+#[test]
 fn close_makes_another_file_current_on_replay() {
     let dir = setup();
     fs::write(

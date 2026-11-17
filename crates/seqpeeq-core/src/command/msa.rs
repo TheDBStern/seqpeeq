@@ -74,6 +74,27 @@ pub enum MsaCmd {
         #[arg(long, allow_hyphen_values = true)]
         seq: String,
     },
+    /// Insert characters into one row at a column. The residues after it
+    /// move right as far as the gaps it uses up; gap columns are added at
+    /// the end when the row has too few.
+    Insert {
+        #[arg(long)]
+        row: usize,
+        #[arg(long)]
+        col: usize,
+        #[arg(long, allow_hyphen_values = true)]
+        seq: String,
+    },
+    /// Remove characters from one row at a column. The residues after them
+    /// move left as far as the next gap, leaving gaps behind.
+    Remove {
+        #[arg(long)]
+        row: usize,
+        #[arg(long)]
+        col: usize,
+        #[arg(long)]
+        count: usize,
+    },
     /// Write sequences, or parts of them, to a new FASTA file.
     #[command(alias = "save")]
     Extract {
@@ -108,6 +129,8 @@ impl MsaCmd {
             MsaCmd::DeleteCols { .. } => "delete-cols",
             MsaCmd::Fill { .. } => "fill",
             MsaCmd::Overwrite { .. } => "overwrite",
+            MsaCmd::Insert { .. } => "insert",
+            MsaCmd::Remove { .. } => "remove",
             MsaCmd::Extract { .. } => "extract",
             MsaCmd::Rename { .. } => "rename",
         }
@@ -125,10 +148,15 @@ impl MsaCmd {
                 }
                 words.flag("--with", with);
             }
-            MsaCmd::Overwrite { row, col, seq } => {
+            MsaCmd::Overwrite { row, col, seq } | MsaCmd::Insert { row, col, seq } => {
                 words.flag("--row", row);
                 words.flag("--col", col);
                 words.flag("--seq", seq);
+            }
+            MsaCmd::Remove { row, col, count } => {
+                words.flag("--row", row);
+                words.flag("--col", col);
+                words.flag("--count", count);
             }
             MsaCmd::Extract {
                 rows,

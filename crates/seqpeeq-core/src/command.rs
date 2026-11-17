@@ -315,6 +315,9 @@ mod tests {
         "msa rename --regex=-x --replace ''",
         "msa overwrite --row 3 --col 27 --seq ACG-T",
         "msa overwrite --row 1 --col 1 --seq=-A",
+        "msa insert --row 3 --col 27 --seq AC",
+        "msa insert --row 1 --col 1 --seq=-",
+        "msa remove --row 3 --col 27 --count 2",
     ];
 
     #[test]
@@ -452,6 +455,10 @@ mod tests {
             }),
             (1..10_000usize, 1..10_000usize, "[!-=?-~]{1,12}")
                 .prop_map(|(row, col, seq)| MsaCmd::Overwrite { row, col, seq }),
+            (1..10_000usize, 1..10_000usize, "[!-=?-~]{1,12}")
+                .prop_map(|(row, col, seq)| MsaCmd::Insert { row, col, seq }),
+            (1..10_000usize, 1..10_000usize, 1..10_000usize)
+                .prop_map(|(row, col, count)| MsaCmd::Remove { row, col, count }),
         ]
     }
 
@@ -489,7 +496,7 @@ mod tests {
             ("msa rename --regex a", "missing --replace <REPLACE>"),
             (
                 "msa",
-                "msa needs one of: delete-rows, delete-cols, fill, overwrite, extract, rename",
+                "msa needs one of: delete-rows, delete-cols, fill, overwrite, insert, remove, extract, rename",
             ),
         ] {
             let Err(Error::Parse(m)) = Command::parse_line(line) else {

@@ -1,6 +1,7 @@
 //! Drawing. Reads the [`App`](crate::app::App) state and never changes it.
 
 pub mod grid;
+pub mod overview;
 
 use std::ops::Range;
 
@@ -11,9 +12,9 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::msa_view::Cell;
+use crate::msa_view::{Cell, MsaView, Shape};
 
-use crate::app::{App, Confirm, Mode};
+use crate::app::{App, Confirm, Mode, Typing};
 use grid::GridLayout;
 
 /// Rows the log pane takes when shown, borders included.
@@ -103,13 +104,38 @@ pub fn regions(app: &App, area: Rect) -> Regions {
     regions
 }
 
-/// The layout of the grid of the alignment on the visible tab, on a screen
-/// of the size the app was last told of.
+/// The layout of the alignment on the visible tab as it is shown, the grid
+/// or the overview, on a screen of the size the app was last told of.
 pub fn grid_of(app: &App) -> Option<GridLayout> {
+    let (_, view) = app.alignment()?;
+    layout_with(app, score_width(view))
+}
+
+/// The cells the overview has, which the zoom levels are fitted to.
+pub fn overview_shape(app: &App) -> Option<Shape> {
+    layout_with(app, grid::SCORE_WIDTH).map(|layout| grid::screen_shape(&layout))
+}
+
+/// The cells the grid has, which decide whether there is an overview.
+pub fn plain_shape(app: &App) -> Option<Shape> {
+    layout_with(app, 0).map(|layout| grid::screen_shape(&layout))
+}
+
+/// The overview gives a column to scores; the grid does not.
+fn score_width(view: &MsaView) -> u16 {
+    if view.zoom > 0 { grid::SCORE_WIDTH } else { 0 }
+}
+
+fn layout_with(app: &App, score_width: u16) -> Option<GridLayout> {
     let (alignment, view) = app.alignment()?;
     let area = Rect::new(0, 0, app.screen.width, app.screen.height);
     let body = regions(app, area).body;
-    Some(grid::grid_layout(body, alignment.rows(), view.name_width))
+    Some(grid::grid_layout(
+        body,
+        alignment.rows(),
+        view.name_width,
+        score_width,
+    ))
 }
 
 /// Draw the whole interface for the current state.
@@ -221,10 +247,21 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     if let Some((alignment, view)) = app.alignment() {
-        grid::draw_grid(frame, alignment, view, app.conservation(), area);
+        if view.zoom > 0 {
+            overview::draw_overview(
+                frame,
+                alignment,
+                view,
+                app.conservation(),
+                app.summary(),
+                area,
+            );
+        } else {
+            grid::draw_grid(frame, alignment, view, app.conservation(), area);
+        }
         // The terminal's own cursor marks the cursor cell.
-        let layout = grid::grid_layout(area, alignment.rows(), view.name_width);
-        if matches!(app.mode, Mode::Normal | Mode::Edit)
+        let layout = grid::grid_layout(area, alignment.rows(), view.name_width, score_width(view));
+        if matches!(app.mode, Mode::Normal | Mode::Edit(_))
             && let Some(position) = grid::cursor_position(&layout, view)
         {
             frame.set_cursor_position(position);
@@ -256,7 +293,47 @@ pub fn info_text(app: &App) -> (String, String) {
     if let Some((_, _, progress)) = &app.counting {
         right.push(job_text("counting columns", progress.fraction()));
     }
-    if let Some((alignment, view)) = app.alignment() {
+    if let Some((_, _, progress)) = &app.summarising {
+        right.push(job_text("summarising", progress.fraction()));
+    }
+    if let Some((alignment, view)) = app.alignment()
+        && view.zoom > 0
+    {
+        // The real rows and columns under the cursor's cell.
+        let span = |at: usize, per: usize, total: usize| {
+            let end = (at + per).min(total);
+            if end <= at + 1 {
+                format!("{}/{total}", at + 1)
+            } else {
+                format!("{}-{end}/{total}", at + 1)
+            }
+        };
+        let Cell { row, col } = view.cursor;
+        let (per_line, per_cell) = (view.scale.rows, view.scale.cols);
+        left = format!(
+            "rows {} · cols {}",
+            span(row, per_line, alignment.rows()),
+            span(col, per_cell, alignment.cols())
+        );
+        if let Some(selected) = selection_text(alignment, view) {
+            left.push_str(&format!(" · {selected}"));
+        }
+        if alignment.is_modified() {
+            right.push("unsaved".to_string());
+        }
+        let plural = |n: usize, noun: &str| {
+            if n == 1 {
+                format!("1 {noun}")
+            } else {
+                format!("{n} {noun}s")
+            }
+        };
+        right.push(format!(
+            "each cell: {} × {}",
+            plural(per_cell, "column"),
+            plural(per_line, "sequence")
+        ));
+    } else if let Some((alignment, view)) = app.alignment() {
         let Cell { row, col } = view.cursor;
         left = format!(
             "row {}/{} · col {}/{}",
@@ -277,24 +354,30 @@ pub fn info_text(app: &App) -> (String, String) {
             };
             left.push_str(&format!(" · {shown}"));
         }
-        if let Some(region) = view.region() {
-            let (rows, cols) = region.flags();
-            let selected = match (rows.rows, cols) {
-                (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),
-                (Some(rows), None) => format!("rows {rows}"),
-                (None, Some(cols)) => format!("cols {cols}"),
-                (None, None) => String::new(),
-            };
+        if let Some(selected) = selection_text(alignment, view) {
             left.push_str(&format!(" · {selected}"));
         }
         if alignment.is_modified() {
             right.push("unsaved".to_string());
         }
     }
-    if matches!(app.mode, Mode::Edit) {
-        right.push("EDIT".to_string());
+    match app.mode {
+        Mode::Edit(Typing::Insert) => right.push("INSERT".to_string()),
+        Mode::Edit(Typing::Replace) => right.push("REPLACE".to_string()),
+        _ => {}
     }
     (left, right.join(" · "))
+}
+
+/// What is selected, as the information row says it.
+fn selection_text(alignment: &seqpeeq_core::Alignment, view: &MsaView) -> Option<String> {
+    let (rows, cols) = view.region(Shape::of(alignment))?.flags();
+    Some(match (rows.rows, cols) {
+        (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),
+        (Some(rows), None) => format!("rows {rows}"),
+        (None, Some(cols)) => format!("cols {cols}"),
+        (None, None) => String::new(),
+    })
 }
 
 /// `opening big.fa 42%`, or the label alone while the total is not known.
@@ -402,18 +485,22 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
 /// What the help screen says, above the line about the log. No line is
 /// wider than 56 columns, so the box fits a 60-column terminal.
 const HELP: &[&str] = &[
-    "Move      arrows hjkl   PgUp PgDn   Home End",
-    "          g go to   / search names   n N next, previous",
+    "Move      arrows hjkl   Shift+arrows a screen",
+    "          PgUp PgDn   Home End   g go to",
+    "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
-    "Edit      d delete or gap   f fill   i type   r rename",
+    "Edit      d delete or gap   f fill   r rename",
+    "          i insert (shifts)   R type over   Esc stop",
+    "Zoom      - out   + in   z whole alignment and back",
     "          u U undo redo   e extract to a file",
     "View      c colours   [ ] name width   Tab next file",
     "          L log   ? help   q quit",
     "Commands  :  open FILE   close   use N   undo   redo",
     "          msa delete-rows  delete-cols  fill  overwrite",
-    "          msa extract  rename",
+    "          msa insert  remove  extract  rename",
     "          :rescue FILE if the log has failed",
-    "Mouse     hold Shift (Option on macOS) to select text",
+    "Mouse     wheel on the column numbers scrolls sideways",
+    "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
     "          in tmux: set -g mouse on",
 ];
@@ -515,10 +602,11 @@ mod tests {
     use crate::app::{Done, Mode, Prompt, PromptKind, Request};
     use crate::line::LineEdit;
     use crate::msa_view::{Cell, Colouring};
+    use crate::palette;
     use crate::ui::grid::grid_layout;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Position;
     use seqpeeq_core::{Command, Session};
 
@@ -556,6 +644,15 @@ mod tests {
                 } => {
                     let result = view.conservation(&progress);
                     app.handle_done(Done::Conservation { dataset, result });
+                }
+                Request::Summarise {
+                    dataset,
+                    view,
+                    conserved,
+                    progress,
+                } => {
+                    let result = view.summary(&conserved, &progress);
+                    app.handle_done(Done::Summary { dataset, result });
                 }
             }
         }
@@ -800,7 +897,7 @@ mod tests {
         app.status.clear(); // a temp path would wrap the status line
         view_mut(&mut app).name_width = 4;
         let terminal = render(&app, 40, 6);
-        let l = grid_layout(regions(&app, Rect::new(0, 0, 40, 6)).body, 2, 4);
+        let l = grid_layout(regions(&app, Rect::new(0, 0, 40, 6)).body, 2, 4, 0);
         let buffer = terminal.backend().buffer();
         let cells = |row: u16| -> String {
             (0..4)
@@ -933,18 +1030,18 @@ mod tests {
 
     #[test]
     fn typed_characters_show_before_they_are_logged() {
-        use crate::msa_view::Typed;
+        use crate::msa_view::{Pending, Typed};
         let mut app = with_file("tests/data/grid.fa");
-        app.mode = Mode::Edit;
-        view_mut(&mut app).typed = Some(Typed {
+        app.mode = Mode::Edit(Typing::Replace);
+        view_mut(&mut app).typed = Some(Pending::Replace(Typed {
             row: 0,
             start: 2,
             bytes: b"nn".to_vec(),
-        });
+        }));
         let mut terminal = render(&app, 70, 9);
         let screen = rows(&terminal);
         assert_eq!(&screen[2][27..33], "ACnnTG");
-        assert!(screen[7].ends_with("EDIT"), "{}", screen[7]);
+        assert!(screen[7].ends_with("REPLACE"), "{}", screen[7]);
         let buffer = terminal.backend().buffer();
         assert!(buffer[(29, 2)].modifier.contains(Modifier::UNDERLINED));
         assert!(!buffer[(28, 2)].modifier.contains(Modifier::UNDERLINED));
@@ -952,6 +1049,181 @@ mod tests {
             terminal.get_cursor_position().unwrap(),
             Position::new(27, 2),
             "the cursor is shown while typing"
+        );
+    }
+
+    /// An app showing `text` on an 80 x 12 screen, with every count done.
+    fn with_text(text: &str) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.fa");
+        std::fs::write(&path, text).unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.resize(ratatui::layout::Size::new(80, 12));
+        (app, dir)
+    }
+
+    fn keys(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+    }
+
+    /// 4 sequences x 201 columns.
+    fn wide() -> String {
+        let row = |unit: &str| unit.repeat(50) + "A";
+        format!(
+            ">a\n{}\n>b\n{}\n>c\n{}\n>d\n{}\n",
+            row("ACGT"),
+            row("ACGT"),
+            row("AC--"),
+            row("TTTT")
+        )
+    }
+
+    /// The overview's layout on an 80 x 12 screen.
+    fn overview_layout(app: &App) -> GridLayout {
+        let (alignment, view) = app.alignment().unwrap();
+        let body = regions(app, Rect::new(0, 0, 80, 12)).body;
+        grid_layout(body, alignment.rows(), view.name_width, grid::SCORE_WIDTH)
+    }
+
+    #[test]
+    fn the_overview_shows_scores_and_colours_blocks_by_matches() {
+        let (mut app, _dir) = with_text(&wide());
+        keys(&mut app, "-");
+        let terminal = render(&app, 80, 12);
+        let screen = rows(&terminal);
+        let buffer = terminal.backend().buffer();
+        let layout = overview_layout(&app);
+        let bg = |row: u16, cell: u16| buffer[(layout.cells.x + cell, layout.cells.y + row)].bg;
+        let ramp = |step: usize| Some(Color::Indexed(palette::RAMP[step]));
+        let line = |row: u16| screen[(layout.cells.y + row) as usize].clone();
+        // a: every residue matches.
+        assert!(line(0).contains("100%"), "{}", line(0));
+        assert_eq!(Some(bg(0, 0)), ramp(4));
+        // d: TTTT against A C G T matches one in four, and the last A.
+        assert!(line(3).contains(" 25%"), "{}", line(3));
+        assert_eq!(Some(bg(3, 0)), ramp(0), "T T against A C");
+        assert_eq!(Some(bg(3, 1)), ramp(2), "T T against G T: one of two");
+        let info = &screen[regions(&app, Rect::new(0, 0, 80, 12)).info.y as usize];
+        assert!(info.starts_with("rows 1/4 · cols 1-2/201"), "{info}");
+        assert!(
+            info.ends_with("each cell: 2 columns × 1 sequence"),
+            "{info}"
+        );
+        // c, at 4 columns per cell: AC-- is half gaps, so not blank.
+        keys(&mut app, "-");
+        let terminal = render(&app, 80, 12);
+        let buffer = terminal.backend().buffer();
+        let layout = overview_layout(&app);
+        let screen = rows(&terminal);
+        assert!(
+            screen[(layout.cells.y + 2) as usize].contains("100%"),
+            "{screen:#?}"
+        );
+        assert_eq!(
+            Some(buffer[(layout.cells.x, layout.cells.y + 2)].bg),
+            ramp(4)
+        );
+    }
+
+    /// 40 sequences x 20 columns; the eighth is all T.
+    fn tall() -> String {
+        (0..40)
+            .map(|i| {
+                let row = if i == 7 {
+                    "TTTTTTTTTTTTTTTTTTTT"
+                } else {
+                    "ACGTACGTACGTACGTACGT"
+                };
+                format!(">n{i}\n{row}\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_shrunk_line_shows_the_lowest_score_of_its_sequences() {
+        let (mut app, _dir) = with_text(&tall());
+        keys(&mut app, "z");
+        settle(&mut app);
+        let screen = rows(&render(&app, 80, 12));
+        let layout = overview_layout(&app);
+        let y = layout.cells.y as usize;
+        assert!(screen[y].contains(" 25%"), "{}", screen[y]);
+        assert!(screen[y + 1].contains("100%"), "{}", screen[y + 1]);
+    }
+
+    #[test]
+    fn lines_holding_several_sequences_say_how_many() {
+        let (mut app, _dir) = with_text(&tall());
+        keys(&mut app, "z"); // no pump: no summary is asked for
+        let screen = rows(&render(&app, 80, 12));
+        let layout = overview_layout(&app);
+        let first = &screen[layout.cells.y as usize];
+        assert!(first.contains("n0 +7"), "{first}");
+        assert!(first.contains('…'), "{first}");
+    }
+
+    #[test]
+    fn the_overview_survives_tiny_terminals() {
+        let (mut app, _dir) = with_text(&wide());
+        keys(&mut app, "-");
+        for (width, height) in [(5, 3), (1, 1), (12, 4)] {
+            render(&app, width, height);
+        }
+    }
+
+    #[test]
+    fn an_insert_past_the_last_column_shows_the_columns_it_adds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trio.fa");
+        std::fs::write(
+            &path,
+            ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n",
+        )
+        .unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        for c in "iXYZ".chars() {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let screen = rows(&render(&app, 80, 12));
+        let line = |name: &str| screen.iter().find(|line| line.contains(name)).unwrap();
+        assert!(line("s1").contains("XYZACGTACGTA"), "{}", line("s1"));
+        assert!(line("s2").contains("ACGTTACG-A--"), "{}", line("s2"));
+    }
+
+    #[test]
+    fn an_insert_shows_the_shifted_row_and_says_insert() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trio.fa");
+        std::fs::write(
+            &path,
+            ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n",
+        )
+        .unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        for c in "jjliNN".chars() {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let terminal = render(&app, 80, 12);
+        let screen = rows(&terminal);
+        let line = screen
+            .iter()
+            .find(|line| line.contains("s3 third one"))
+            .unwrap();
+        assert!(line.contains("ANNCTACGTA"), "{line}");
+        assert!(
+            screen.iter().any(|line| line.ends_with("INSERT")),
+            "{screen:#?}"
         );
     }
 
@@ -968,7 +1240,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let (alignment, view) = app.alignment().unwrap();
         let body = regions(app, buffer.area).body;
-        let cells = grid_layout(body, alignment.rows(), view.name_width).cells;
+        let cells = grid_layout(body, alignment.rows(), view.name_width, 0).cells;
         buffer[(cells.x + col, cells.y + row)].bg == Color::Indexed(24)
     }
 
@@ -1019,7 +1291,7 @@ mod tests {
         app.status.clear();
         let terminal = render(&app, 40, 6);
         let body = regions(&app, Rect::new(0, 0, 40, 6)).body;
-        let cells = grid_layout(body, 2, 24).cells;
+        let cells = grid_layout(body, 2, 24, 0).cells;
         assert_eq!(
             terminal.backend().buffer()[(cells.x, cells.y)].bg,
             Color::Indexed(71)
@@ -1042,6 +1314,10 @@ mod tests {
             "undo",
             "redo",
             "overwrite",
+            "insert",
+            "remove",
+            "R type over",
+            "z whole",
             "delete-rows",
             "delete-cols",
             "extract",

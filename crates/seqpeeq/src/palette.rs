@@ -2,7 +2,7 @@
 //! over SSH and inside tmux where 24-bit colour often does not.
 
 use ratatui::style::{Color, Modifier, Style};
-use seqpeeq_core::Alphabet;
+use seqpeeq_core::{Alphabet, Tally};
 
 /// Cells that carry their column's conserved residue.
 pub const SHADE: Style = Style::new().bg(Color::Indexed(24)).fg(Color::Indexed(255));
@@ -43,9 +43,48 @@ pub fn residue(alphabet: Alphabet, residue: u8) -> Style {
     }
 }
 
+/// The overview's blue ramp, from few residues matching their column's
+/// conserved residue to all of them.
+pub const RAMP: [u8; 5] = [189, 153, 111, 68, 24];
+
+/// An overview cell of residues before the conserved residues are counted.
+pub const UNCOUNTED: u8 = 245;
+
+/// How an overview cell holding `tally` is drawn. A cell more than half
+/// gaps has no colour; otherwise its background is the ramp's step for the
+/// share of residues that match, or grey while nothing is `counted`.
+pub fn overview(tally: Tally, counted: bool) -> Style {
+    if tally.cells == 0 || tally.is_gappy() {
+        return Style::new();
+    }
+    let colour = if counted {
+        let step = (5 * tally.matches / tally.residues).min(4) as usize;
+        RAMP[step]
+    } else {
+        UNCOUNTED
+    };
+    Style::new().bg(Color::Indexed(colour))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_cells_step_up_the_ramp_with_matches() {
+        let cell = |residues, matches| Tally {
+            cells: 10,
+            residues,
+            matches,
+        };
+        let bg = |tally, counted| overview(tally, counted).bg;
+        assert_eq!(bg(cell(10, 10), true), Some(Color::Indexed(RAMP[4])));
+        assert_eq!(bg(cell(10, 1), true), Some(Color::Indexed(RAMP[0])));
+        assert_eq!(bg(cell(10, 5), true), Some(Color::Indexed(RAMP[2])));
+        assert_eq!(bg(cell(5, 5), false), Some(Color::Indexed(UNCOUNTED)));
+        assert_eq!(bg(cell(4, 4), true), None, "more than half gaps");
+        assert_eq!(bg(Tally::default(), true), None);
+    }
 
     #[test]
     fn case_does_not_change_the_colour_and_gaps_have_none() {

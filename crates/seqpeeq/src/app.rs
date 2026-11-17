@@ -10,27 +10,37 @@ use std::sync::Arc;
 use ratatui::layout::Size;
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
-    Started, View,
+    Started, Summary, View, summary_block,
 };
 
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
-    Cell, Colouring, MsaView, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
+    Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
 use crate::ui;
 use crate::ui::grid::{self, Hit};
+use crate::zoom::{self, Scale};
 
 pub enum Mode {
     Normal,
     /// Typing one line at the bottom of the screen.
     Prompt(Prompt),
-    /// Typing over residues: letters are text, not commands.
-    Edit,
+    /// Typing into residues: letters are text, not commands.
+    Edit(Typing),
     /// `f` was pressed: the next key is the character to fill with.
     FillChar,
     /// Waiting for `y` or anything else in answer to a question.
     Confirm(Confirm),
     Help,
+}
+
+/// How typed characters go into a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typing {
+    /// In front of the cursor, shifting what follows (`i`).
+    Insert,
+    /// Over the residues (`R`).
+    Replace,
 }
 
 /// What the user is being asked to confirm.
@@ -82,6 +92,15 @@ pub enum Request {
         view: View,
         progress: Arc<Progress>,
     },
+    /// Tally every row of one state of an alignment for the overview.
+    Summarise {
+        /// The [`Dataset::id`] of the alignment.
+        dataset: u64,
+        view: View,
+        /// The count of that state's columns.
+        conserved: Conservation,
+        progress: Arc<Progress>,
+    },
 }
 
 /// Work that a worker thread has finished.
@@ -91,6 +110,11 @@ pub enum Done {
     Conservation {
         dataset: u64,
         result: Option<Conservation>,
+    },
+    /// A summary for the overview; `None` if it was cancelled.
+    Summary {
+        dataset: u64,
+        result: Option<Summary>,
     },
 }
 
@@ -138,6 +162,11 @@ pub struct App {
     /// The count running in the background: the dataset, the revision
     /// being counted, and its progress.
     pub counting: Option<(u64, u64, Arc<Progress>)>,
+    /// The newest summary of each alignment, by [`Dataset::id`].
+    pub summaries: HashMap<u64, Summary>,
+    /// The summary being made in the background: the dataset, the
+    /// revision, and its progress.
+    pub summarising: Option<(u64, u64, Arc<Progress>)>,
     /// Lines entered on the command line.
     history: History,
     /// Whether the left button went down on the grid and is still held, so
@@ -162,6 +191,8 @@ impl App {
             inline_cells: INLINE_CELLS,
             conserved: HashMap::new(),
             counting: None,
+            summaries: HashMap::new(),
+            summarising: None,
             history: History::default(),
             dragging: false,
         }
@@ -176,6 +207,7 @@ impl App {
     /// nothing is running.
     pub fn pump(&mut self) {
         self.sync_views();
+        self.rescale();
         while self.busy.is_none() {
             let Some(cmd) = self.queue.pop_front() else {
                 break;
@@ -187,6 +219,79 @@ impl App {
             self.report(ran, true);
         }
         self.refresh_conservation();
+        self.refresh_summary();
+    }
+
+    /// Make sure the visible alignment has, or is getting, a summary of the
+    /// state it is in, while its lines hold several sequences. It waits for
+    /// a count of exactly that state.
+    fn refresh_summary(&mut self) {
+        let current = self
+            .session
+            .datasets()
+            .get(self.active)
+            .and_then(|dataset| {
+                let (alignment, view) = (dataset.msa()?, self.views.get(&dataset.id)?);
+                (view.zoom > 0
+                    && alignment.is_aligned()
+                    && summary_block(alignment.rows(), alignment.cols()).is_some())
+                .then_some((dataset.id, alignment.revision()))
+            });
+        if let Some((id, revision, progress)) = &self.summarising
+            && current != Some((*id, *revision))
+        {
+            progress.cancel();
+            self.summarising = None;
+        }
+        let Some(dataset) = self.session.datasets().get(self.active) else {
+            return;
+        };
+        let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
+            return;
+        };
+        // Drawn from at every level of the overview: a line's score, or a
+        // cell of many columns, read straight from the file costs the
+        // whole row on every frame.
+        let too_many = summary_block(alignment.rows(), alignment.cols()).is_none();
+        if view.zoom == 0 || !alignment.is_aligned() || too_many {
+            return;
+        }
+        let (id, revision) = (dataset.id, alignment.revision());
+        if self
+            .summaries
+            .get(&id)
+            .is_some_and(|summary| summary.revision() == revision)
+        {
+            return;
+        }
+        let Some(conserved) = self
+            .conserved
+            .get(&id)
+            .filter(|found| found.revision() == revision)
+        else {
+            return;
+        };
+        if alignment.rows().saturating_mul(alignment.cols()) <= self.inline_cells {
+            if let Some(summary) = alignment.view().summary(conserved, &Progress::new()) {
+                self.summaries.insert(id, summary);
+            }
+            return;
+        }
+        if let Some((summarising, of, progress)) = &self.summarising {
+            if (*summarising, *of) == (id, revision) {
+                return;
+            }
+            // A summary of a state that is no longer shown is wasted work.
+            progress.cancel();
+        }
+        let progress = Arc::new(Progress::new());
+        self.summarising = Some((id, revision, Arc::clone(&progress)));
+        self.outbox.push(Request::Summarise {
+            dataset: id,
+            view: alignment.view().clone(),
+            conserved: conserved.clone(),
+            progress,
+        });
     }
 
     /// Make sure the visible alignment has, or is getting, a count of its
@@ -198,7 +303,9 @@ impl App {
         let (Some(alignment), Some(view)) = (dataset.msa(), self.views.get(&dataset.id)) else {
             return;
         };
-        if view.colouring != Colouring::Conserved || !alignment.is_aligned() {
+        // The overview's colours and scores need the count, whatever the
+        // grid's colouring.
+        if (view.colouring != Colouring::Conserved && view.zoom == 0) || !alignment.is_aligned() {
             return;
         }
         let (id, revision) = (dataset.id, alignment.revision());
@@ -240,6 +347,97 @@ impl App {
         self.conserved
             .get(&dataset.id)
             .filter(|found| found.cols() == alignment.cols())
+    }
+
+    /// The summary to draw the visible alignment's lines of several
+    /// sequences from: of the state shown, or of an earlier state of the
+    /// same shape, which is close enough to show while the new one is made.
+    pub fn summary(&self) -> Option<&Summary> {
+        let dataset = self.session.datasets().get(self.active)?;
+        let alignment = dataset.msa()?;
+        self.summaries.get(&dataset.id).filter(|summary| {
+            summary.rows() == alignment.rows() && summary.cols() == alignment.cols()
+        })
+    }
+
+    /// The zoom levels for the visible alignment on this screen. Only the
+    /// grid when the alignment fits it whole, or is unaligned.
+    pub fn levels(&self) -> Vec<Scale> {
+        let (Some(aln), Some(grid), Some(overview)) = (
+            self.shape(),
+            ui::plain_shape(self),
+            ui::overview_shape(self),
+        ) else {
+            return vec![Scale::ONE];
+        };
+        let aligned = self
+            .alignment()
+            .is_some_and(|(alignment, _)| alignment.is_aligned());
+        let fits = aln.rows <= grid.rows && aln.cols <= grid.cols;
+        if !aligned || fits {
+            return vec![Scale::ONE];
+        }
+        zoom::levels(aln, overview, summary_block(aln.rows, aln.cols))
+    }
+
+    /// Keep the visible view's zoom level among the levels there are, and
+    /// its scale the level's.
+    fn rescale(&mut self) {
+        let levels = self.levels();
+        if let Some(view) = self.view_mut() {
+            view.zoom = view.zoom.min(levels.len() - 1);
+            let scale = levels[view.zoom];
+            if view.scale != scale {
+                view.scale = scale;
+                view.snap();
+            }
+        }
+    }
+
+    /// `-`, `+` and `z`: go to another zoom level, centred on the cursor.
+    fn zoom(&mut self, key: KeyCode) {
+        let Some((alignment, view)) = self.alignment() else {
+            return;
+        };
+        let zooming_out = matches!(key, KeyCode::Char('-' | 'z'));
+        if zooming_out && !alignment.is_aligned() {
+            self.status = "error: the overview needs sequences of one length".to_string();
+            return;
+        }
+        let last = self.levels().len() - 1;
+        if zooming_out && last == 0 {
+            self.status = "the whole alignment already fits on screen".to_string();
+            return;
+        }
+        let zoom = match key {
+            KeyCode::Char('-') => (view.zoom + 1).min(last),
+            KeyCode::Char('z') if view.zoom == 0 => last,
+            KeyCode::Char('z') => 0,
+            _ => view.zoom.saturating_sub(1),
+        };
+        if zoom == view.zoom {
+            return;
+        }
+        if let Some(view) = self.view_mut() {
+            view.zoom = zoom;
+        }
+        self.rescale();
+        let (Some(aln), screen) = (self.shape(), self.screen_shape()) else {
+            return;
+        };
+        if let Some(view) = self.view_mut() {
+            view.centre(screen, aln);
+        }
+    }
+
+    /// Ask every job running in the background to stop.
+    pub fn cancel_jobs(&self) {
+        if let Some(busy) = &self.busy {
+            busy.progress.cancel();
+        }
+        for (_, _, progress) in [&self.counting, &self.summarising].into_iter().flatten() {
+            progress.cancel();
+        }
     }
 
     /// Take in work a thread has finished.
@@ -286,6 +484,27 @@ impl App {
                     self.conserved.insert(dataset, found);
                 }
             }
+            Done::Summary { dataset, result } => {
+                let Some(summary) = result else {
+                    return;
+                };
+                if self
+                    .summarising
+                    .as_ref()
+                    .is_some_and(|(id, of, _)| (*id, *of) == (dataset, summary.revision()))
+                {
+                    self.summarising = None;
+                }
+                // Kept only if the alignment is still in the state summarised.
+                let datasets = self.session.datasets().iter();
+                let now = datasets
+                    .filter(|open| open.id == dataset)
+                    .find_map(Dataset::msa)
+                    .map(Alignment::revision);
+                if now == Some(summary.revision()) {
+                    self.summaries.insert(dataset, summary);
+                }
+            }
         }
     }
 
@@ -305,10 +524,7 @@ impl App {
     /// The size of the alignment on the visible tab.
     fn shape(&self) -> Option<Shape> {
         let (alignment, _) = self.alignment()?;
-        Some(Shape {
-            rows: alignment.rows(),
-            cols: alignment.cols(),
-        })
+        Some(Shape::of(alignment))
     }
 
     fn view_mut(&mut self) -> Option<&mut MsaView> {
@@ -326,6 +542,7 @@ impl App {
 
     /// Scroll the visible alignment just enough to show its cursor.
     fn reveal(&mut self) {
+        self.rescale();
         let screen = self.screen_shape();
         if let Some(view) = self.view_mut() {
             view.reveal(screen);
@@ -348,18 +565,21 @@ impl App {
         }
         self.views.retain(|id, _| open.contains(id));
         self.conserved.retain(|id, _| open.contains(id));
-        if let Some((id, _, progress)) = &self.counting
-            && !open.contains(id)
-        {
-            progress.cancel();
-            self.counting = None;
+        self.summaries.retain(|id, _| open.contains(id));
+        for job in [&mut self.counting, &mut self.summarising] {
+            if let Some((id, _, progress)) = job
+                && !open.contains(id)
+            {
+                progress.cancel();
+                *job = None;
+            }
         }
     }
 
     /// Background work is running, so the screen should be redrawn soon to
     /// show progress.
     pub fn wants_tick(&self) -> bool {
-        self.busy.is_some() || self.counting.is_some()
+        self.busy.is_some() || self.counting.is_some() || self.summarising.is_some()
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -448,8 +668,9 @@ impl App {
                     prompt.line.key(key);
                 }
             },
-            Mode::Edit if ctrl => {}
-            Mode::Edit => self.edit_key(key),
+            Mode::Edit(_) if ctrl => {}
+            Mode::Edit(Typing::Replace) => self.edit_key(key),
+            Mode::Edit(Typing::Insert) => self.insert_key(key),
             Mode::FillChar => {
                 self.mode = Mode::Normal;
                 if let (KeyCode::Char(with), false) = (key.code, ctrl) {
@@ -550,7 +771,13 @@ impl App {
                 revision: alignment.revision(),
             })
         };
-        let row = view.cursor.row;
+        // Step from the match last gone to while the cursor is still on
+        // its line, so that `n` moves on past it.
+        let line = view.cursor.row..view.cursor.row + view.scale.rows;
+        let row = match view.found {
+            Some(at) if fresh.is_none() && line.contains(&at) => at,
+            _ => view.cursor.row,
+        };
         let Some(view) = self.view_mut() else {
             return;
         };
@@ -585,6 +812,7 @@ impl App {
         );
         if let Some(view) = self.view_mut() {
             view.move_to(Some(row), None, aln);
+            view.found = Some(row);
         }
         self.reveal();
     }
@@ -607,8 +835,8 @@ impl App {
         };
     }
 
-    /// `i`: start typing over residues.
-    fn start_typing(&mut self) {
+    /// `i` or `R`: start inserting, or typing over residues.
+    fn start_typing(&mut self, typing: Typing) {
         let Some((alignment, _)) = self.alignment() else {
             return;
         };
@@ -627,8 +855,24 @@ impl App {
         }
         if let Some(view) = self.view_mut() {
             view.select = None;
+            view.append = typing == Typing::Insert;
         }
-        self.mode = Mode::Edit;
+        self.mode = Mode::Edit(typing);
+    }
+
+    /// Esc while typing: the run becomes a command, and the cursor goes
+    /// back inside the alignment if it was past the end.
+    fn stop_typing(&mut self) {
+        self.commit_typed();
+        self.mode = Mode::Normal;
+        let aln = self.shape();
+        if let Some(view) = self.view_mut() {
+            view.append = false;
+            if let Some(aln) = aln {
+                view.clamp(aln);
+            }
+        }
+        self.reveal();
     }
 
     /// A key while typing over residues.
@@ -643,11 +887,7 @@ impl App {
         // What to put where, and where the cursor goes then.
         let last = aln.cols.saturating_sub(1);
         let (at, byte, next) = match key.code {
-            KeyCode::Esc => {
-                self.commit_typed();
-                self.mode = Mode::Normal;
-                return;
-            }
+            KeyCode::Esc => return self.stop_typing(),
             KeyCode::Char('>') => {
                 self.status = "error: '>' cannot be typed into a sequence".to_string();
                 return;
@@ -670,21 +910,214 @@ impl App {
             }
             _ => return,
         };
-        if self
-            .view_mut()
-            .and_then(|view| view.typed.as_mut())
-            .is_none_or(|typed| typed.row != row || !typed.put(at, byte))
-        {
+        let grown = match self.view_mut().and_then(|view| view.typed.as_mut()) {
+            Some(Pending::Replace(typed)) => typed.row == row && typed.put(at, byte),
+            _ => false,
+        };
+        if !grown {
             // Not beside what was typed so far: that run is finished.
             self.commit_typed();
             if let Some(view) = self.view_mut() {
-                view.typed = Some(Typed::new(row, at, byte));
+                view.typed = Some(Pending::Replace(Typed::new(row, at, byte)));
             }
         }
         if let Some(view) = self.view_mut() {
             view.cursor.col = next;
         }
         self.reveal();
+    }
+
+    /// A key while inserting: characters go in front of the cursor, and
+    /// Delete and Backspace remove, each shifting the residues up to the
+    /// next gap. A run of one kind of key is one command.
+    fn insert_key(&mut self, key: &KeyEvent) {
+        let Some(aln) = self.shape() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let Some(view) = self.view_mut() else {
+            return;
+        };
+        let Cell { row, col } = view.cursor;
+        // The run as it stands, if it is on this row.
+        let pending = view.typed.clone().filter(|pending| pending.row() == row);
+        // The run this key makes, whether it carries on the one pending,
+        // and where the cursor goes.
+        let (next, carries_on, cursor) = match key.code {
+            KeyCode::Esc => return self.stop_typing(),
+            KeyCode::Char('>') => {
+                self.status = "error: '>' cannot be typed into a sequence".to_string();
+                return;
+            }
+            KeyCode::Char(c) if c.is_ascii_graphic() => match pending {
+                Some(Pending::Insert {
+                    col: start,
+                    mut seq,
+                    ..
+                }) if start + seq.len() == col => {
+                    seq.push(c as u8);
+                    let next = Pending::Insert {
+                        row,
+                        col: start,
+                        seq,
+                        added: 0,
+                    };
+                    (next, true, col + 1)
+                }
+                _ => {
+                    let seq = vec![c as u8];
+                    let next = Pending::Insert {
+                        row,
+                        col,
+                        seq,
+                        added: 0,
+                    };
+                    (next, false, col + 1)
+                }
+            },
+            KeyCode::Delete
+                if col
+                    >= aln.cols.saturating_add(match &pending {
+                        Some(Pending::Insert { added, .. }) => *added,
+                        _ => 0,
+                    }) =>
+            {
+                self.status = "error: nothing under the cursor to remove".to_string();
+                return;
+            }
+            KeyCode::Delete => match pending {
+                Some(Pending::Remove {
+                    col: start,
+                    count,
+                    back: false,
+                    ..
+                }) if start == col && start + count < aln.cols => {
+                    let count = count + 1;
+                    let next = Pending::Remove {
+                        row,
+                        col,
+                        count,
+                        back: false,
+                    };
+                    (next, true, col)
+                }
+                _ => {
+                    let next = Pending::Remove {
+                        row,
+                        col,
+                        count: 1,
+                        back: false,
+                    };
+                    (next, false, col)
+                }
+            },
+            // Backspace straight after letters not yet made a command
+            // takes the last of them back.
+            KeyCode::Backspace
+                if matches!(&pending, Some(Pending::Insert { col: start, seq, .. })
+                    if start + seq.len() == col) =>
+            {
+                let Some(Pending::Insert {
+                    col: start,
+                    mut seq,
+                    ..
+                }) = pending
+                else {
+                    return;
+                };
+                seq.pop();
+                let next = (!seq.is_empty()).then_some(Pending::Insert {
+                    row,
+                    col: start,
+                    seq,
+                    added: 0,
+                });
+                self.set_typed(next, col - 1);
+                return;
+            }
+            KeyCode::Backspace if col > 0 => {
+                let carried = match pending {
+                    Some(Pending::Remove {
+                        col: start,
+                        count,
+                        back: true,
+                        ..
+                    }) if start == col => Some(count),
+                    _ => None,
+                };
+                let next = Pending::Remove {
+                    row,
+                    col: col - 1,
+                    count: carried.map_or(1, |count| count + 1),
+                    back: true,
+                };
+                (next, carried.is_some(), col - 1)
+            }
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => {
+                // Moving away ends the run; the same keys then move as usual.
+                self.commit_typed();
+                self.grid_key(key);
+                return;
+            }
+            _ => return,
+        };
+        if !carries_on {
+            self.commit_typed();
+        }
+        // Removing a gap that only gaps follow up to the next residue
+        // changes nothing: logged, it would still take an undo step.
+        if let Pending::Remove {
+            row, col, count: 1, ..
+        } = next
+            && !carries_on
+            && self.removes_nothing(row, col)
+        {
+            self.status = "error: nothing to remove: the row would stay the same".to_string();
+            self.set_typed(None, cursor);
+            return;
+        }
+        self.set_typed(Some(next), cursor);
+    }
+
+    /// Make `typed` the run pending, its added columns planned against the
+    /// alignment as it now is, and put the cursor at `col`.
+    fn set_typed(&mut self, typed: Option<Pending>, col: usize) {
+        let typed = match (typed, self.alignment()) {
+            (Some(Pending::Insert { row, col, seq, .. }), Some((alignment, _))) => {
+                let added = alignment.view().plan_insert(row, col, &seq).added;
+                Some(Pending::Insert {
+                    row,
+                    col,
+                    seq,
+                    added,
+                })
+            }
+            (typed, _) => typed,
+        };
+        if let Some(view) = self.view_mut() {
+            view.typed = typed;
+            view.cursor.col = col;
+        }
+        self.reveal();
+    }
+
+    /// Whether removing the cell of `row` at `col` leaves the row as it is.
+    fn removes_nothing(&self, row: usize, col: usize) -> bool {
+        let Some((alignment, _)) = self.alignment() else {
+            return true;
+        };
+        let view = alignment.view();
+        let shift = view.plan_remove(row, col, 1);
+        let mut now = Vec::with_capacity(shift.bytes.len());
+        view.residues(row, col..col + shift.bytes.len(), &mut now);
+        now == shift.bytes
     }
 
     /// Turn what has been typed into one command. If the command is
@@ -698,10 +1131,11 @@ impl App {
     /// `d`: delete the selected sequences or columns; a block, or with no
     /// selection the cell under the cursor, is replaced with gaps.
     fn delete(&mut self) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
-        let cmd = match view.region() {
+        let aln = Shape::of(alignment);
+        let cmd = match view.region(aln) {
             Some(region @ Region { cols: None, .. }) => MsaCmd::DeleteRows {
                 rows: region.flags().0,
             },
@@ -710,7 +1144,7 @@ impl App {
                 None => return,
             },
             _ => {
-                let (rows, cols) = view.target().flags();
+                let (rows, cols) = view.target(aln).flags();
                 MsaCmd::Fill {
                     rows,
                     cols,
@@ -724,21 +1158,21 @@ impl App {
     /// `f` then a character: overwrite the selection, or the cell under the
     /// cursor, with it.
     fn fill(&mut self, with: char) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
-        let (rows, cols) = view.target().flags();
+        let (rows, cols) = view.target(Shape::of(alignment)).flags();
         self.act(Command::Msa(MsaCmd::Fill { rows, cols, with }));
     }
 
     /// `e`: open the command line holding the extract for the selection,
     /// ready for the file name.
     fn start_extract(&mut self) {
-        let Some((_, view)) = self.alignment() else {
+        let Some((alignment, view)) = self.alignment() else {
             return;
         };
         let mut line = "msa extract".to_string();
-        if let Some(region) = view.region() {
+        if let Some(region) = view.region(Shape::of(alignment)) {
             let (rows, cols) = region.flags();
             if let Some(rows) = rows.rows {
                 line.push_str(&format!(" --rows {rows}"));
@@ -777,9 +1211,15 @@ impl App {
         let Some(aln) = self.shape() else {
             return;
         };
+        let zoomed = self.alignment().is_some_and(|(_, view)| view.zoom > 0);
         match key.code {
+            KeyCode::Char('i' | 'R' | 'r') if zoomed => {
+                return self.status = "zoom in to edit".to_string();
+            }
+            KeyCode::Char('-' | '+' | '=' | 'z') | KeyCode::Enter => return self.zoom(key.code),
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
-            KeyCode::Char('i') => return self.start_typing(),
+            KeyCode::Char('i') => return self.start_typing(Typing::Insert),
+            KeyCode::Char('R') => return self.start_typing(Typing::Replace),
             KeyCode::Char('/') => return self.open_prompt(PromptKind::Search, ""),
             KeyCode::Char('n') => return self.search_step(true),
             KeyCode::Char('N') => return self.search_step(false),
@@ -798,11 +1238,26 @@ impl App {
             }
             _ => {}
         }
-        let page = self.screen_shape().rows.max(1) as isize;
+        let screen = self.screen_shape();
+        let page = screen.rows.max(1) as isize;
+        let width = screen.cols.max(1) as isize;
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let Some(view) = self.view_mut() else {
             return;
         };
         match key.code {
+            // Shift with an arrow scrolls a screen at a time, the cursor
+            // going with it.
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if shift => {
+                let (rows, cols) = match key.code {
+                    KeyCode::Left => (0, -width),
+                    KeyCode::Right => (0, width),
+                    KeyCode::Up => (-page, 0),
+                    _ => (page, 0),
+                };
+                view.scroll(rows, cols, aln, screen);
+                view.move_by(rows, cols, aln);
+            }
             KeyCode::Left | KeyCode::Char('h') => view.move_by(0, -1, aln),
             KeyCode::Right | KeyCode::Char('l') => view.move_by(0, 1, aln),
             KeyCode::Up | KeyCode::Char('k') => view.move_by(-1, 0, aln),
@@ -867,10 +1322,13 @@ impl App {
         const ROWS: isize = 3;
         const COLS: isize = 10;
         // Few terminals report sideways scrolling; many pass on the wheel
-        // with Shift or Alt held instead.
-        let sideways = mouse
-            .modifiers
-            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        // with Shift or Alt held instead. Some, Apple's Terminal among them,
+        // pass on neither: there the wheel over the column numbers does.
+        let over_ruler = ui::grid_of(self).is_some_and(|layout| mouse.row == layout.ruler.y);
+        let sideways = over_ruler
+            || mouse
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         let (rows, cols) = match mouse.kind {
             MouseEventKind::ScrollUp if sideways => (0, -COLS),
             MouseEventKind::ScrollDown if sideways => (0, COLS),
@@ -928,7 +1386,7 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) {
-        if matches!(self.mode, Mode::Edit) {
+        if matches!(self.mode, Mode::Edit(_)) {
             self.wheel(mouse);
             // A press ends the run being typed and puts the cursor there.
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -1039,8 +1497,10 @@ impl App {
                 let column = x.clamp(cells.left(), cells.right() - 1) - cells.x;
                 let line = y.clamp(cells.top(), cells.bottom() - 1) - cells.y;
                 let to = Cell {
-                    row: (view.top + line as usize).min(aln.rows.saturating_sub(1)),
-                    col: (view.left + column as usize).min(aln.cols.saturating_sub(1)),
+                    row: (view.top + line as usize * view.scale.rows)
+                        .min(aln.rows.saturating_sub(1)),
+                    col: (view.left + column as usize * view.scale.cols)
+                        .min(aln.cols.saturating_sub(1)),
                 };
                 view.select.get_or_insert(Select {
                     kind,
@@ -1051,6 +1511,7 @@ impl App {
                     SelKind::Rows => view.cursor.row = to.row,
                     SelKind::Cols => view.cursor.col = to.col,
                 }
+                view.snap();
             }
             MouseEventKind::Up(MouseButton::Left) => dragging = false,
             _ => {}
@@ -1234,6 +1695,15 @@ mod tests {
                 } => {
                     let result = view.conservation(&progress);
                     app.handle_done(Done::Conservation { dataset, result });
+                }
+                Request::Summarise {
+                    dataset,
+                    view,
+                    conserved,
+                    progress,
+                } => {
+                    let result = view.summary(&conserved, &progress);
+                    app.handle_done(Done::Summary { dataset, result });
                 }
             }
         }
@@ -1744,6 +2214,48 @@ mod tests {
         })
     }
 
+    /// 40 sequences x 300 columns: too wide and too tall for 80 x 12.
+    fn big() -> String {
+        (0..40)
+            .map(|i| format!(">s{i}\n{}\n", "ACGT".repeat(75)))
+            .collect()
+    }
+
+    #[test]
+    fn the_wheel_over_the_column_numbers_scrolls_sideways() {
+        // For terminals that never pass on sideways scrolling, Apple's
+        // Terminal among them.
+        let (mut app, _dir) = with_text(&big());
+        let ruler = active_layout(&app).ruler;
+        let over_ruler = (ruler.x + 5, ruler.y);
+        app.handle_event(&mouse(MouseEventKind::ScrollDown, over_ruler, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (10, 0));
+        app.handle_event(&mouse(MouseEventKind::ScrollUp, over_ruler, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (0, 0));
+        // Over the sequences the wheel still scrolls rows.
+        let over_cells = (ruler.x + 5, ruler.y + 3);
+        app.handle_event(&mouse(MouseEventKind::ScrollDown, over_cells, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (0, 3));
+    }
+
+    #[test]
+    fn shift_arrows_move_a_screen_at_a_time() {
+        let (mut app, _dir) = with_text(&big());
+        let screen = app.screen_shape();
+        let shifted = |code| Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT));
+        app.handle_event(&shifted(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, screen.cols);
+        assert_eq!(view(&app).left, screen.cols, "the next screen of columns");
+        app.handle_event(&shifted(KeyCode::Down));
+        assert_eq!(view(&app).cursor.row, screen.rows);
+        app.handle_event(&shifted(KeyCode::Left));
+        app.handle_event(&shifted(KeyCode::Up));
+        assert_eq!(view(&app).cursor, Cell { row: 0, col: 0 });
+        // Unshifted, the arrows still move one cell.
+        app.handle_event(&press(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, 1);
+    }
+
     #[test]
     fn keys_move_the_cursor_and_the_screen_follows() {
         let mut app = with_grid();
@@ -2052,7 +2564,7 @@ mod tests {
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), at(&app, 1, 4), NONE));
         app.handle_event(&mouse(MouseEventKind::Up(LEFT), at(&app, 1, 4), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(0..2),
                 cols: Some(2..5)
@@ -2061,7 +2573,7 @@ mod tests {
 
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), name_at(&app, 1), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(1..2),
                 cols: None
@@ -2069,7 +2581,7 @@ mod tests {
         );
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), name_at(&app, 2), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(1..3),
                 cols: None
@@ -2080,7 +2592,7 @@ mod tests {
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), ruler_at(&app, 3), NONE));
         app.handle_event(&mouse(MouseEventKind::Drag(LEFT), ruler_at(&app, 6), NONE));
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: None,
                 cols: Some(3..7)
@@ -2105,7 +2617,7 @@ mod tests {
                 modifiers,
             ));
             assert_eq!(
-                view(&app).region(),
+                view(&app).region(Shape::of(app.alignment().unwrap().0)),
                 Some(Region {
                     rows: Some(0..3),
                     cols: Some(1..4)
@@ -2166,7 +2678,7 @@ mod tests {
             "the cell now under the pointer, last sequence"
         );
         assert_eq!(
-            view(&app).region(),
+            view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: Some(0..5),
                 cols: Some(40..44)
@@ -2314,8 +2826,8 @@ mod tests {
     #[test]
     fn typing_overwrites_and_is_logged_as_one_command() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "jllli");
-        assert!(matches!(app.mode, Mode::Edit));
+        type_str(&mut app, "jlllR");
+        assert!(matches!(app.mode, Mode::Edit(Typing::Replace)));
         let before = app.session.history().len();
         type_str(&mut app, "NN");
         assert_eq!(app.session.history().len(), before, "not a command yet");
@@ -2335,7 +2847,7 @@ mod tests {
     #[test]
     fn backspace_and_delete_put_gaps() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "llllli");
+        type_str(&mut app, "lllllR");
         app.handle_event(&press(KeyCode::Backspace));
         app.handle_event(&press(KeyCode::Backspace));
         assert_eq!(view(&app).cursor.col, 3);
@@ -2344,7 +2856,7 @@ mod tests {
         assert_eq!(last(&app), "msa overwrite --row 1 --col 4 --seq A-");
 
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         app.handle_event(&press(KeyCode::Backspace));
         app.handle_event(&press(KeyCode::Delete));
         app.handle_event(&press(KeyCode::Delete));
@@ -2355,7 +2867,7 @@ mod tests {
     #[test]
     fn moving_away_ends_the_run() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "iA");
+        type_str(&mut app, "RA");
         app.handle_event(&press(KeyCode::Down));
         type_str(&mut app, "C");
         app.handle_event(&press(KeyCode::Esc));
@@ -2368,26 +2880,26 @@ mod tests {
             ]
         );
         // A click ends it too, and moves the cursor.
-        type_str(&mut app, "iG");
+        type_str(&mut app, "RG");
         let to = at(&app, 2, 7);
         app.handle_event(&mouse(MouseEventKind::Down(LEFT), to, NONE));
         assert_eq!(last(&app), "msa overwrite --row 2 --col 3 --seq G");
         assert_eq!(view(&app).cursor, Cell { row: 2, col: 7 });
-        assert!(matches!(app.mode, Mode::Edit));
+        assert!(matches!(app.mode, Mode::Edit(Typing::Replace)));
     }
 
     #[test]
     fn letters_are_text_while_typing_and_nothing_typed_logs_nothing() {
         let (mut app, _dir) = with_trio();
         let before = app.session.history().len();
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(app.session.history().len(), before);
-        type_str(&mut app, "idquvf:");
-        assert!(!app.quit && matches!(app.mode, Mode::Edit));
+        type_str(&mut app, "Rdquvf:");
+        assert!(!app.quit && matches!(app.mode, Mode::Edit(Typing::Replace)));
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(last(&app), "msa overwrite --row 1 --col 1 --seq dquvf:");
-        type_str(&mut app, "i>");
+        type_str(&mut app, "R>");
         assert_eq!(app.status, "error: '>' cannot be typed into a sequence");
         app.handle_event(&paste("ACGT"));
         assert_eq!(view(&app).typed, None, "a paste never reaches the grid");
@@ -2399,7 +2911,7 @@ mod tests {
     fn typing_at_the_last_column_stays_there() {
         let (mut app, _dir) = with_trio();
         app.handle_event(&press(KeyCode::End));
-        type_str(&mut app, "iAC");
+        type_str(&mut app, "RAC");
         app.handle_event(&press(KeyCode::Esc));
         assert_eq!(last(&app), "msa overwrite --row 1 --col 10 --seq C");
     }
@@ -2407,7 +2919,7 @@ mod tests {
     #[test]
     fn typing_is_refused_where_it_cannot_work() {
         let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(
             app.status,
@@ -2420,17 +2932,454 @@ mod tests {
             &format!(":msa extract --out {}", dir.path().join("o.fa").display()),
         );
         app.handle_event(&press(KeyCode::Enter));
-        type_str(&mut app, "i");
+        type_str(&mut app, "R");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "error: still busy: writing o.fa (Esc cancels)");
         settle(&mut app);
     }
 
+    /// 4 sequences x 201 columns: does not fit 80 columns; the rows do.
+    fn wide() -> String {
+        let row = |unit: &str| unit.repeat(50) + "A";
+        format!(
+            ">a\n{}\n>b\n{}\n>c\n{}\n>d\n{}\n",
+            row("ACGT"),
+            row("ACGT"),
+            row("AC--"),
+            row("TTTT")
+        )
+    }
+
+    /// 40 sequences x 20 columns: the columns fit; the rows do not.
+    fn tall() -> String {
+        (0..40)
+            .map(|i| {
+                let row = if i == 7 {
+                    "TTTTTTTTTTTTTTTTTTTT"
+                } else {
+                    "ACGTACGTACGTACGTACGT"
+                };
+                format!(">n{i}\n{row}\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_shrunk_line_shows_its_lowest_score_once_summarised() {
+        let (mut app, _dir) = with_text(&tall());
+        type_str(&mut app, "z");
+        settle(&mut app);
+        let summary = app.summary().expect("summarised at once: it is small");
+        assert_eq!(summary.row(7).score(), Some(25));
+        assert!(app.outbox.is_empty() && app.summarising.is_none());
+    }
+
+    #[test]
+    fn large_alignments_are_summarised_in_the_background_and_old_results_dropped() {
+        let (mut app, _dir) = with_text(&tall());
+        app.inline_cells = 0;
+        type_str(&mut app, "z");
+        settle(&mut app); // count, then summary, both through the outbox
+        assert!(app.summary().is_some() && app.summarising.is_none() && !app.wants_tick());
+        let first = app.summary().unwrap().revision();
+        type_str(&mut app, "fN"); // a new state of the same shape
+        assert!(app.summary().is_some(), "the old picture stays meanwhile");
+
+        // The count of the new state, then its summary, which comes back
+        // only after the alignment has moved on again.
+        app.pump();
+        let Some(Request::Conserve {
+            dataset,
+            view: counted,
+            progress,
+        }) = app.outbox.pop()
+        else {
+            panic!("a count was asked for")
+        };
+        let result = counted.conservation(&progress);
+        app.handle_done(Done::Conservation { dataset, result });
+        app.pump();
+        let Some(Request::Summarise {
+            dataset,
+            view,
+            conserved,
+            progress,
+        }) = app.outbox.pop()
+        else {
+            panic!("a summary was asked for")
+        };
+        assert!(app.wants_tick(), "a summary is running");
+        let stale = view.summary(&conserved, &progress);
+        type_str(&mut app, "fA");
+        app.pump();
+        assert!(progress.is_cancelled(), "the old summary is cancelled");
+        assert!(app.summarising.is_none(), "the old job is cleared");
+        let stale_revision = stale.as_ref().unwrap().revision();
+        app.handle_done(Done::Summary {
+            dataset,
+            result: stale,
+        });
+        let kept = app.summary().unwrap().revision();
+        assert_eq!(kept, first, "the stale summary is dropped");
+        assert_ne!(kept, stale_revision);
+
+        type_str(&mut app, "z:close");
+        enter(&mut app);
+        type_str(&mut app, "y");
+        settle(&mut app);
+        assert!(app.session.datasets().is_empty());
+        assert!(app.summaries.is_empty() && app.summarising.is_none());
+    }
+
+    #[test]
+    fn n_and_shift_n_visit_every_match_in_the_overview() {
+        let (mut app, _dir) = with_text(&tall());
+        type_str(&mut app, "z");
+        settle(&mut app);
+        assert!(view(&app).scale.rows > 1, "lines hold several sequences");
+        type_str(&mut app, "/n1");
+        enter(&mut app);
+        let mut seen = vec![app.status.clone()];
+        for _ in 0..3 {
+            type_str(&mut app, "n");
+            seen.push(app.status.clone());
+        }
+        assert_eq!(
+            seen,
+            [
+                "match 1 of 11: n1",
+                "match 2 of 11: n10",
+                "match 3 of 11: n11",
+                "match 4 of 11: n12"
+            ]
+        );
+        type_str(&mut app, "N");
+        assert_eq!(app.status, "match 3 of 11: n11");
+    }
+
+    #[test]
+    fn the_overview_is_summarised_at_one_sequence_per_line_too() {
+        // Drawing a line's score or a wide cell straight from the file
+        // reads the whole row, every frame.
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-");
+        settle(&mut app);
+        assert_eq!(view(&app).scale.rows, 1);
+        let summary = app.summary().expect("summarised");
+        assert_eq!(
+            summary.row(3).score(),
+            Some(25),
+            "all T: every fourth column"
+        );
+    }
+
+    #[test]
+    fn a_zoom_key_that_changes_no_level_leaves_the_view_where_it_is() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, &"l".repeat(120));
+        let left = view(&app).left;
+        assert!(left > 0);
+        type_str(&mut app, "+");
+        assert_eq!(view(&app).left, left, "+ at the grid");
+        type_str(&mut app, "z");
+        let (zoom, left) = (view(&app).zoom, view(&app).left);
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, view(&app).left),
+            (zoom, left),
+            "- at the last level"
+        );
+    }
+
+    #[test]
+    fn quitting_cancels_every_background_job() {
+        let (mut app, _dir) = with_text(TRIO);
+        let jobs: Vec<_> = (0..2).map(|_| Arc::new(Progress::new())).collect();
+        app.counting = Some((1, 1, Arc::clone(&jobs[0])));
+        app.summarising = Some((1, 1, Arc::clone(&jobs[1])));
+        app.cancel_jobs();
+        assert!(jobs.iter().all(|job| job.is_cancelled()));
+    }
+
+    #[test]
+    fn a_delete_that_would_change_nothing_is_refused_and_logs_nothing() {
+        let (mut app, _dir) = with_text(TRIO);
+        type_str(&mut app, "fN");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "i");
+        for _ in 0..5 {
+            app.handle_event(&press(KeyCode::Delete));
+        }
+        assert!(app.status.contains("nothing to remove"), "{}", app.status);
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(shown(&app, 0), "NCGT-ACGT-");
+        type_str(&mut app, "uu");
+        assert_eq!(shown(&app, 0), "ACGT-ACGTA", "two undos reach the fill");
+    }
+
+    #[test]
+    fn a_no_op_backspace_still_moves_left_without_logging() {
+        let (mut app, _dir) = with_text(">a\nA--T\n");
+        type_str(&mut app, "lli");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 1);
+        assert_eq!(shown(&app, 0), "A--T");
+        assert_eq!(app.session.history().len(), before);
+    }
+
+    #[test]
+    fn minus_plus_and_z_step_through_the_levels() {
+        let (mut app, _dir) = with_text(&wide());
+        let levels = app.levels();
+        assert_eq!(levels.last(), Some(&Scale { rows: 1, cols: 8 }));
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, view(&app).scale),
+            (1, Scale { rows: 1, cols: 2 })
+        );
+        type_str(&mut app, "z");
+        assert_eq!(
+            view(&app).zoom,
+            0,
+            "from any overview level back to the grid"
+        );
+        type_str(&mut app, "z");
+        assert_eq!(view(&app).zoom, levels.len() - 1);
+        type_str(&mut app, "-");
+        assert_eq!(view(&app).zoom, levels.len() - 1, "no further out");
+        type_str(&mut app, "+");
+        assert_eq!(view(&app).zoom, levels.len() - 2);
+        app.handle_event(&press(KeyCode::Enter));
+        assert_eq!(view(&app).zoom, levels.len() - 3);
+        type_str(&mut app, "=");
+        assert_eq!(view(&app).zoom, levels.len() - 4);
+        type_str(&mut app, "+");
+        assert_eq!((view(&app).zoom, view(&app).scale), (0, Scale::ONE));
+    }
+
+    #[test]
+    fn a_file_that_fits_or_is_unaligned_has_no_overview() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "-");
+        assert_eq!(
+            (view(&app).zoom, app.status.as_str()),
+            (0, "the whole alignment already fits on screen")
+        );
+        let (mut app, _dir) = with_text(">a\nAC\n>b\nACGT\n");
+        type_str(&mut app, "z");
+        assert_eq!(
+            app.status,
+            "error: the overview needs sequences of one length"
+        );
+    }
+
+    #[test]
+    fn editing_keys_are_refused_in_the_overview() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-");
+        for key in ["i", "R", "r"] {
+            app.status.clear();
+            type_str(&mut app, key);
+            assert!(matches!(app.mode, Mode::Normal), "{key}");
+            assert_eq!(app.status, "zoom in to edit", "{key}");
+        }
+    }
+
+    #[test]
+    fn a_selection_in_the_overview_names_real_columns() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "-Cld"); // two blocks of 2 columns
+        assert_eq!(last(&app), "msa delete-cols --cols 1-4");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "Cd"); // the last block holds one column
+        assert_eq!(last(&app), "msa delete-cols --cols 197");
+    }
+
+    #[test]
+    fn the_level_follows_the_screen_and_the_alignment() {
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "z");
+        app.resize(Size::new(400, 40));
+        assert_eq!(
+            (view(&app).zoom, view(&app).scale),
+            (0, Scale::ONE),
+            "it all fits now"
+        );
+        app.resize(Size::new(80, 12));
+        type_str(&mut app, "z:msa delete-cols --cols 50-201");
+        enter(&mut app);
+        assert_eq!(view(&app).zoom, 0, "49 columns fit the grid");
+        assert!(view(&app).cursor.col < 49);
+        for (w, h) in [(5, 3), (1, 1), (0, 0)] {
+            app.resize(Size::new(w, h));
+            type_str(&mut app, "-z+");
+        }
+    }
+
     #[test]
     fn typing_starts_without_a_selection() {
         let (mut app, _dir) = with_trio();
-        type_str(&mut app, "Vi");
+        type_str(&mut app, "VR");
         assert_eq!(view(&app).select, None);
+    }
+
+    /// A row as it is drawn: the alignment with the pending run's preview
+    /// over it.
+    fn shown(app: &App, row: usize) -> String {
+        let mut text = seq(app, row).into_bytes();
+        let (alignment, view) = app.alignment().unwrap();
+        if let Some(pending) = &view.typed {
+            let (at, start, bytes) = pending.preview(alignment.view());
+            if at == row {
+                // A run may reach past the last column, into ones it adds.
+                text.resize(text.len().max(start + bytes.len()), b'-');
+                for (offset, byte) in bytes.into_iter().enumerate() {
+                    text[start + offset] = byte;
+                }
+            }
+        }
+        String::from_utf8(text).unwrap()
+    }
+
+    #[test]
+    fn insert_mode_shifts_and_logs_one_insert() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjli");
+        assert!(matches!(app.mode, Mode::Edit(Typing::Insert)));
+        let before = app.session.history().len();
+        type_str(&mut app, "NN");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(view(&app).cursor, Cell { row: 2, col: 3 });
+        assert_eq!(shown(&app, 2), "ANNCTACGTA");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 3 --col 2 --seq NN");
+        assert_eq!(seq(&app, 2), "ANNCTACGTA", "the preview was the result");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 2), "AC--TACGTA");
+    }
+
+    #[test]
+    fn delete_and_backspace_runs_are_one_remove_each() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjlllli");
+        app.handle_event(&press(KeyCode::Delete));
+        app.handle_event(&press(KeyCode::Delete));
+        assert_eq!(
+            (view(&app).cursor.col, shown(&app, 2)),
+            (4, "AC--CGTA--".to_string())
+        );
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa remove --row 3 --col 5 --count 2");
+
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "llllllli");
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 5);
+        app.handle_event(&press(KeyCode::Delete)); // another kind of key ends the run
+        app.handle_event(&press(KeyCode::Esc));
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa remove --row 1 --col 6 --count 2",
+                "msa remove --row 1 --col 6 --count 1"
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_mode_adds_at_the_end_of_a_row_as_one_insert() {
+        let (mut app, _dir) = with_trio();
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "i");
+        app.handle_event(&press(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, 10, "one past the last column");
+        let before = app.session.history().len();
+        type_str(&mut app, "TG");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(view(&app).cursor.col, 12, "past the columns the run adds");
+        assert_eq!(shown(&app, 0), "ACGT-ACGTATG");
+        app.handle_event(&press(KeyCode::Delete));
+        assert_eq!(app.status, "error: nothing under the cursor to remove");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 1 --col 11 --seq TG");
+        assert_eq!(
+            (seq(&app, 0), seq(&app, 1)),
+            ("ACGT-ACGTATG".into(), "ACGTTACG-A--".into())
+        );
+        assert_eq!(view(&app).cursor.col, 11, "back inside the alignment");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 0), "ACGT-ACGTA", "one undo takes the whole run");
+    }
+
+    #[test]
+    fn delete_can_remove_a_residue_after_pending_added_columns() {
+        let (mut app, _dir) = with_text(">a\nACGT\n");
+        app.handle_event(&press(KeyCode::End));
+        type_str(&mut app, "iXX");
+        assert_eq!(shown(&app, 0), "ACGXXT");
+        app.handle_event(&press(KeyCode::Delete));
+        assert_ne!(app.status, "error: nothing under the cursor to remove");
+        assert_eq!(shown(&app, 0), "ACGXX-");
+        app.handle_event(&press(KeyCode::Esc));
+        let history = app.session.history();
+        assert_eq!(
+            history[history.len() - 2..],
+            [
+                "msa insert --row 1 --col 4 --seq XX",
+                "msa remove --row 1 --col 6 --count 1",
+            ]
+        );
+        assert_eq!(seq(&app, 0), "ACGXX-");
+    }
+
+    #[test]
+    fn letters_typed_past_the_gaps_of_a_row_are_one_insert() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "i");
+        let before = app.session.history().len();
+        type_str(&mut app, "XYZ");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(shown(&app, 0), "XYZACGTACGTA");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 1 --col 1 --seq XYZ");
+        assert_eq!(seq(&app, 1), "ACGTTACG-A--");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 0), "ACGT-ACGTA");
+    }
+
+    #[test]
+    fn backspace_takes_back_letters_not_yet_made_a_command() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjliNX");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(app.session.history().len(), before, "no command");
+        assert_eq!(
+            (view(&app).cursor.col, shown(&app, 2)),
+            (2, "ANC-TACGTA".to_string())
+        );
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 3 --col 2 --seq N");
+        assert_eq!(seq(&app, 2), "ANC-TACGTA");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 2), "AC--TACGTA");
+
+        // Taking back every letter leaves nothing to make a command of;
+        // a Backspace after that removes as usual.
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjliNX");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 1);
+        assert!(view(&app).typed.is_none());
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(app.session.history().len(), before + 1);
+        assert_eq!(last(&app), "msa remove --row 3 --col 1 --count 1");
     }
 
     use seqpeeq_core::{Conservation, Progress};

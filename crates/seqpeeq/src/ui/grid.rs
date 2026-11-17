@@ -7,11 +7,14 @@ use ratatui::style::{Modifier, Style};
 use seqpeeq_core::{Alignment, Conservation};
 use unicode_width::UnicodeWidthChar;
 
-use crate::msa_view::{Cell, Colouring, MsaView, Shape};
+use crate::msa_view::{Cell, Colouring, MsaView, Pending, Shape};
 use crate::palette;
 
 /// The fewest columns the residues keep when the names have to give way.
 const MIN_CELLS: u16 = 10;
+
+/// Columns for the overview's match scores, `100% `.
+pub const SCORE_WIDTH: u16 = 5;
 
 /// Where the parts of the grid are on screen. Any of them may be empty in
 /// a terminal too small to show it.
@@ -23,20 +26,23 @@ pub struct GridLayout {
     pub numbers: Rect,
     /// Sequence names.
     pub names: Rect,
+    /// Match scores, in the overview; empty in the grid.
+    pub score: Rect,
     /// The residues.
     pub cells: Rect,
 }
 
 /// Lay the grid out in `body` for an alignment of `rows` sequences, with
-/// `name_width` columns wanted for names.
-pub fn grid_layout(body: Rect, rows: usize, name_width: u16) -> GridLayout {
+/// `name_width` columns wanted for names and `score_width` for scores.
+pub fn grid_layout(body: Rect, rows: usize, name_width: u16, score_width: u16) -> GridLayout {
     let digits = rows.max(1).ilog10() as u16 + 1;
     // Each of the two left-hand parts ends in one blank column.
     let numbers = (digits + 1).min(body.width);
     let rest = body.width - numbers;
+    let score = score_width.min(rest.saturating_sub(MIN_CELLS));
     let names = name_width
         .saturating_add(1)
-        .min(rest.saturating_sub(MIN_CELLS));
+        .min(rest.saturating_sub(MIN_CELLS + score));
     let ruler_height = body.height.min(1);
     let below = Rect {
         y: body.y + ruler_height,
@@ -44,8 +50,8 @@ pub fn grid_layout(body: Rect, rows: usize, name_width: u16) -> GridLayout {
         ..body
     };
     let cells = Rect {
-        x: body.x + numbers + names,
-        width: rest - names,
+        x: body.x + numbers + names + score,
+        width: rest - names - score,
         ..below
     };
     GridLayout {
@@ -61,6 +67,11 @@ pub fn grid_layout(body: Rect, rows: usize, name_width: u16) -> GridLayout {
         names: Rect {
             x: body.x + numbers,
             width: names,
+            ..below
+        },
+        score: Rect {
+            x: body.x + numbers + names,
+            width: score,
             ..below
         },
         cells,
@@ -87,12 +98,14 @@ pub enum Hit {
 }
 
 /// What is drawn at screen position (`x`, `y`). Drawing and the mouse both
-/// go by the same layout, so they cannot disagree.
+/// go by the same layout, so they cannot disagree. Zoomed out, a line is
+/// `view.scale.rows` sequences and a cell `view.scale.cols` columns, and
+/// the hit is the first of them.
 pub fn hit(layout: &GridLayout, view: &MsaView, aln: Shape, x: u16, y: u16) -> Hit {
     let cells = layout.cells;
     let col = (cells.left()..cells.right())
         .contains(&x)
-        .then(|| view.left + (x - cells.x) as usize)
+        .then(|| view.left + (x - cells.x) as usize * view.scale.cols)
         .filter(|&col| col < aln.cols);
     if layout.ruler.contains(Position::new(x, y)) {
         return col.map_or(Hit::Outside, Hit::Ruler);
@@ -100,12 +113,13 @@ pub fn hit(layout: &GridLayout, view: &MsaView, aln: Shape, x: u16, y: u16) -> H
     if !(cells.top()..cells.bottom()).contains(&y) {
         return Hit::Outside;
     }
-    let row = view.top + (y - cells.y) as usize;
+    let row = view.top + (y - cells.y) as usize * view.scale.rows;
     if row >= aln.rows {
         return Hit::Outside;
     }
+    let at = Position::new(x, y);
     let on_name =
-        layout.numbers.contains(Position::new(x, y)) || layout.names.contains(Position::new(x, y));
+        layout.numbers.contains(at) || layout.names.contains(at) || layout.score.contains(at);
     match col {
         _ if on_name => Hit::Name(row),
         Some(col) => Hit::Cell(Cell { row, col }),
@@ -116,15 +130,15 @@ pub fn hit(layout: &GridLayout, view: &MsaView, aln: Shape, x: u16, y: u16) -> H
 /// Where on screen the cursor's cell is, if it is on screen.
 pub fn cursor_position(layout: &GridLayout, view: &MsaView) -> Option<Position> {
     let cells = layout.cells;
-    let row = view.cursor.row.checked_sub(view.top)?;
-    let col = view.cursor.col.checked_sub(view.left)?;
+    let row = view.cursor.row.checked_sub(view.top)? / view.scale.rows;
+    let col = view.cursor.col.checked_sub(view.left)? / view.scale.cols;
     (row < cells.height as usize && col < cells.width as usize)
         .then(|| Position::new(cells.x + col as u16, cells.y + row as u16))
 }
 
 /// `text` cut to `width` display columns, ending in `…` if anything was
 /// cut. Control characters become spaces.
-fn fit(text: &str, width: usize) -> String {
+pub(super) fn fit(text: &str, width: usize) -> String {
     let printable = |c: char| if c.is_control() { ' ' } else { c };
     let total: usize = text
         .chars()
@@ -161,16 +175,17 @@ pub fn draw_grid(
     conserved: Option<&Conservation>,
     body: Rect,
 ) {
-    let layout = grid_layout(body, alignment.rows(), view.name_width);
+    let layout = grid_layout(body, alignment.rows(), view.name_width, 0);
     let GridLayout {
         ruler,
         numbers,
         names,
         cells,
+        ..
     } = layout;
     let buffer = frame.buffer_mut();
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let selected = view.region();
+    let selected = view.region(Shape::of(alignment));
     let is_selected = |cell: Cell| {
         selected
             .as_ref()
@@ -213,6 +228,16 @@ pub fn draw_grid(
     let colouring = match view.colouring {
         Colouring::Conserved if !alignment.is_aligned() => Colouring::Residue,
         chosen => chosen,
+    };
+    // What is typed and not yet a command, as the row will read once it is.
+    let preview = view
+        .typed
+        .as_ref()
+        .map(|pending| pending.preview(alignment.view()));
+    let typed_at = |row: usize, col: usize| {
+        let (at, start, bytes) = preview.as_ref()?;
+        let offset = col.checked_sub(*start)?;
+        bytes.get(offset).copied().filter(|_| *at == row)
     };
     let mut residues = Vec::with_capacity(cells.width as usize);
     for line in 0..cells.height {
@@ -265,10 +290,9 @@ pub fn draw_grid(
                     _ => Style::new(),
                 },
             };
-            // A character typed and not yet made a command shows in place
-            // of the residue it will replace, marked as provisional.
-            let typed = view.typed.as_ref().and_then(|typed| typed.at(row, col));
-            let (residue, style) = match typed {
+            // What is typed and not yet made a command shows in place of
+            // the residues it will change, marked as provisional.
+            let (residue, style) = match typed_at(row, col) {
                 Some(typed) => (
                     typed,
                     style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -284,6 +308,27 @@ pub fn draw_grid(
                 .set_char(shown)
                 .set_style(style);
         }
+        // The gap columns a run being typed adds at the end: its own row's
+        // residues there, and gaps in every other row.
+        let added = view.typed.as_ref().map_or(0, Pending::added);
+        let typing = Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        for col in alignment.cols()..alignment.cols() + added {
+            let Some(offset) = col
+                .checked_sub(view.left)
+                .filter(|&offset| offset < cells.width as usize)
+            else {
+                continue;
+            };
+            let shown = typed_at(row, col).unwrap_or(b'-');
+            let shown = if shown.is_ascii_graphic() {
+                shown as char
+            } else {
+                '?'
+            };
+            buffer[(cells.x + offset as u16, y)]
+                .set_char(shown)
+                .set_style(typing);
+        }
     }
 }
 
@@ -293,7 +338,7 @@ mod tests {
 
     fn layout() -> GridLayout {
         // 5 sequences, names 24 wide, in an 80 x 10 body starting at row 1.
-        grid_layout(Rect::new(0, 1, 80, 10), 5, 24)
+        grid_layout(Rect::new(0, 1, 80, 10), 5, 24, 0)
     }
 
     #[test]
@@ -305,11 +350,11 @@ mod tests {
         assert_eq!(l.ruler, Rect::new(27, 1, 53, 1));
         assert_eq!(screen_shape(&l), Shape { rows: 9, cols: 53 });
         // A narrow body shrinks the names before the cells.
-        let narrow = grid_layout(Rect::new(0, 1, 30, 10), 5, 24);
+        let narrow = grid_layout(Rect::new(0, 1, 30, 10), 5, 24, 0);
         assert_eq!(narrow.cells.width, 10);
         // A body with no room at all gives empty rectangles, not a panic.
         for (w, h) in [(0, 0), (1, 1), (3, 1), (5, 3)] {
-            let tiny = grid_layout(Rect::new(0, 0, w, h), 100_000, 60);
+            let tiny = grid_layout(Rect::new(0, 0, w, h), 100_000, 60, SCORE_WIDTH);
             assert!(tiny.cells.right() <= w && tiny.cells.bottom() <= h);
             assert!(tiny.names.right() <= w && tiny.numbers.right() <= w);
         }
