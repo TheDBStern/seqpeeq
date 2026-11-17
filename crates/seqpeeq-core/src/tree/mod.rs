@@ -3,6 +3,7 @@
 mod cols;
 pub(crate) mod edit;
 pub(crate) mod newick;
+mod reroot;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -435,8 +436,64 @@ impl TreeDoc {
             TreeCmd::Rename { .. } => {
                 invalid("say the new name with --to, or use --regex with --replace")
             }
+            TreeCmd::Reroot {
+                at,
+                outgroup,
+                midpoint,
+            } => self.reroot(at, outgroup, *midpoint),
             other => invalid(format!("tree {} is not built yet", other.name())),
         }
+    }
+
+    fn reroot(&mut self, at: &NodeSel, outgroup: &[String], midpoint: bool) -> Result<Applied> {
+        let ways =
+            usize::from(!at.is_empty()) + usize::from(!outgroup.is_empty()) + usize::from(midpoint);
+        if ways != 1 {
+            return invalid("say where to root: --tip, --mrca, --node, --outgroup or --midpoint");
+        }
+        if midpoint {
+            let (n, below) = self.tree.midpoint()?;
+            return self.edit("reroot", |tree| {
+                tree.reroot_above(n, Some(below));
+                Ok("rerooted at the midpoint".to_string())
+            });
+        }
+        if !outgroup.is_empty() {
+            let tips = outgroup
+                .iter()
+                .map(|name| self.tree.tip_named(name))
+                .collect::<Result<Vec<_>>>()?;
+            let (n, other_side) = self.tree.outgroup_branch(&tips)?;
+            let names: Vec<&str> = outgroup.iter().map(String::as_str).collect();
+            let message = format!(
+                "rerooted between {} and the rest",
+                reroot::some_names(&names)
+            );
+            return self.edit("reroot", |tree| {
+                tree.reroot_above(n, None);
+                if other_side {
+                    let root = tree.root();
+                    let mut children: Vec<NodeId> = tree.children(root).collect();
+                    children.reverse();
+                    tree.set_children(root, &children);
+                }
+                Ok(message)
+            });
+        }
+        let n = resolve(&self.tree, at)?;
+        if n == self.tree.root() {
+            return invalid("that is already the root");
+        }
+        let above = match (&at.tip, at.mrca.as_slice(), at.node) {
+            (Some(tip), _, _) => tip.clone(),
+            (_, [a, b], _) => format!("the clade of {a} and {b}"),
+            (_, _, Some(number)) => format!("node {number}"),
+            _ => unreachable!("resolve named a node"),
+        };
+        self.edit("reroot", |tree| {
+            tree.reroot_above(n, None);
+            Ok(format!("rerooted on the branch above {above}"))
+        })
     }
 
     pub(crate) fn undo(&mut self) -> Result<Applied> {

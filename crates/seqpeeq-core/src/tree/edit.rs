@@ -81,7 +81,7 @@ fn joined(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 impl Tree {
     /// Remove the node `p`, which has exactly one child, joining its branch
     /// to the child's. The child keeps its label and takes `p`'s place.
-    fn splice_out(&mut self, p: NodeId) {
+    pub(crate) fn splice_out(&mut self, p: NodeId) {
         let child = self.children(p).next().expect("one child");
         let length = joined(self.length(p), self.length(child));
         match self.parent(p) {
