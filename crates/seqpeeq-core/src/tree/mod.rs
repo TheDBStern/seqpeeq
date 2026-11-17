@@ -263,6 +263,18 @@ impl Tree {
         self.last_child.set(parent as usize, prev);
     }
 
+    /// Whether every node field shares every chunk with `other`.
+    #[cfg(test)]
+    pub(crate) fn shares_all(&self, other: &Tree) -> bool {
+        self.parent.shares_all(&other.parent)
+            && self.first_child.shares_all(&other.first_child)
+            && self.last_child.shares_all(&other.last_child)
+            && self.next_sibling.shares_all(&other.next_sibling)
+            && self.prev_sibling.shares_all(&other.prev_sibling)
+            && self.length.shares_all(&other.length)
+            && self.label.shares_all(&other.label)
+    }
+
     /// Make `n` the root, detaching it from its parent first.
     pub(crate) fn set_root(&mut self, n: NodeId) {
         self.detach(n);
@@ -776,6 +788,24 @@ mod tests {
         let d = t.add_child(b);
         t.set_root(b);
         assert_eq!((t.root(), t.parent(b), t.preorder()), (b, None, vec![b, d]));
+    }
+
+    #[test]
+    fn edits_that_change_nothing_copy_nothing() {
+        let mut t = newick::tests::tree(&newick::tests::caterpillar(10_000, ":1"));
+        t.ladderize(false);
+        let before = t.clone();
+        t.ladderize(false);
+        assert!(t.shares_all(&before), "ladderizing again copies no chunk");
+        let t0 = t.tip_named("t0").unwrap();
+        t.reroot_above(t0, None);
+        // The new root is added to the last chunk; every other is shared.
+        let chunks = before.label.shared_chunks(&before.label);
+        assert_eq!(
+            t.label.shared_chunks(&before.label),
+            chunks - 1,
+            "a reroot leaves names alone"
+        );
     }
 
     #[test]

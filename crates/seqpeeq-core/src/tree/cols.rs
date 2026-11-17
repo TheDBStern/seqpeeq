@@ -24,7 +24,31 @@ impl<T> Clone for Cols<T> {
     }
 }
 
-impl<T: Clone> Cols<T> {
+/// Equality for deciding whether a write changes anything. Lengths compare
+/// bit for bit, so a missing length (NaN) equals itself.
+pub(crate) trait Same {
+    fn same(&self, other: &Self) -> bool;
+}
+
+impl Same for u32 {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl Same for f64 {
+    fn same(&self, other: &Self) -> bool {
+        self.to_bits() == other.to_bits()
+    }
+}
+
+impl Same for Option<Arc<str>> {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl<T: Clone + Same> Cols<T> {
     pub(crate) fn new() -> Self {
         Cols {
             chunks: Vec::new(),
@@ -51,7 +75,24 @@ impl<T: Clone> Cols<T> {
 
     pub(crate) fn set(&mut self, i: usize, value: T) {
         assert!(i < self.len, "index {i} past the end ({})", self.len);
+        // A chunk shared with an undo level is copied only for a real change.
+        if self.get(i).same(&value) {
+            return;
+        }
         Arc::make_mut(&mut self.chunks[i / CHUNK])[i % CHUNK] = value;
+    }
+
+    /// Whether every chunk is shared with `other`.
+    #[cfg(test)]
+    pub(crate) fn shares_all(&self, other: &Cols<T>) -> bool {
+        self.chunks.len() == other.chunks.len() && self.shared_chunks(other) == self.chunks.len()
+    }
+
+    /// How many chunks, position by position, are shared with `other`.
+    #[cfg(test)]
+    pub(crate) fn shared_chunks(&self, other: &Cols<T>) -> usize {
+        let pairs = self.chunks.iter().zip(&other.chunks);
+        pairs.filter(|(a, b)| Arc::ptr_eq(a, b)).count()
     }
 }
 
@@ -59,6 +100,22 @@ impl<T: Clone> Cols<T> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_value_set_to_itself_keeps_its_chunk_shared() {
+        let mut ids = Cols::new();
+        let mut lengths = Cols::new();
+        for i in 0..10u32 {
+            ids.push(i);
+            lengths.push(f64::NAN);
+        }
+        let (ids_before, lengths_before) = (ids.clone(), lengths.clone());
+        ids.set(3, 3);
+        lengths.set(3, f64::NAN);
+        assert!(ids.shares_all(&ids_before) && lengths.shares_all(&lengths_before));
+        ids.set(3, 4);
+        assert!(!ids.shares_all(&ids_before));
+    }
 
     proptest! {
         #[test]

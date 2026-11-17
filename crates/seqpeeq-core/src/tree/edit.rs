@@ -80,10 +80,18 @@ fn joined(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 
 impl Tree {
     /// Remove the node `p`, which has exactly one child, joining its branch
-    /// to the child's. The child keeps its label and takes `p`'s place.
+    /// to the child's. The child keeps its label and takes `p`'s place; a
+    /// child without a label takes `p`'s support, since the joined branch
+    /// is the same split.
     pub(crate) fn splice_out(&mut self, p: NodeId) {
         let child = self.children(p).next().expect("one child");
         let length = joined(self.length(p), self.length(child));
+        if self.label(child).is_none()
+            && let Some(support) = self.label(p).filter(|label| super::is_support(label))
+        {
+            let support: std::sync::Arc<str> = support.into();
+            self.set_label(child, Some(support));
+        }
         match self.parent(p) {
             None => self.set_root(child),
             Some(grand) => {
@@ -151,38 +159,55 @@ impl Tree {
     /// names given by the rename count: names already shared stay allowed.
     fn check_clashes(&self, renames: &[(NodeId, String)]) -> Result<()> {
         let renamed: HashSet<NodeId> = renames.iter().map(|(n, _)| *n).collect();
-        // Count only the new names, so renaming one tip of a large tree
-        // builds no map of every name.
-        let mut uses: HashMap<&str, usize> =
-            renames.iter().map(|(_, name)| (name.as_str(), 0)).collect();
+        // Only the new names are counted, so renaming one tip of a large
+        // tree builds no map of every name. Per new name: the tips left alone that have it, the tips given
+        // it, and the first tip given it, whose old name the others are
+        // compared with (16 bytes a name, for renames of a million tips).
+        #[derive(Clone, Copy)]
+        struct Uses {
+            untouched: u32,
+            given: u32,
+            first: NodeId,
+            old_names_differ: bool,
+        }
+        let mut uses: HashMap<&str, Uses> = HashMap::with_capacity(renames.len());
+        for &(tip, ref name) in renames {
+            let entry = uses.entry(name.as_str()).or_insert(Uses {
+                untouched: 0,
+                given: 0,
+                first: tip,
+                old_names_differ: false,
+            });
+            entry.given += 1;
+            entry.old_names_differ |= self.label(entry.first) != self.label(tip);
+        }
         for tip in self.tips() {
             if !renamed.contains(&tip)
                 && let Some(name) = self.label(tip)
-                && let Some(n) = uses.get_mut(name)
+                && let Some(entry) = uses.get_mut(name)
             {
-                *n += 1;
+                entry.untouched += 1;
             }
         }
+        // A clash joins tips whose names differed before: a name that
+        // several tips already shared may stay shared. Each clash is
+        // reported once, in the order the names were given.
+        let mut clashes: Vec<(&str, u32)> = Vec::new();
         for (_, name) in renames {
-            *uses.get_mut(name.as_str()).expect("counted above") += 1;
-        }
-        let mut clashes: Vec<&str> = Vec::new();
-        for (_, name) in renames {
-            if uses[name.as_str()] > 1 && !clashes.contains(&name.as_str()) {
-                clashes.push(name);
+            let entry = uses.get_mut(name.as_str()).expect("counted above");
+            if entry.untouched > 0 || entry.old_names_differ {
+                clashes.push((name, entry.untouched + entry.given));
+                (entry.untouched, entry.old_names_differ) = (0, false);
             }
         }
         match clashes.as_slice() {
             [] => Ok(()),
-            [name] => invalid(format!(
-                "that would give {} tips the name '{name}'",
-                uses[name]
-            )),
+            [(name, total)] => invalid(format!("that would give {total} tips the name '{name}'")),
             several => {
                 let mut list: Vec<String> = several
                     .iter()
                     .take(3)
-                    .map(|name| format!("'{name}'"))
+                    .map(|(name, _)| format!("'{name}'"))
                     .collect();
                 if several.len() > 3 {
                     list.push("…".to_string());
@@ -319,6 +344,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn prune_keeps_the_upper_support_when_the_lower_node_has_none() {
+        let pruned = after("(((A,B),C)60,D,E);", |t| {
+            t.prune(tip(t, "C")).unwrap();
+        });
+        assert_eq!(pruned, "((A,B)60,D,E);\n");
+    }
+
+    #[test]
     fn prune_removes_a_chain_of_nodes_left_without_tips() {
         let pruned = after("(((A)),B,C);", |t| {
             t.prune(tip(t, "A")).unwrap();
@@ -376,6 +409,18 @@ pub(crate) mod tests {
     fn a_rename_is_refused_only_for_clashes_it_makes() {
         let mut t = tree("((A,A),b_1);");
         assert_eq!(t.rename_matching("_", " ").unwrap(), 1);
+        let mut t = tree("((A_1,A_1),B);");
+        assert_eq!(
+            t.rename_matching("_", " ").unwrap(),
+            2,
+            "names already shared stay shared"
+        );
+        assert_eq!(names(&t), ["A 1", "A 1", "B"]);
+        let mut t = tree("((A_1,A_1),'A 1');");
+        assert_eq!(
+            t.rename_matching("_", " ").unwrap_err().to_string(),
+            "that would give 3 tips the name 'A 1'"
+        );
         let mut t = tree("(p1,p2,q1,q2);");
         assert_eq!(
             t.rename_matching("[0-9]", "").unwrap_err().to_string(),

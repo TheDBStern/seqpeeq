@@ -54,6 +54,9 @@ impl Tree {
             .collect();
         let supports =
             |label: &Option<std::sync::Arc<str>>| label.as_deref().is_some_and(is_support);
+        // The old root goes when the path takes one of its two children.
+        let old = *path.last().expect("not empty");
+        let old_goes = self.children(old).count() <= 2;
         let whole = self.length(n);
         let near = below.or(whole.map(|l| l / 2.0));
 
@@ -75,7 +78,14 @@ impl Tree {
             } else {
                 labels[i - 1].clone().filter(|_| supports(&labels[i - 1]))
             };
-            self.set_label(path[i], own.or(incoming));
+            // A support arriving at an old root that is about to go is kept
+            // over its own label, so it can pass to the branch it joins.
+            let label = if i == path.len() - 1 && old_goes {
+                incoming.or(own)
+            } else {
+                own.or(incoming)
+            };
+            self.set_label(path[i], label);
             if i > 0 {
                 self.attach(path[i - 1], path[i]);
                 self.set_length(path[i], lengths[i - 1]);
@@ -84,7 +94,6 @@ impl Tree {
         self.set_root(root);
 
         // The old root: removed when left with one child, or none.
-        let old = *path.last().expect("not empty");
         if old != parent {
             match self.children(old).count() {
                 0 => self.detach(old),
@@ -257,6 +266,22 @@ mod tests {
             rerooted("((A:1,B:1)x:1,C:1,D:1);", "--tip A"),
             "(A:0.5,(B:1,(C:1,D:1):1)x:0.5);\n",
             "a label that is not a support stays with its node"
+        );
+    }
+
+    #[test]
+    fn a_support_on_the_removed_root_branch_moves_to_its_other_half() {
+        assert_eq!(
+            rerooted("((A,B)70,(C,D));", "--tip A"),
+            "(A,(B,(C,D)70));\n"
+        );
+        assert_eq!(
+            rerooted("((A,B)70,(C,D))root;", "--tip A"),
+            "(A,(B,(C,D)70));\n"
+        );
+        assert_eq!(
+            rerooted("((A,B)70,(C,D));", "--tip C"),
+            "(C,(D,(A,B)70));\n"
         );
     }
 

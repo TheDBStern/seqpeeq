@@ -315,6 +315,9 @@ pub(crate) fn save_newick(tree: &Tree, from: NodeId, out: &Path) -> Result<u64> 
 
 /// Read the first tree; `None` when cancelled.
 fn parse_with(text: &[u8], progress: &Progress) -> Step<Option<Parsed>> {
+    // A byte order mark, as some Windows programs write, is not part of
+    // the tree.
+    let text = text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text);
     progress.set_total(text.len() as u64);
     let mut r = Reader {
         text,
@@ -450,6 +453,14 @@ pub(crate) mod tests {
         assert_eq!(names(&parse(b"(A,B)").unwrap().tree), ["A", "B"]);
         assert_eq!(names(&parse(b"A;").unwrap().tree), ["A"]);
         assert_eq!(parse(b"(A,B);\n\n  ").unwrap().skipped, 0);
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_skipped() {
+        assert_eq!(
+            names(&parse(b"\xef\xbb\xbf(A,B);").unwrap().tree),
+            ["A", "B"]
+        );
     }
 
     #[test]
