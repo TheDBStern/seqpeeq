@@ -838,6 +838,7 @@ impl App {
                 pattern: pattern.to_string(),
                 matches,
                 revision: alignment.revision(),
+                names: None,
             },
             Err(error) => {
                 self.status = format!("error: {error}");
@@ -867,11 +868,11 @@ impl App {
         let fresh = if search.revision == alignment.revision() {
             None
         } else {
-            let matches = alignment.find_names(&search.pattern).unwrap_or_default();
             Some(Search {
                 pattern: search.pattern.clone(),
-                matches,
+                matches: search.rows_in(alignment),
                 revision: alignment.revision(),
+                names: search.names.clone(),
             })
         };
         // Step from the match last gone to while the cursor is still on
@@ -1562,6 +1563,7 @@ impl App {
             KeyCode::Char('U') => self.act(Command::Redo),
             KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
             KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
+            KeyCode::Char('a') => self.show_sequences(),
             _ => {}
         }
     }
@@ -1600,6 +1602,68 @@ impl App {
                 self.open_prompt(PromptKind::TreeOut { at }, "");
             }
         }
+    }
+
+    /// `a`: show the linked alignment with the sequences of the selected
+    /// clade (or the cursor's) marked as search matches.
+    fn show_sequences(&mut self) {
+        let Some((dataset, doc, view)) = self.tree() else {
+            return;
+        };
+        let Some(linked) = self.session.link_of(dataset.id) else {
+            self.status = "error: this tree is not linked; :tree link FILE".to_string();
+            return;
+        };
+        let datasets = self.session.datasets();
+        let Some(index) = datasets.iter().position(|d| d.id == linked) else {
+            return;
+        };
+        let Some(alignment) = datasets[index].msa() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = view.select.unwrap_or(view.cursor);
+        let name = |n| tree.label(n).unwrap_or_default();
+        let tips = facts.tips(n) as usize;
+        let names: std::collections::HashSet<String> = tree
+            .preorder_from(n)
+            .into_iter()
+            .filter(|&n| tree.is_tip(n))
+            .map(|n| name(n).to_string())
+            .collect();
+        let search = Search {
+            pattern: format!(
+                "tips of {} … {}",
+                name(facts.first_tip(n)),
+                name(facts.last_tip(n))
+            ),
+            matches: Vec::new(),
+            revision: alignment.revision(),
+            names: Some(Arc::new(names)),
+        };
+        let matches = search.rows_in(alignment);
+        if matches.is_empty() {
+            let file = datasets[index].path.file_name().unwrap_or_default();
+            self.status = format!(
+                "error: none of these {tips} tips has a sequence in {}",
+                file.to_string_lossy()
+            );
+            return;
+        }
+        let found: std::collections::HashSet<&str> =
+            matches.iter().map(|&row| alignment.name(row)).collect();
+        let have = if tips == 1 { "tip has" } else { "tips have" };
+        let message = format!(
+            "{} of {tips} {have} a sequence; n N step through them",
+            found.len()
+        );
+        let first = matches[0];
+        self.active = index;
+        if let Some(view) = self.views.get_mut(&linked) {
+            view.search = Some(Search { matches, ..search });
+        }
+        self.go_to_match(Some((0, first)));
+        self.status = message;
     }
 
     /// Give the tip `node` the name typed, if it changed.
@@ -2508,6 +2572,10 @@ mod tests {
     /// The view of the alignment on the visible tab.
     fn view(app: &App) -> &MsaView {
         app.alignment().expect("an alignment is shown").1
+    }
+
+    fn view_of(app: &App) -> &MsaView {
+        view(app)
     }
 
     fn active_layout(app: &App) -> GridLayout {
@@ -4439,5 +4507,58 @@ mod tests {
         let view = tree_view(&app);
         assert!(facts.contains(view.cursor) && facts.contains(view.shown));
         assert!(!view.rows.is_empty());
+    }
+
+    /// Show the tree's tab again: it is the first file.
+    fn to_tree_tab(app: &mut App) {
+        run_typed(app, "use 1");
+        assert!(app.tree().is_some());
+    }
+
+    #[test]
+    fn a_marks_the_clades_sequences_in_the_linked_alignment() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n>D\nTT\n");
+        select_node(&mut app, "C", "X");
+        type_str(&mut app, "a");
+        let (alignment, view) = app.alignment().expect("the alignment's tab is visible");
+        assert_eq!(view.search.as_ref().unwrap().matches, [2]);
+        assert_eq!(view.cursor.row, 2);
+        assert_eq!(alignment.name(2), "C");
+        assert_eq!(
+            app.status,
+            "1 of 2 tips have a sequence; n N step through them"
+        );
+        run_typed(&mut app, "msa rename --rows 3 --to Q");
+        type_str(&mut app, "n");
+        assert_eq!(
+            app.status,
+            "error: no sequence name matches 'tips of C … X'"
+        );
+        to_tree_tab(&mut app);
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "a");
+        assert_eq!(view_of(&app).search.as_ref().unwrap().matches, [0, 1]);
+        run_typed(&mut app, "close");
+        type_str(&mut app, "y");
+        to_tree_tab(&mut app);
+        type_str(&mut app, "a");
+        assert_eq!(
+            app.status,
+            "error: this tree is not linked; :tree link FILE"
+        );
+    }
+
+    #[test]
+    fn a_says_when_no_tip_of_the_clade_has_a_sequence() {
+        let (mut app, dir) = with_tree("((A,B),(Y,Z));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n");
+        select_node(&mut app, "Y", "Z");
+        type_str(&mut app, "a");
+        assert_eq!(
+            app.status,
+            "error: none of these 2 tips has a sequence in a.fa"
+        );
+        assert!(app.tree().is_some(), "the tree's tab stays");
     }
 }

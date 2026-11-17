@@ -379,6 +379,8 @@ impl TreeDoc {
     fn set(&mut self, tree: Tree, revision: u64) -> Tree {
         let before = std::mem::replace(&mut self.tree, tree);
         self.revision = revision;
+        // Let go of the old facts first: two sets at once is the peak.
+        self.facts = TreeFacts::default();
         self.facts = TreeFacts::of(&self.tree);
         before
     }

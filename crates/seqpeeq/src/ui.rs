@@ -556,6 +556,10 @@ const HELP: &[&str] = &[
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
     "          :rescue FILE if the log has failed",
+    "Tree      jk rows  h parent  l back  Enter open/close",
+    "          + - z zoom  b lengths  / n N find  v select",
+    "          d prune  e extract  r rename  o re-root",
+    "          s ladderize  u U undo redo  a to the alignment",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -1511,6 +1515,7 @@ mod tests {
             pattern: "pan".into(),
             matches: vec![1],
             revision: 0,
+            names: None,
         });
         let terminal = render(&app, 70, 9);
         let buffer = terminal.backend().buffer();
@@ -1524,5 +1529,18 @@ mod tests {
                 .modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn help_has_a_tree_section() {
+        let help = HELP.join("\n");
+        for text in [
+            "Enter open/close",
+            "b lengths",
+            "o re-root",
+            "a to the alignment",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
     }
 }

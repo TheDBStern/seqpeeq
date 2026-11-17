@@ -68,99 +68,115 @@ struct Open {
     last: usize,
 }
 
-/// Columns for every row and open node, relative to the rows' area.
+/// Where branches end, relative to the rows' area. Open nodes are placed
+/// up front; a row is placed when asked, so a frame costs the rows on
+/// screen, not every row.
 struct Geometry {
-    /// Per row: its parent's column and the column its branch ends at.
-    rows: Vec<(usize, usize)>,
     open: HashMap<NodeId, Open>,
+    /// Columns per unit of length, or per branch when `equal`.
+    per: f64,
+    equal: bool,
+    /// The shown clade's distance and branches from the root.
+    base: (f32, u32),
+}
+
+impl Geometry {
     /// Columns per unit of length; `None` when drawn with equal lengths.
-    scale: Option<f64>,
-    /// The rows of the selected clade, when on screen.
-    selected: Option<(usize, usize)>,
+    fn scale(&self) -> Option<f64> {
+        (!self.equal).then_some(self.per)
+    }
+
+    /// The column a branch from the line at `from` ends at for node `n`.
+    fn place(&self, doc: &TreeDoc, n: NodeId, from: usize) -> usize {
+        let facts = doc.facts();
+        let dist = if self.equal {
+            f64::from(facts.steps(n).saturating_sub(self.base.1))
+        } else {
+            f64::from(facts.depth(n) - self.base.0)
+        };
+        (1 + (dist * self.per).round().max(0.0) as usize).max(from + 1)
+    }
+
+    /// Row `y`'s parent's column and the column its branch ends at.
+    fn row(&self, doc: &TreeDoc, view: &TreeView, y: usize) -> (usize, usize) {
+        let n = view.rows[y].node;
+        if n == view.shown {
+            return (0, 1);
+        }
+        let from = doc
+            .tree()
+            .parent(n)
+            .and_then(|p| self.open.get(&p))
+            .map_or(0, |o| o.x);
+        (from, self.place(doc, n, from))
+    }
 }
 
 fn geometry(doc: &TreeDoc, view: &TreeView, branch_width: usize) -> Geometry {
     let (tree, facts) = (doc.tree(), doc.facts());
-    let shown = view.shown;
-    let length = |n: NodeId| f64::from(facts.depth(n) - facts.depth(shown));
-    let steps = |n: NodeId| f64::from(facts.steps(n).saturating_sub(facts.steps(shown)));
-    let farthest = |dist: &dyn Fn(NodeId) -> f64| {
-        view.rows
-            .iter()
-            .map(|row| dist(row.node))
-            .fold(0.0, f64::max)
+    let (length, steps) = view.farthest;
+    let equal = view.equal || length <= 0.0;
+    let far = if equal {
+        f64::from(steps)
+    } else {
+        f64::from(length)
     };
-    let mut equal = view.equal;
-    let mut far = if equal { 0.0 } else { farthest(&length) };
-    if far <= 0.0 {
-        equal = true;
-        far = farthest(&steps);
-    }
     let span = branch_width.saturating_sub(2) as f64;
-    let per = if far > 0.0 { span / far } else { 0.0 };
-    let place = |n: NodeId, from: usize| {
-        let dist = if equal { steps(n) } else { length(n) };
-        (1 + (dist * per).round().max(0.0) as usize).max(from + 1)
-    };
     let mut g = Geometry {
-        rows: Vec::with_capacity(view.rows.len()),
         open: HashMap::new(),
-        scale: (!equal).then_some(per),
-        selected: None,
+        per: if far > 0.0 { span / far } else { 0.0 },
+        equal,
+        base: (facts.depth(view.shown), facts.steps(view.shown)),
     };
-    if !view.is_open(shown) {
-        g.rows.push((0, 1));
-        if view.select == Some(shown) {
-            g.selected = Some((0, 0));
+    // Each open node's column follows from its parent's: walk up to the
+    // nearest one already placed, then place the walk back down.
+    for &n in view.junction.keys() {
+        let mut walk = Vec::new();
+        let mut at = n;
+        while !g.open.contains_key(&at) {
+            walk.push(at);
+            if at == view.shown {
+                break;
+            }
+            match tree.parent(at) {
+                Some(parent) if view.is_open(parent) => at = parent,
+                _ => break,
+            }
         }
-        return g;
-    }
-    // Each frame: a node, its column, its parent's column, its children
-    // still to visit, the rows of its first and last child, and the row
-    // count when it was entered.
-    let mut stack = vec![(shown, 1, 0, tree.children(shown), None, 0, 0)];
-    loop {
-        let Some(frame) = stack.last_mut() else {
-            break;
-        };
-        let (n, x) = (frame.0, frame.1);
-        match frame.3.next() {
-            Some(c) => {
-                let y = if view.is_open(c) {
-                    view.junction.get(&c).copied().unwrap_or(0)
-                } else {
-                    g.rows.len()
-                };
-                frame.4.get_or_insert(y);
-                frame.5 = y;
-                if view.is_open(c) {
-                    let rows = g.rows.len();
-                    stack.push((c, place(c, x), x, tree.children(c), None, 0, rows));
-                } else {
-                    if view.select == Some(c) {
-                        g.selected = Some((y, y));
-                    }
-                    g.rows.push((x, place(c, x)));
-                }
-            }
-            None => {
-                let (_, x, from, _, first, last, entered) = stack.pop().expect("a frame");
-                g.open.insert(
-                    n,
-                    Open {
-                        from,
-                        x,
-                        first: first.unwrap_or(last),
-                        last,
-                    },
-                );
-                if view.select == Some(n) && g.rows.len() > entered {
-                    g.selected = Some((entered, g.rows.len() - 1));
-                }
-            }
+        for &m in walk.iter().rev() {
+            let (from, x) = if m == view.shown {
+                (0, 1)
+            } else {
+                let from = tree
+                    .parent(m)
+                    .and_then(|p| g.open.get(&p))
+                    .map_or(0, |o| o.x);
+                (from, g.place(doc, m, from))
+            };
+            let (first, last) = view.span.get(&m).copied().unwrap_or_default();
+            g.open.insert(
+                m,
+                Open {
+                    from,
+                    x,
+                    first,
+                    last,
+                },
+            );
         }
     }
     g
+}
+
+/// Whether row `y` is in the selected clade.
+fn selected(view: &TreeView, y: usize) -> bool {
+    match view.select {
+        Some(s) => match view.extent.get(&s) {
+            Some(&(first, last)) => (first..=last).contains(&y),
+            None => view.rows[y].node == s,
+        },
+        None => false,
+    }
 }
 
 const UP: u8 = 1;
@@ -253,7 +269,7 @@ pub fn draw_tree(frame: &mut Frame, doc: &TreeDoc, view: &TreeView, header: &str
     };
     let end = (top + height).min(view.rows.len());
     for y in top.min(end)..end {
-        let (from, to) = g.rows[y];
+        let (from, to) = g.row(doc, view, y);
         lines.branch(from, to, y, LEFT | RIGHT);
     }
     for (&n, o) in &g.open {
@@ -298,7 +314,7 @@ pub fn draw_tree(frame: &mut Frame, doc: &TreeDoc, view: &TreeView, header: &str
         .filter(|search| search.revision == doc.revision());
     for y in top.min(end)..end {
         let row = view.rows[y];
-        let (from, to) = g.rows[y];
+        let (from, to) = g.row(doc, view, y);
         if row.collapsed {
             support(row.node, from, to + 1, y, buffer);
         }
@@ -308,9 +324,7 @@ pub fn draw_tree(frame: &mut Frame, doc: &TreeDoc, view: &TreeView, header: &str
         }
         let text = fit(&row_text(doc, view, &row), width - start);
         let mut style = Style::new();
-        if g.selected
-            .is_some_and(|(first, last)| (first..=last).contains(&y))
-        {
+        if selected(view, y) {
             style = palette::SELECTED;
         }
         if !row.collapsed
@@ -335,7 +349,7 @@ pub fn draw_tree(frame: &mut Frame, doc: &TreeDoc, view: &TreeView, header: &str
         }
     }
     if layout.scale.height > 0
-        && let Some(per) = g.scale
+        && let Some(per) = g.scale()
         && per > 0.0
         && let Some((length, text)) = bar_length(layout.branch_width as f64 / 4.0 / per)
     {
@@ -441,7 +455,10 @@ pub fn hit(
             return Some(n);
         }
     }
-    let &(from, _) = g.rows.get(y)?;
+    if y >= view.rows.len() {
+        return None;
+    }
+    let (from, _) = g.row(doc, view, y);
     (x > from).then(|| view.rows[y].node)
 }
 
@@ -459,7 +476,7 @@ pub fn node_position(
         Some(o) => (o.x, *view.junction.get(&n)?),
         None => {
             let i = view.rows.iter().position(|row| row.node == n)?;
-            (g.rows[i].1, i)
+            (g.row(doc, view, i).1, i)
         }
     };
     let rows = layout.rows;
@@ -630,5 +647,137 @@ mod tests {
                 .all(|l| l.starts_with(" ├") || l.starts_with(" └")),
             "{screen}"
         );
+    }
+
+    /// A random rooted binary tree of `n` tips named `t000000`…, with
+    /// random lengths, as Newick text; built and written without recursion.
+    fn random_tree_text(n: usize) -> String {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % below as u64) as usize
+        };
+        // Nodes 0..n are tips; each later one joins two earlier ones.
+        let mut kids: Vec<(usize, usize)> = Vec::with_capacity(n);
+        let mut pool: Vec<usize> = (0..n).collect();
+        while pool.len() > 1 {
+            let i = next(pool.len());
+            let a = pool.swap_remove(i);
+            let j = next(pool.len());
+            let b = pool[j];
+            pool[j] = n + kids.len();
+            kids.push((a, b));
+        }
+        let mut text = String::with_capacity(n * 24);
+        // Work: a node to write, or a piece of text.
+        enum Work {
+            Node(usize),
+            Text(&'static str),
+            Length(usize),
+        }
+        let mut stack = vec![Work::Text(";"), Work::Node(pool[0])];
+        while let Some(work) = stack.pop() {
+            match work {
+                Work::Text(t) => text.push_str(t),
+                Work::Length(k) => text.push_str(&format!(":0.{:03}", k % 1000 + 1)),
+                Work::Node(v) if v < n => text.push_str(&format!("t{v:06}")),
+                Work::Node(v) => {
+                    let (a, b) = kids[v - n];
+                    text.push('(');
+                    stack.push(Work::Text(")"));
+                    stack.push(Work::Length(b * 13));
+                    stack.push(Work::Node(b));
+                    stack.push(Work::Text(","));
+                    stack.push(Work::Length(a * 11));
+                    stack.push(Work::Node(a));
+                }
+            }
+        }
+        text
+    }
+
+    /// `(t0:1,(t1:1,(…,t{n-1}:1)…));`, written in one pass.
+    fn long_caterpillar_text(n: usize) -> String {
+        let mut text = String::with_capacity(n * 16);
+        for i in 0..n - 1 {
+            text.push_str(&format!("(t{i:06}:1,"));
+        }
+        text.push_str(&format!("t{:06}:1", n - 1));
+        text.push_str(&")".repeat(n - 1));
+        text.push(';');
+        text
+    }
+
+    #[test]
+    #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored frames"]
+    fn frames_on_a_million_tips() {
+        use std::time::Instant;
+        let (width, height) = (200, 60);
+        for (what, text) in [
+            ("random", random_tree_text(1_000_000)),
+            ("caterpillar", long_caterpillar_text(1_000_000)),
+            (
+                "star",
+                format!(
+                    "({});",
+                    (0..1_000_000)
+                        .map(|i| format!("t{i:06}:1"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            ),
+        ] {
+            let started = Instant::now();
+            let doc = doc(&text);
+            let opened = started.elapsed();
+            let (t, f) = (doc.tree(), doc.facts());
+            let area = Rect::new(0, 0, width, height);
+            let mut view = TreeView::new(t);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut frame = |view: &mut TreeView, change: &dyn Fn(&mut TreeView)| {
+                let started = Instant::now();
+                change(view);
+                let rows = tree_layout(area, doc.get(), view).rows.height as usize;
+                if view.height != rows {
+                    view.refit(t, f, rows);
+                }
+                let header = header_text("t.nwk", doc.get(), view, None);
+                terminal
+                    .draw(|frame| draw_tree(frame, doc.get(), view, &header, frame.area()))
+                    .unwrap();
+                started.elapsed()
+            };
+            let first = frame(&mut view, &|v| v.refit(t, f, 58));
+            let mut slowest = first;
+            for i in 0..100 {
+                let took = frame(&mut view, &|v| {
+                    if i % 2 == 0 {
+                        v.step(t, f, 1)
+                    } else {
+                        v.go_child(t, f)
+                    }
+                });
+                slowest = slowest.max(took);
+            }
+            let started = Instant::now();
+            let search = TreeSearch::find(doc.get(), "t99999").unwrap();
+            let found = search.matches[search.matches.len() - 1];
+            let searched = started.elapsed();
+            let deep = frame(&mut view, &|v| {
+                v.cursor = found;
+                v.refit(t, f, v.height);
+            });
+            for _ in 0..20 {
+                slowest = slowest.max(frame(&mut view, &|v| v.step(t, f, -1)));
+            }
+            slowest = slowest.max(deep);
+            println!(
+                "{what}: open {opened:?}, first frame {first:?}, slowest frame {slowest:?}, \
+                 search {searched:?}, to the deepest match {deep:?}"
+            );
+            assert!(slowest.as_millis() < 50, "{what}: {slowest:?}");
+        }
     }
 }

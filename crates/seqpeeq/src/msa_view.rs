@@ -1,7 +1,9 @@
 //! Where the user is in an alignment: cursor, scroll position and how it
 //! is shown. Pure state: nothing here draws or reads the terminal.
 
+use std::collections::HashSet;
 use std::ops::Range;
+use std::sync::Arc;
 
 use seqpeeq_core::{Alignment, MsaCmd, Ranges, RowSel, View};
 
@@ -216,6 +218,21 @@ pub struct Search {
     /// The revision of the alignment the matches were found in. Rows move
     /// when the alignment changes, so the matches are only good for this.
     pub revision: u64,
+    /// When set, the rows with these exact names are the matches, not the
+    /// rows matching `pattern`: the tips of a clade, from the tree view.
+    pub names: Option<Arc<HashSet<String>>>,
+}
+
+impl Search {
+    /// The rows of `alignment` this search finds now.
+    pub fn rows_in(&self, alignment: &seqpeeq_core::Alignment) -> Vec<usize> {
+        match &self.names {
+            Some(names) => (0..alignment.rows())
+                .filter(|&row| names.contains(alignment.name(row)))
+                .collect(),
+            None => alignment.find_names(&self.pattern).unwrap_or_default(),
+        }
+    }
 }
 
 impl Search {
@@ -813,6 +830,7 @@ mod tests {
             pattern: "x".into(),
             matches: vec![2, 5, 9],
             revision: 0,
+            names: None,
         };
         assert_eq!(search.step(0, true, true), Some((0, 2)));
         assert_eq!(search.step(5, true, true), Some((1, 5)));
@@ -827,6 +845,7 @@ mod tests {
             pattern: "x".into(),
             matches: vec![],
             revision: 0,
+            names: None,
         };
         assert_eq!(none.step(0, true, true), None);
     }

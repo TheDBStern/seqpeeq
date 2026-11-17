@@ -107,6 +107,13 @@ pub struct TreeView {
     pub link: Option<LinkSummary>,
     /// The row each open node's junction is drawn on.
     pub junction: HashMap<NodeId, usize>,
+    /// The rows of each open node's first and last child.
+    pub span: HashMap<NodeId, (usize, usize)>,
+    /// The first and last row of each open node's clade.
+    pub extent: HashMap<NodeId, (usize, usize)>,
+    /// The largest distance and the most branches from the shown clade's
+    /// node to a row's node.
+    pub farthest: (f32, u32),
     /// Children `←` came up from, most recent last.
     came_from: Vec<NodeId>,
     /// The internal nodes drawn open.
@@ -184,6 +191,9 @@ impl TreeView {
             revision: 0,
             link: None,
             junction: HashMap::new(),
+            span: HashMap::new(),
+            extent: HashMap::new(),
+            farthest: (0.0, 0),
             came_from: Vec::new(),
             open: HashSet::new(),
             at: None,
@@ -254,7 +264,7 @@ impl TreeView {
                 rows += take(self, ex, &mut heap);
             }
         }
-        self.lay_out(tree);
+        self.lay_out(tree, facts);
     }
 
     /// Open `start` and the clades below it that are always open, unless
@@ -294,38 +304,47 @@ impl TreeView {
 
     /// Rebuild the rows, the junctions and the cursor's row from the open
     /// set, and scroll so the cursor is on screen.
-    fn lay_out(&mut self, tree: &Tree) {
+    fn lay_out(&mut self, tree: &Tree, facts: &TreeFacts) {
         self.rows.clear();
         self.junction.clear();
-        if !self.open.contains(&self.shown) {
-            self.rows.push(Row {
-                node: self.shown,
-                collapsed: !tree.is_tip(self.shown),
+        self.span.clear();
+        self.extent.clear();
+        let (depth, steps) = (facts.depth(self.shown), facts.steps(self.shown));
+        let mut farthest = (0.0f32, 0u32);
+        let mut row = |rows: &mut Vec<Row>, node: NodeId| {
+            rows.push(Row {
+                node,
+                collapsed: !tree.is_tip(node),
             });
+            farthest.0 = farthest.0.max(facts.depth(node) - depth);
+            farthest.1 = farthest.1.max(facts.steps(node).saturating_sub(steps));
+            rows.len() - 1
+        };
+        if !self.open.contains(&self.shown) {
+            row(&mut self.rows, self.shown);
         } else {
-            // Each frame: a node, its children still to visit, and the rows
-            // of its first and last child.
-            let mut stack = vec![(self.shown, tree.children(self.shown), None, 0)];
+            // Each frame: a node, its children still to visit, the rows of
+            // its first and last child, and the rows before it.
+            let mut stack = vec![(self.shown, tree.children(self.shown), None, 0, 0)];
             loop {
                 let Some(frame) = stack.last_mut() else {
                     break;
                 };
                 let y = match frame.1.next() {
                     Some(c) if self.open.contains(&c) => {
-                        stack.push((c, tree.children(c), None, 0));
+                        let before = self.rows.len();
+                        stack.push((c, tree.children(c), None, 0, before));
                         continue;
                     }
-                    Some(c) => {
-                        self.rows.push(Row {
-                            node: c,
-                            collapsed: !tree.is_tip(c),
-                        });
-                        self.rows.len() - 1
-                    }
+                    Some(c) => row(&mut self.rows, c),
                     None => {
-                        let (n, _, first, last) = stack.pop().expect("a frame");
-                        let y = (first.unwrap_or(last) + last) / 2;
+                        let (n, _, first, last, before) = stack.pop().expect("a frame");
+                        let first = first.unwrap_or(last);
+                        let y = (first + last) / 2;
                         self.junction.insert(n, y);
+                        self.span.insert(n, (first, last));
+                        let end = self.rows.len().saturating_sub(1).max(before);
+                        self.extent.insert(n, (before, end));
                         y
                     }
                 };
@@ -335,10 +354,16 @@ impl TreeView {
                 }
             }
         }
+        self.farthest = farthest;
         self.at = match self.junction.get(&self.cursor) {
             Some(&y) => Some(y),
             None => self.rows.iter().position(|row| row.node == self.cursor),
         };
+        self.scroll();
+    }
+
+    /// Scroll just enough to show the cursor's row.
+    fn scroll(&mut self) {
         let (n, height) = (self.rows.len(), self.height);
         if n <= height {
             self.top = 0;
@@ -364,8 +389,19 @@ impl TreeView {
     pub fn step(&mut self, tree: &Tree, facts: &TreeFacts, by: isize) {
         if let Some(at) = self.at {
             let to = at.saturating_add_signed(by).min(self.rows.len() - 1);
+            let from = self.cursor;
             self.cursor = self.rows[to].node;
             self.came_from.clear();
+            // Between two rows of one parent the path, and so the fit,
+            // stays the same: only the cursor moves. On a node with a
+            // million children this skips laying out a million rows.
+            if !self.open.contains(&from)
+                && self.rows[at].node == from
+                && tree.parent(from) == tree.parent(self.cursor)
+            {
+                self.at = Some(to);
+                return self.scroll();
+            }
         }
         self.refit(tree, facts, self.height);
     }
