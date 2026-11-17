@@ -103,18 +103,32 @@ impl Tree {
         if chosen.len() == all.len() {
             return invalid("the outgroup holds every tip");
         }
-        let clade_of = |members: &mut dyn Iterator<Item = NodeId>| {
-            let first = members.next().expect("not empty");
-            members.fold(first, |m, n| self.mrca(m, n))
-        };
-        let inside = clade_of(&mut chosen.iter().copied());
-        if counts[inside as usize] as usize == chosen.len() {
-            return Ok((inside, false));
+        // How many chosen tips each clade holds, in one pass from the tips up.
+        let order = self.preorder();
+        let mut inside = vec![0u32; self.node_slots()];
+        for &n in order.iter().rev() {
+            if chosen.contains(&n) {
+                inside[n as usize] += 1;
+            }
+            if let Some(parent) = self.parent(n) {
+                inside[parent as usize] += inside[n as usize];
+            }
         }
-        let rest: Vec<NodeId> = all.into_iter().filter(|n| !chosen.contains(n)).collect();
-        let outside = clade_of(&mut rest.iter().copied());
-        if outside != self.root() && counts[outside as usize] as usize == rest.len() {
-            return Ok((outside, true));
+        let wanted = chosen.len() as u32;
+        let others = all.len() as u32 - wanted;
+        // A clade holding exactly the chosen tips, or exactly the others.
+        let side = order[1..].iter().find_map(|&n| {
+            let (holds, of) = (inside[n as usize], counts[n as usize]);
+            if holds == wanted && of == wanted {
+                Some((n, false))
+            } else if holds == 0 && of == others {
+                Some((n, true))
+            } else {
+                None
+            }
+        });
+        if let Some(found) = side {
+            return Ok(found);
         }
         let names: Vec<&str> = tips
             .iter()
@@ -367,6 +381,27 @@ mod tests {
                 prop_assert!((after - before).abs() <= 1e-9 * size.max(1.0), "{} vs {}", before, after);
             }
         }
+    }
+
+    #[test]
+    fn an_outgroup_on_a_deep_caterpillar_is_found_in_one_pass() {
+        // The rest of the tips is nearly every tip: finding their common
+        // ancestor one pair at a time would walk the whole depth for each.
+        let mut t = tree(&caterpillar(30_000, ":1"));
+        let tips = [
+            t.tip_named("t29999").unwrap(),
+            t.tip_named("t30000").unwrap(),
+        ];
+        let started = std::time::Instant::now();
+        let (n, other_side) = t.outgroup_branch(&tips).unwrap();
+        assert!(
+            started.elapsed().as_secs_f64() < 2.0,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(other_side, "the last two tips are not a clade; the rest is");
+        t.reroot_above(n, None);
+        assert_eq!(t.tip_count(), 30_001);
     }
 
     #[test]
