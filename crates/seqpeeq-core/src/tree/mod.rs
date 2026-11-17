@@ -502,6 +502,13 @@ impl TreeDoc {
         if n == self.tree.root() {
             return invalid("that is already the root");
         }
+        // Above a node holding every tip lie only nodes with one child: the
+        // branch has nothing on its other side.
+        if self.tree.tip_counts()[n as usize] as usize == self.tree.tip_count() {
+            return invalid(
+                "no tip lies outside that clade, so its branch has no other side to root on",
+            );
+        }
         let above = match (&at.tip, at.mrca.as_slice(), at.node) {
             (Some(tip), _, _) => tip.clone(),
             (_, [a, b], _) => format!("the clade of {a} and {b}"),
@@ -697,7 +704,7 @@ impl TreeExtraction {
         if progress.is_cancelled() {
             return Err(crate::Error::Cancelled);
         }
-        let size = newick::save_newick(&self.tree, self.from, &self.out)?;
+        let size = newick::save_newick(&self.tree, self.from, &self.out, progress)?;
         let tips = self.tree.tip_counts()[self.from as usize] as usize;
         let out = &self.out;
         let mut message = format!("wrote {} ({})", out.display(), count(tips, "tip"));

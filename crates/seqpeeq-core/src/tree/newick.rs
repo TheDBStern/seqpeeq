@@ -255,7 +255,14 @@ fn write_label(name: &str, out: &mut dyn Write) -> io::Result<()> {
 /// Write the clade at `from` as a whole tree, ending `;\n`. Its own branch
 /// length is left out; its label is kept. Lengths are written in the
 /// shortest form that reads back as the same number.
-pub(crate) fn write_newick(tree: &Tree, from: NodeId, out: &mut dyn Write) -> io::Result<()> {
+/// Write the clade at `from`. Stops with an error once `progress` is
+/// cancelled.
+pub(crate) fn write_newick(
+    tree: &Tree,
+    from: NodeId,
+    out: &mut dyn Write,
+    progress: &Progress,
+) -> io::Result<()> {
     enum Visit {
         Enter(NodeId),
         Exit(NodeId),
@@ -274,7 +281,12 @@ pub(crate) fn write_newick(tree: &Tree, from: NodeId, out: &mut dyn Write) -> io
     };
     let mut stack = vec![Visit::Enter(from)];
     let mut children = Vec::new();
+    let mut steps = 0u32;
     while let Some(visit) = stack.pop() {
+        steps = steps.wrapping_add(1);
+        if steps % 4096 == 1 && progress.is_cancelled() {
+            return Err(io::Error::other("cancelled"));
+        }
         match visit {
             Visit::Enter(n) if tree.is_tip(n) => finish(n, out)?,
             Visit::Enter(n) => {
@@ -303,14 +315,26 @@ pub(crate) fn write_newick(tree: &Tree, from: NodeId, out: &mut dyn Write) -> io
 #[cfg(test)]
 pub(crate) fn to_newick(tree: &Tree, from: NodeId) -> String {
     let mut out = Vec::new();
-    write_newick(tree, from, &mut out).expect("writing to memory cannot fail");
+    write_newick(tree, from, &mut out, &Progress::new()).expect("writing to memory cannot fail");
     String::from_utf8(out).expect("names are UTF-8")
 }
 
 /// Write the clade at `from` to a new file at `out`, gzip-compressed when
-/// the name ends `.gz`. Returns the file's size.
-pub(crate) fn save_newick(tree: &Tree, from: NodeId, out: &Path) -> Result<u64> {
-    create_text(out, |file| write_newick(tree, from, file))
+/// the name ends `.gz`. Returns the file's size. If `progress` is
+/// cancelled the result is [`Error::Cancelled`] and no file is left behind.
+pub(crate) fn save_newick(
+    tree: &Tree,
+    from: NodeId,
+    out: &Path,
+    progress: &Progress,
+) -> Result<u64> {
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    match create_text(out, |file| write_newick(tree, from, file, progress)) {
+        Err(Error::Io { .. }) if progress.is_cancelled() => Err(Error::Cancelled),
+        other => other,
+    }
 }
 
 /// Read the first tree; `None` when cancelled.
@@ -318,6 +342,11 @@ fn parse_with(text: &[u8], progress: &Progress) -> Step<Option<Parsed>> {
     // A byte order mark, as some Windows programs write, is not part of
     // the tree.
     let text = text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text);
+    // Checked here as well as every megabyte, so a small tree's open can
+    // be cancelled too.
+    if progress.is_cancelled() {
+        return Ok(None);
+    }
     progress.set_total(text.len() as u64);
     let mut r = Reader {
         text,
@@ -372,6 +401,9 @@ fn parse_with(text: &[u8], progress: &Progress) -> Step<Option<Parsed>> {
                     }
                     let skipped = r.count_rest();
                     progress.add((text.len() - reported) as u64);
+                    if progress.is_cancelled() {
+                        return Ok(None);
+                    }
                     return Ok(Some(Parsed {
                         tree,
                         skipped,
@@ -453,6 +485,25 @@ pub(crate) mod tests {
         assert_eq!(names(&parse(b"(A,B)").unwrap().tree), ["A", "B"]);
         assert_eq!(names(&parse(b"A;").unwrap().tree), ["A"]);
         assert_eq!(parse(b"(A,B);\n\n  ").unwrap().skipped, 0);
+    }
+
+    #[test]
+    fn a_cancelled_save_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("t.nwk");
+        let t = tree(&caterpillar(10_000, ":1"));
+        let stop = Progress::new();
+        stop.cancel();
+        let saved = save_newick(&t, t.root(), &out, &stop);
+        assert!(matches!(saved, Err(Error::Cancelled)), "{saved:?}");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn a_cancelled_read_of_a_small_tree_gives_nothing() {
+        let stop = Progress::new();
+        stop.cancel();
+        assert!(parse_with(b"(A,B);", &stop).unwrap().is_none());
     }
 
     #[test]
@@ -619,14 +670,17 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("t.nwk");
         let t = tree("(A,B);");
-        assert_eq!(save_newick(&t, t.root(), &out).unwrap(), 7);
+        assert_eq!(
+            save_newick(&t, t.root(), &out, &Progress::new()).unwrap(),
+            7
+        );
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "(A,B);\n");
         assert!(matches!(
-            save_newick(&t, t.root(), &out),
+            save_newick(&t, t.root(), &out, &Progress::new()),
             Err(Error::Exists(_))
         ));
         let gz = dir.path().join("t.nwk.gz");
-        save_newick(&t, t.root(), &gz).unwrap();
+        save_newick(&t, t.root(), &gz, &Progress::new()).unwrap();
         assert_eq!(
             names(&Tree::load(&gz, &Progress::new()).unwrap().tree),
             ["A", "B"]

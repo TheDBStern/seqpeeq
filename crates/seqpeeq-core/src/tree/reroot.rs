@@ -163,6 +163,18 @@ impl Tree {
                 if missing == 1 { "is" } else { "are" }
             ));
         }
+        // The longest path is found by walking out twice, which is right
+        // only when no length is negative.
+        let negative = order[1..]
+            .iter()
+            .filter(|&&n| self.length(n).is_some_and(|length| length < 0.0))
+            .count();
+        if negative > 0 {
+            return invalid(format!(
+                "midpoint rooting needs branch lengths of zero or more; {negative} {} negative",
+                if negative == 1 { "is" } else { "are" }
+            ));
+        }
         let Some(&start) = order.iter().find(|&&n| self.is_tip(n)) else {
             unreachable!("a tree has a tip");
         };
@@ -282,6 +294,25 @@ mod tests {
         assert_eq!(
             rerooted("((A,B)70,(C,D));", "--tip C"),
             "(C,(D,(A,B)70));\n"
+        );
+    }
+
+    #[test]
+    fn a_branch_with_no_tip_on_its_other_side_is_refused() {
+        let refused = "no tip lies outside that clade, so its branch has no other side to root on";
+        assert_eq!(
+            reroot_err("((A:1,B:1):2)root;", "--mrca A --mrca B"),
+            refused
+        );
+        assert_eq!(reroot_err("((A:1,B:1):2)root;", "--node 2"), refused);
+        assert_eq!(rerooted("((A,B)70,);", "--tip A"), "(A,(B,));\n");
+    }
+
+    #[test]
+    fn midpoint_rooting_refuses_negative_lengths() {
+        assert_eq!(
+            reroot_err("(A:-10,B:2,C:3);", "--midpoint"),
+            "midpoint rooting needs branch lengths of zero or more; 1 is negative"
         );
     }
 

@@ -80,13 +80,15 @@ fn joined(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 
 impl Tree {
     /// Remove the node `p`, which has exactly one child, joining its branch
-    /// to the child's. The child keeps its label and takes `p`'s place; a
-    /// child without a label takes `p`'s support, since the joined branch
-    /// is the same split.
+    /// to the child's. The child keeps its label and takes `p`'s place; an
+    /// internal child without a label takes `p`'s support, since the joined
+    /// branch is the same split.
     pub(crate) fn splice_out(&mut self, p: NodeId) {
         let child = self.children(p).next().expect("one child");
         let length = joined(self.length(p), self.length(child));
-        if self.label(child).is_none()
+        // A tip's label is its name, never a support.
+        if !self.is_tip(child)
+            && self.label(child).is_none()
             && let Some(support) = self.label(p).filter(|label| super::is_support(label))
         {
             let support: std::sync::Arc<str> = support.into();
@@ -349,6 +351,14 @@ pub(crate) mod tests {
             t.prune(tip(t, "C")).unwrap();
         });
         assert_eq!(pruned, "((A,B)60,D,E);\n");
+    }
+
+    #[test]
+    fn an_unnamed_tip_left_alone_by_a_prune_stays_unnamed() {
+        let pruned = after("((,A)90,B,C);", |t| {
+            t.prune(tip(t, "A")).unwrap();
+        });
+        assert_eq!(pruned, "(,B,C);\n", "a support is not a tip's name");
     }
 
     #[test]

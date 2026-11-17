@@ -538,7 +538,7 @@ impl Session {
         };
         if let Some(tree) = dataset.tree() {
             let tree = tree.tree();
-            save_newick(tree, tree.root(), out)?;
+            save_newick(tree, tree.root(), out, &Progress::new())?;
             return Ok(Outcome {
                 message: format!(
                     "wrote {} from {} ({}); not logged, because the session log could not be written",
@@ -1903,6 +1903,16 @@ mod tests {
         assert!(!session.is_busy());
         drop(session);
         assert!(!log.exists(), "a log with no commands is removed");
+    }
+
+    #[test]
+    fn a_cancelled_open_of_a_small_tree_leaves_nothing() {
+        let (_keep, dir) = trees();
+        let mut session = Session::new(None);
+        let job = running(session.start(open(&dir.join("t.nwk"))).unwrap());
+        job.progress().cancel();
+        assert!(matches!(session.finish(job.run()), Err(Error::Cancelled)));
+        assert!(session.datasets().is_empty() && session.history().is_empty());
     }
 
     #[test]

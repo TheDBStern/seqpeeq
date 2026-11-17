@@ -1603,9 +1603,10 @@ impl App {
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let parsed = Command::parse_line(line).map(|cmd| expand_home(cmd, home.as_deref()));
-        // Closing a file throws its edits away, so ask first.
-        let current = self.session.current();
-        let unwritten = current.is_some_and(|i| self.session.datasets()[i].is_modified());
+        // Closing a file throws its edits away, so ask first. The file
+        // closed is the tab on screen, which run_command makes current.
+        let datasets = self.session.datasets();
+        let unwritten = datasets.get(self.active).is_some_and(|d| d.is_modified());
         if matches!(parsed, Ok(Command::Close)) && unwritten {
             self.mode = Mode::Confirm(Confirm::Close);
             return;
@@ -2781,6 +2782,26 @@ mod tests {
         type_str(&mut app, ":close");
         enter(&mut app);
         assert!(matches!(app.mode, Mode::Confirm(Confirm::Close)));
+    }
+
+    #[test]
+    fn closing_asks_about_the_tab_on_screen_not_the_last_file_used() {
+        let (mut app, _dir, fa, nwk) = setup();
+        type_str(&mut app, &format!(":open {}", nwk.display()));
+        enter(&mut app);
+        settle(&mut app);
+        type_str(&mut app, ":tree rename --tip a --to x");
+        enter(&mut app);
+        settle(&mut app);
+        type_str(&mut app, &format!(":open {}", fa.display()));
+        enter(&mut app);
+        settle(&mut app);
+        app.handle_event(&press(KeyCode::BackTab));
+        assert_eq!(app.active, 0, "the edited tree is on screen");
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Close)));
+        assert_eq!(app.session.datasets().len(), 2);
     }
 
     #[test]
