@@ -272,11 +272,33 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
         )],
-        Some(dataset) => vec![
-            Line::from(dataset.path.display().to_string()),
-            Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
-            Line::styled("viewer not built yet", dim()),
-        ],
+        Some(dataset) => match dataset.tree() {
+            Some(tree) => {
+                let edited = if tree.is_modified() { ", edited" } else { "" };
+                let mut lines = vec![
+                    Line::from(dataset.path.display().to_string()),
+                    Line::from(format!("tree, {}{edited}", tree.shape())),
+                ];
+                let linked = app.session.link_of(dataset.id).and_then(|id| {
+                    let datasets = app.session.datasets().iter();
+                    datasets.into_iter().find(|d| d.id == id)
+                });
+                if let Some(alignment) = linked {
+                    let name = alignment.path.file_name().unwrap_or_default();
+                    lines.push(Line::from(format!("linked to {}", name.to_string_lossy())));
+                }
+                lines.push(Line::styled(
+                    "the tree view comes in phase 2b; use :tree … commands",
+                    dim(),
+                ));
+                lines
+            }
+            None => vec![
+                Line::from(dataset.path.display().to_string()),
+                Line::from(format!("{}, {} bytes", dataset.kind.as_str(), dataset.size)),
+                Line::styled("viewer not built yet", dim()),
+            ],
+        },
     };
     let block = Block::new().padding(Padding::new(1, 1, 1, 0));
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -675,6 +697,36 @@ mod tests {
     /// machine-specific text.
     fn with_dataset() -> App {
         with_file("tests/data/aln.fa")
+    }
+
+    #[test]
+    fn a_tree_tab_says_what_it_holds_and_how_to_work_on_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fa, nwk) = (dir.path().join("a.fa"), dir.path().join("t.nwk"));
+        std::fs::write(&fa, ">a\nA\n").unwrap();
+        std::fs::write(&nwk, "(a,b);").unwrap();
+        let mut app = with_file(fa.to_str().unwrap());
+        let open = Command::Open {
+            path: nwk.clone(),
+            kind: None,
+        };
+        let link = Command::Tree(seqpeeq_core::TreeCmd::Link { file: fa.clone() });
+        for cmd in [open, link] {
+            app.run_command(cmd).unwrap();
+            settle(&mut app);
+        }
+        let screen = rows(&render(&app, 80, 12)).join("\n");
+        for text in [
+            "tree, 2 tips",
+            "linked to a.fa",
+            "the tree view comes in phase 2b",
+        ] {
+            assert!(screen.contains(text), "{text}\n{screen}");
+        }
+        assert!(!screen.contains("edited"), "{screen}");
+        run(&mut app, "tree ladderize --reverse");
+        let screen = rows(&render(&app, 80, 12)).join("\n");
+        assert!(screen.contains("tree, 2 tips, edited"), "{screen}");
     }
 
     #[test]

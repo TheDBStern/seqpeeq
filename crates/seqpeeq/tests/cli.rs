@@ -371,3 +371,70 @@ fn an_unknown_kind_at_start_fails_before_the_interface() {
     assert!(stderr(&out).contains("add --kind"), "{}", stderr(&out));
     assert!(log_files(dir.path()).is_empty());
 }
+
+#[test]
+fn a_tree_session_replays_to_the_same_files() {
+    // Quoted names, a reroot by --node, a rename with a comma, an extract
+    // with sequences, undo, and a gzipped save.
+    const TREE: &str = "(('Homo sapiens (human)':0.011,'Pan troglodytes, chimp':0.013)98:0.02,\
+('Mus musculus':0.08,'Rattus norvegicus':0.09)71:0.03,'It''s a fish':0.4,unquoted_name)root;\n";
+    const SEQS: &str = ">Homo sapiens (human)\nACGT\n>Pan troglodytes, chimp\nACGA\n\
+>Mus musculus\nTCGA\n>Rattus norvegicus\nTCGG\n>It's a fish\nGGGG\n>unquoted_name\nCCCC\n";
+    let root = tempfile::tempdir().unwrap();
+    let (a, b) = (root.path().join("A"), root.path().join("B"));
+    for dir in [&a, &b] {
+        fs::create_dir(dir).unwrap();
+        fs::write(dir.join("q.nwk"), TREE).unwrap();
+        fs::write(dir.join("q.fa"), SEQS).unwrap();
+    }
+    let session = seqpeeq(
+        &a,
+        &[
+            "run",
+            "--log",
+            "s.log",
+            "open q.fa",
+            "open q.nwk",
+            "tree link q.fa",
+            "tree reroot --node 3",
+            "tree rename --tip \"It's a fish\" --to 'Fish, one'",
+            "tree extract --mrca 'Mus musculus' --mrca 'Fish, one' --out sub.nwk --seqs sub.fa",
+            "tree prune --tip unquoted_name",
+            "undo",
+            "tree ladderize --reverse",
+            "tree save -o all.nwk.gz",
+        ],
+    );
+    assert!(session.status.success(), "{}", stderr(&session));
+    let sub = fs::read_to_string(a.join("sub.nwk")).unwrap();
+    assert!(
+        sub.contains("'Fish, one'") && sub.contains("'Mus musculus'"),
+        "{sub}"
+    );
+    let fasta = fs::read_to_string(a.join("sub.fa")).unwrap();
+    assert!(
+        fasta.contains(">Mus musculus\nTCGA\n") && !fasta.contains("Fish"),
+        "{fasta}"
+    );
+    let all = gunzip(&fs::read(a.join("all.nwk.gz")).unwrap());
+    assert!(
+        all.contains("unquoted_name") && all.contains("'Pan troglodytes, chimp'"),
+        "{all}"
+    );
+    assert_eq!(
+        fs::read_to_string(a.join("q.nwk")).unwrap(),
+        TREE,
+        "the input is untouched"
+    );
+
+    let replayed = seqpeeq(&b, &["replay", "../A/s.log"]);
+    assert!(replayed.status.success(), "{}", stderr(&replayed));
+    assert_eq!(stdout(&replayed).trim(), "replayed 10 commands");
+    for file in ["sub.nwk", "sub.fa", "all.nwk.gz"] {
+        assert_eq!(
+            fs::read(a.join(file)).unwrap(),
+            fs::read(b.join(file)).unwrap(),
+            "{file}"
+        );
+    }
+}

@@ -692,14 +692,14 @@ impl App {
         }
     }
 
-    /// The names of the open alignments that have edits not written to a
+    /// The names of the open files that have edits not written to a
     /// file.
     pub fn unwritten(&self) -> Vec<String> {
         let titles = ui::tab_titles(self);
         let datasets = self.session.datasets().iter();
         datasets
             .zip(titles)
-            .filter(|(dataset, _)| dataset.msa().is_some_and(Alignment::is_modified))
+            .filter(|(dataset, _)| dataset.is_modified())
             .map(|(_, title)| title)
             .collect()
     }
@@ -1603,10 +1603,9 @@ impl App {
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let parsed = Command::parse_line(line).map(|cmd| expand_home(cmd, home.as_deref()));
-        // Closing an alignment throws its edits away, so ask first.
-        let unwritten = self
-            .alignment()
-            .is_some_and(|(alignment, _)| alignment.is_modified());
+        // Closing a file throws its edits away, so ask first.
+        let current = self.session.current();
+        let unwritten = current.is_some_and(|i| self.session.datasets()[i].is_modified());
         if matches!(parsed, Ok(Command::Close)) && unwritten {
             self.mode = Mode::Confirm(Confirm::Close);
             return;
@@ -2766,6 +2765,22 @@ mod tests {
         // Once it has ended and nothing is unwritten, `q` just quits.
         type_str(&mut app, "q");
         assert!(app.quit);
+    }
+
+    #[test]
+    fn quitting_or_closing_with_an_edited_tree_asks_first() {
+        let (mut app, _dir) = with_two_tabs(); // the tree's tab is active
+        settle(&mut app);
+        type_str(&mut app, ":tree rename --tip a --to x");
+        enter(&mut app);
+        settle(&mut app);
+        assert_eq!(app.status, "renamed 'a' to 'x'");
+        type_str(&mut app, "q");
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Quit)) && !app.quit);
+        type_str(&mut app, "n");
+        type_str(&mut app, ":close");
+        enter(&mut app);
+        assert!(matches!(app.mode, Mode::Confirm(Confirm::Close)));
     }
 
     #[test]
