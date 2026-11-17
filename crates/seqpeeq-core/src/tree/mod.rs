@@ -1,6 +1,7 @@
 //! Phylogenetic trees: the model, Newick reading and writing, and edits.
 
 mod cols;
+pub(crate) mod newick;
 
 use std::sync::Arc;
 
