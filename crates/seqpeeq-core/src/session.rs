@@ -1356,11 +1356,11 @@ mod tests {
         let err = |s: &mut Session, line| ex_in(s, &dir, line).unwrap_err().to_string();
         assert_eq!(
             err(&mut s, "tree extract --tip A --out {}/x.nwk"),
-            "'A' names 2 tips; name one with --node (see the tree view)"
+            "'A' names 2 tips; name one with --node N (the tree view writes it for you)"
         );
         assert_eq!(
             err(&mut s, "tree extract --mrca A --mrca B --out {}/x.nwk"),
-            "'A' names 2 tips; name one with --node (see the tree view)"
+            "'A' names 2 tips; name one with --node N (the tree view writes it for you)"
         );
         ex_in(&mut s, &dir, "tree extract --node 2 --out {}/x.nwk").unwrap();
         assert_eq!(fs::read_to_string(dir.join("x.nwk")).unwrap(), "(A,A);\n");

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use ratatui::layout::Size;
 use seqpeeq_core::{
-    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
-    Started, Summary, TreeDoc, View, summary_block,
+    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
+    Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
 };
 
 use crate::line::{History, LineEdit};
@@ -68,6 +68,12 @@ pub enum PromptKind {
     Rename { row: usize },
     /// A regular expression to look for in the sequence names.
     Search,
+    /// A new name for the tip `node` of the visible tree.
+    RenameTip { node: NodeId },
+    /// The file to write the clade at `at` to.
+    TreeOut { at: NodeSel },
+    /// The file for that clade's sequences, or nothing.
+    TreeSeqs { at: NodeSel, out: String },
 }
 
 impl PromptKind {
@@ -78,6 +84,9 @@ impl PromptKind {
             PromptKind::Goto => "go to: ",
             PromptKind::Rename { .. } => "name: ",
             PromptKind::Search => "/",
+            PromptKind::RenameTip { .. } => "name: ",
+            PromptKind::TreeOut { .. } => "tree file: ",
+            PromptKind::TreeSeqs { .. } => "sequence file (Enter for none): ",
         }
     }
 }
@@ -677,7 +686,7 @@ impl App {
             // Nothing more can be logged, so nothing more will be done;
             // say how to get the work out all the same.
             Err(error @ Error::Log { .. }) => {
-                format!("error: {error}; :rescue FILE still writes the alignment")
+                format!("error: {error}; :rescue FILE still writes the file")
             }
             Err(error) => format!("error: {error}"),
         };
@@ -1476,6 +1485,18 @@ impl App {
             PromptKind::Goto => self.go_to(prompt.line.text()),
             PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
             PromptKind::Search => self.search(prompt.line.text()),
+            PromptKind::RenameTip { node } => self.rename_tip(node, prompt.line.text()),
+            PromptKind::TreeOut { at } => self.tree_out(at, prompt.line.text()),
+            PromptKind::TreeSeqs { at, out } => {
+                let seqs = prompt.line.text().trim();
+                let seqs = (!seqs.is_empty()).then(|| PathBuf::from(seqs));
+                self.act(Command::Tree(TreeCmd::Extract {
+                    at,
+                    out: PathBuf::from(out),
+                    seqs,
+                    wrap: None,
+                }));
+            }
         }
     }
 
@@ -1537,8 +1558,89 @@ impl App {
             KeyCode::Char('/') => self.open_prompt(PromptKind::Search, ""),
             KeyCode::Char('n') => self.search_step(true),
             KeyCode::Char('N') => self.search_step(false),
+            KeyCode::Char('u') => self.act(Command::Undo),
+            KeyCode::Char('U') => self.act(Command::Redo),
+            KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
+            KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
             _ => {}
         }
+    }
+
+    /// `d` `o` `r` `e`: act on the selected clade, or the cursor's.
+    fn tree_act(&mut self, code: KeyCode) {
+        let Some((_, doc, view)) = self.tree() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = view.select.unwrap_or(view.cursor);
+        let at = tree.sel_for(n, facts);
+        match code {
+            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at })),
+            KeyCode::Char('o') => self.act(Command::Tree(TreeCmd::Reroot {
+                at,
+                outgroup: Vec::new(),
+                midpoint: false,
+            })),
+            KeyCode::Char('r') if tree.is_tip(n) => {
+                let name = tree.label(n).unwrap_or_default().to_string();
+                self.open_prompt(PromptKind::RenameTip { node: n }, &name);
+            }
+            KeyCode::Char('r') => {
+                self.status =
+                    "error: r renames a tip; to rename many, :tree rename --regex … --replace …"
+                        .to_string();
+            }
+            _ => {
+                // The whole tree is written with no node named: a save.
+                let at = if n == tree.root() {
+                    NodeSel::default()
+                } else {
+                    at
+                };
+                self.open_prompt(PromptKind::TreeOut { at }, "");
+            }
+        }
+    }
+
+    /// Give the tip `node` the name typed, if it changed.
+    fn rename_tip(&mut self, node: NodeId, name: &str) {
+        let Some((_, doc, _)) = self.tree() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let name = name.trim();
+        if name.is_empty() || !facts.contains(node) || tree.label(node) == Some(name) {
+            return;
+        }
+        let at = tree.sel_for(node, facts);
+        self.act(Command::Tree(TreeCmd::Rename {
+            at,
+            to: Some(name.to_string()),
+            regex: None,
+            replace: None,
+        }));
+    }
+
+    /// The tree file for `e` was typed: write it, or first ask for a
+    /// sequence file when the tree is linked.
+    fn tree_out(&mut self, at: NodeSel, out: &str) {
+        let out = out.trim();
+        if out.is_empty() {
+            return;
+        }
+        let linked = self
+            .tree()
+            .is_some_and(|(dataset, _, _)| self.session.link_of(dataset.id).is_some());
+        if linked {
+            let out = out.to_string();
+            return self.open_prompt(PromptKind::TreeSeqs { at, out }, "");
+        }
+        self.act(Command::Tree(TreeCmd::Extract {
+            at,
+            out: PathBuf::from(out),
+            seqs: None,
+            wrap: None,
+        }));
     }
 
     /// Search the tree's tip names: a new `pattern` from the cursor on, or
@@ -1851,7 +1953,7 @@ mod tests {
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
         MouseEventKind,
     };
-    use seqpeeq_core::{NodeId, Session};
+    use seqpeeq_core::Session;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -3907,8 +4009,7 @@ mod tests {
             app.status
         );
         assert!(
-            app.status
-                .ends_with("; :rescue FILE still writes the alignment"),
+            app.status.ends_with("; :rescue FILE still writes the file"),
             "{}",
             app.status
         );
@@ -4152,5 +4253,191 @@ mod tests {
         search_for(&mut app, "^E$");
         assert_eq!(tree_view(&app).zoom, root_of(&app));
         assert_eq!(tree_view(&app).cursor, tip_of(&app, "E"));
+    }
+
+    fn tree_doc(app: &App) -> &TreeDoc {
+        app.tree().expect("a tree is shown").1
+    }
+
+    /// Put the cursor on `n` and refit, as moving there would.
+    fn put_cursor_on(app: &mut App, n: NodeId) {
+        let (doc, view) = app.tree_view_mut().unwrap();
+        view.cursor = n;
+        view.refit(doc.tree(), doc.facts(), view.height);
+    }
+
+    fn put_cursor(app: &mut App, name: &str) {
+        let n = tip_of(app, name);
+        put_cursor_on(app, n);
+    }
+
+    fn put_cursor_root(app: &mut App) {
+        let n = root_of(app);
+        put_cursor_on(app, n);
+    }
+
+    fn put_cursor_row(app: &mut App, row: usize) {
+        let n = tree_view(app).rows[row].node;
+        put_cursor_on(app, n);
+    }
+
+    /// The cursor to the smallest clade holding `a` and `b`, then `v`.
+    fn select_node(app: &mut App, a: &str, b: &str) {
+        let (doc, _) = app.tree_view_mut().unwrap();
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let n = common_ancestor(
+            tree,
+            facts,
+            crate::tree_view::tests::tip(tree, a),
+            crate::tree_view::tests::tip(tree, b),
+        );
+        put_cursor_on(app, n);
+        type_str(app, "v");
+    }
+
+    fn prompt_lead(app: &App) -> &'static str {
+        match &app.mode {
+            Mode::Prompt(prompt) => prompt.kind.lead(),
+            _ => panic!("no prompt is open"),
+        }
+    }
+
+    fn prompt_text(app: &App) -> String {
+        format!("{}{}", prompt_lead(app), typed(app).unwrap())
+    }
+
+    fn clear_prompt_and_type(app: &mut App, text: &str) {
+        for _ in 0..typed(app).unwrap().chars().count() {
+            app.handle_event(&press(KeyCode::Backspace));
+        }
+        type_str(app, text);
+    }
+
+    /// Open `a.fa` holding `fasta`, go back to the tree and link them.
+    fn link_alignment(app: &mut App, dir: &TempDir, fasta: &str) {
+        let fa = dir.path().join("a.fa");
+        fs::write(&fa, fasta).unwrap();
+        run_typed(app, &format!("open {}", fa.display()));
+        run_typed(app, "use 1");
+        run_typed(app, &format!("tree link {}", fa.display()));
+        assert!(app.status.starts_with("linked "), "{}", app.status);
+    }
+
+    /// The text of `tree extract` as logged.
+    fn extract_line(at: NodeSel, out: PathBuf, seqs: Option<PathBuf>) -> String {
+        Command::Tree(TreeCmd::Extract {
+            at,
+            out,
+            seqs,
+            wrap: None,
+        })
+        .to_line()
+        .unwrap()
+    }
+
+    /// The tree as the app has it now, written to a file and read back.
+    fn saved_newick(app: &mut App, dir: &TempDir) -> String {
+        let out = dir.path().join("now.nwk");
+        run_typed(app, &format!("tree extract --out {}", out.display()));
+        fs::read_to_string(out).unwrap()
+    }
+
+    /// Run the app's logged lines in a new session and write its tree.
+    fn replay_into_fresh_session(app: &App, dir: &TempDir) -> String {
+        let mut session = Session::new(None);
+        for line in app.session.history() {
+            session.execute(Command::parse_line(line).unwrap()).unwrap();
+        }
+        let out = dir.path().join("replayed.nwk");
+        let line = format!("tree extract --out {}", out.display());
+        session
+            .execute(Command::parse_line(&line).unwrap())
+            .unwrap();
+        fs::read_to_string(out).unwrap()
+    }
+
+    #[test]
+    fn keys_act_on_the_selection_or_the_cursor_and_are_logged() {
+        let (mut app, _dir) = with_tree("((A,B),(C,D),E);");
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "tree prune --mrca A --mrca B");
+        assert!(tree_doc(&app).facts().contains(tree_view(&app).cursor));
+        put_cursor(&mut app, "C");
+        type_str(&mut app, "o");
+        assert_eq!(last(&app), "tree reroot --tip C");
+        type_str(&mut app, "s");
+        assert_eq!(last(&app), "tree ladderize");
+        type_str(&mut app, "u");
+        assert_eq!(last(&app), "undo");
+        type_str(&mut app, "U");
+        assert_eq!(last(&app), "redo");
+    }
+
+    #[test]
+    fn rename_and_extract_ask_in_the_bottom_line() {
+        let (mut app, dir) = with_tree("((A,B),(C,D));");
+        put_cursor(&mut app, "A");
+        type_str(&mut app, "r");
+        assert_eq!(prompt_text(&app), "name: A");
+        clear_prompt_and_type(&mut app, "x y");
+        enter(&mut app);
+        assert_eq!(last(&app), "tree rename --tip A --to 'x y'");
+        put_cursor_root(&mut app);
+        type_str(&mut app, "r");
+        assert_eq!(
+            app.status,
+            "error: r renames a tip; to rename many, :tree rename --regex … --replace …"
+        );
+        type_str(&mut app, "e");
+        assert_eq!(prompt_lead(&app), "tree file: ");
+        let out = dir.path().join("o.nwk");
+        type_str(&mut app, &out.display().to_string());
+        enter(&mut app);
+        assert_eq!(last(&app), extract_line(NodeSel::default(), out, None));
+        link_alignment(&mut app, &dir, ">C\nAA\n>D\nCC\n");
+        select_node(&mut app, "C", "D");
+        type_str(&mut app, "e");
+        let (out, seqs) = (dir.path().join("c.nwk"), dir.path().join("c.fa"));
+        type_str(&mut app, &out.display().to_string());
+        enter(&mut app);
+        assert_eq!(prompt_lead(&app), "sequence file (Enter for none): ");
+        type_str(&mut app, &seqs.display().to_string());
+        enter(&mut app);
+        let at = NodeSel {
+            mrca: vec!["C".to_string(), "D".to_string()],
+            ..NodeSel::default()
+        };
+        assert_eq!(last(&app), extract_line(at, out, Some(seqs.clone())));
+        assert!(seqs.exists());
+    }
+
+    #[test]
+    fn shared_names_are_acted_on_by_number_and_replay_to_the_same_tree() {
+        let (mut app, dir) = with_tree("((A,A),(B,C));");
+        put_cursor_row(&mut app, 1); // the second A
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "tree prune --node 4");
+        let replayed = replay_into_fresh_session(&app, &dir);
+        assert_eq!(replayed, saved_newick(&mut app, &dir));
+        assert_eq!(replayed, "(A,(B,C));\n");
+    }
+
+    #[test]
+    fn an_edit_that_removes_the_cursor_or_shown_clade_leaves_a_working_view() {
+        let (mut app, _dir) = with_tree("((A,B),(C,(D,E)),F);");
+        put_cursor(&mut app, "D");
+        type_str(&mut app, "h+"); // show (D,E)
+        put_cursor(&mut app, "D");
+        type_str(&mut app, "d");
+        let facts = tree_doc(&app).facts();
+        let view = tree_view(&app);
+        assert!(facts.contains(view.cursor) && facts.contains(view.shown));
+        assert!(!view.rows.is_empty());
+        type_str(&mut app, "u");
+        let facts = tree_doc(&app).facts();
+        let view = tree_view(&app);
+        assert!(facts.contains(view.cursor) && facts.contains(view.shown));
+        assert!(!view.rows.is_empty());
     }
 }

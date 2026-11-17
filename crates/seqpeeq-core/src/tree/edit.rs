@@ -21,7 +21,7 @@ impl Tree {
             (None, _) => invalid(format!("no tip is named '{name}'")),
             (Some(tip), 0) => Ok(tip),
             (Some(_), more) => invalid(format!(
-                "'{name}' names {} tips; name one with --node (see the tree view)",
+                "'{name}' names {} tips; name one with --node N (the tree view writes it for you)",
                 more + 1
             )),
         }
