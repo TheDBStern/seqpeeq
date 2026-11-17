@@ -27,8 +27,12 @@ pub(crate) fn create_text(
         if gzip {
             // The default header holds no file name and no time, so the same
             // content always compresses to the same bytes.
-            let mut encoder = GzEncoder::new(buffered, Compression::default());
-            body(&mut encoder)?;
+            // Writers hand over a name or a bracket at a time; the encoder
+            // is many times slower fed that way, so buffer in front of it.
+            let encoder = GzEncoder::new(buffered, Compression::default());
+            let mut input = BufWriter::with_capacity(1 << 16, encoder);
+            body(&mut input)?;
+            let encoder = input.into_inner().map_err(|e| e.into_error())?;
             encoder.finish()?.flush()
         } else {
             body(&mut buffered)?;
