@@ -540,6 +540,15 @@ impl App {
         Some(Shape::of(alignment))
     }
 
+    /// Each open alignment's dataset id and revision.
+    fn alignment_revisions(&self) -> Vec<(u64, u64)> {
+        self.session
+            .datasets()
+            .iter()
+            .filter_map(|d| Some((d.id, d.msa()?.revision())))
+            .collect()
+    }
+
     fn view_mut(&mut self) -> Option<&mut MsaView> {
         let dataset = self.session.datasets().get(self.active)?;
         self.views.get_mut(&dataset.id)
@@ -1306,6 +1315,10 @@ impl App {
         let Some((alignment, _)) = self.alignment() else {
             return;
         };
+        // Any linked tree is renamed too; with more than one, the session
+        // says why it cannot.
+        let id = self.session.datasets()[self.active].id;
+        let tree = !self.session.trees_linked_to(id).is_empty();
         let name = name.trim();
         if name.is_empty() || row >= alignment.rows() || name == alignment.name(row) {
             return;
@@ -1319,7 +1332,7 @@ impl App {
             to: Some(name.to_string()),
             regex: None,
             replace: None,
-            tree: false,
+            tree,
         }));
     }
 
@@ -1583,14 +1596,16 @@ impl App {
 
     /// `d` `o` `r` `e`: act on the selected clade, or the cursor's.
     fn tree_act(&mut self, code: KeyCode) {
-        let Some((_, doc, view)) = self.tree() else {
+        let Some((dataset, doc, view)) = self.tree() else {
             return;
         };
         let (tree, facts) = (doc.tree(), doc.facts());
         let n = view.select.unwrap_or(view.cursor);
         let at = tree.sel_for(n, facts);
+        // A linked pair is kept matched: the gesture edits both files.
+        let seqs = self.session.link_of(dataset.id).is_some();
         match code {
-            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at, seqs: false })),
+            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at, seqs })),
             KeyCode::Char('o') => self.act(Command::Tree(TreeCmd::Reroot {
                 at,
                 outgroup: Vec::new(),
@@ -1681,9 +1696,10 @@ impl App {
 
     /// Give the tip `node` the name typed, if it changed.
     fn rename_tip(&mut self, node: NodeId, name: &str) {
-        let Some((_, doc, _)) = self.tree() else {
+        let Some((dataset, doc, _)) = self.tree() else {
             return;
         };
+        let seqs = self.session.link_of(dataset.id).is_some();
         let (tree, facts) = (doc.tree(), doc.facts());
         let name = name.trim();
         if name.is_empty() || !facts.contains(node) || tree.label(node) == Some(name) {
@@ -1695,7 +1711,7 @@ impl App {
             to: Some(name.to_string()),
             regex: None,
             replace: None,
-            seqs: false,
+            seqs,
         }));
     }
 
@@ -1947,10 +1963,25 @@ impl App {
                 | Command::Redo
                 | Command::Msa(MsaCmd::DeleteRows { .. } | MsaCmd::DeleteCols { .. })
         );
+        let revisions = self.alignment_revisions();
         match self.session.start(cmd)? {
             Started::Done(outcome) => {
                 if unselects && let Some(view) = self.view_mut() {
                     view.select = None;
+                }
+                // An edit to two files may have changed an alignment on
+                // another tab: its selection may name rows that are gone.
+                let visible = self.session.datasets().get(self.active).map(|d| d.id);
+                let changed: Vec<u64> = self
+                    .alignment_revisions()
+                    .into_iter()
+                    .filter(|now| Some(now.0) != visible && !revisions.contains(now))
+                    .map(|(id, _)| id)
+                    .collect();
+                for id in changed {
+                    if let Some(view) = self.views.get_mut(&id) {
+                        view.select = None;
+                    }
                 }
                 if follow {
                     self.active = self.session.current().unwrap_or(0);
@@ -4618,5 +4649,92 @@ mod tests {
             println!("{tab}: slowest key {slowest:?}");
             assert!(slowest.as_millis() < 10, "{tab}: {slowest:?}");
         }
+    }
+
+    #[test]
+    fn d_on_a_linked_tree_prunes_the_sequences_too() {
+        let (mut app, dir) = with_tree("((A,B),(C,D));");
+        link_alignment(&mut app, &dir, ">A\nAC\n>B\nGG\n>C\nTT\n");
+        // On the alignment's tab: rows 1-3 selected, the cursor on row 3.
+        run_typed(&mut app, "use 2");
+        type_str(&mut app, "Vjj");
+        assert!(view_of(&app).select.is_some());
+        to_tree_tab(&mut app);
+        let ab = parent_of(&app, "A");
+        put_cursor_on(&mut app, ab);
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "tree prune --mrca A --mrca B --seqs");
+        let alignment = app.session.datasets()[1].msa().unwrap();
+        assert_eq!((alignment.rows(), alignment.name(0)), (1, "C"));
+        run_typed(&mut app, "use 2");
+        assert_eq!(view_of(&app).select, None, "the rows it held are gone");
+        assert!(
+            view_of(&app).cursor.row < 1,
+            "the cursor is on a row that is there"
+        );
+        render_rows(&app, 80, 12);
+    }
+
+    #[test]
+    fn renaming_from_either_tab_writes_the_flag() {
+        let (mut app, dir) = with_tree("((A,B),(C,D));");
+        link_alignment(&mut app, &dir, ">A\nAC\n>B\nGG\n>C\nTT\n");
+        put_cursor(&mut app, "A");
+        type_str(&mut app, "r");
+        clear_prompt_and_type(&mut app, "Q");
+        enter(&mut app);
+        assert_eq!(last(&app), "tree rename --tip A --to Q --seqs");
+        run_typed(&mut app, "use 2");
+        type_str(&mut app, "jr");
+        app.handle_event(&ctrl('u'));
+        type_str(&mut app, "R");
+        enter(&mut app);
+        assert_eq!(last(&app), "msa rename --rows 2 --to R --tree");
+        assert!(
+            app.status.ends_with("; renamed 1 tip in t.nwk"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_linked_session_replays_to_the_same_files() {
+        let (mut app, dir) = with_tree("((A,B),(C,D),E);");
+        link_alignment(&mut app, &dir, ">A\nAC\n>B\nGG\n>C\nTT\n>E\nCA\n");
+        put_cursor(&mut app, "E");
+        type_str(&mut app, "r");
+        clear_prompt_and_type(&mut app, "Q");
+        enter(&mut app);
+        let ab = parent_of(&app, "A");
+        put_cursor_on(&mut app, ab);
+        type_str(&mut app, "d");
+        run_typed(&mut app, "use 2");
+        run_typed(&mut app, "msa rename --name C --to Z --tree");
+        run_typed(&mut app, "undo");
+        run_typed(&mut app, "redo");
+        to_tree_tab(&mut app);
+        let history = app.session.history().to_vec();
+        let write = |session: &mut Session, name: &str| {
+            let (nwk, fa) = (
+                dir.path().join(format!("{name}.nwk")),
+                dir.path().join(format!("{name}.fa")),
+            );
+            let line = format!(
+                "tree extract --out {} --seqs {}",
+                nwk.display(),
+                fa.display()
+            );
+            session
+                .execute(Command::parse_line(&line).unwrap())
+                .unwrap();
+            (fs::read(nwk).unwrap(), fs::read(fa).unwrap())
+        };
+        let made = write(&mut app.session, "made");
+        let mut fresh = Session::new(None);
+        for line in &history {
+            fresh.execute(Command::parse_line(line).unwrap()).unwrap();
+        }
+        assert_eq!(write(&mut fresh, "replayed"), made);
+        assert_eq!(String::from_utf8(made.1).unwrap(), ">Z\nTT\n>Q\nCA\n");
     }
 }
