@@ -94,6 +94,21 @@ fn path_up(tree: &Tree, from: NodeId, to: NodeId) -> Option<Vec<NodeId>> {
     None
 }
 
+/// The smallest clade holding both `a` and `b`.
+pub fn common_ancestor(tree: &Tree, facts: &TreeFacts, mut a: NodeId, mut b: NodeId) -> NodeId {
+    let up = |n: NodeId| tree.parent(n).unwrap_or(n);
+    while facts.steps(a) > facts.steps(b) {
+        a = up(a);
+    }
+    while facts.steps(b) > facts.steps(a) {
+        b = up(b);
+    }
+    while a != b && tree.parent(a).is_some() {
+        (a, b) = (up(a), up(b));
+    }
+    a
+}
+
 impl TreeView {
     pub fn new(tree: &Tree) -> TreeView {
         let root = tree.root();
@@ -284,6 +299,7 @@ impl TreeView {
     }
 
     /// The row the cursor is drawn on.
+    #[cfg_attr(not(test), allow(dead_code))] // tests check scrolling with it
     pub fn cursor_row(&self) -> Option<usize> {
         self.at
     }

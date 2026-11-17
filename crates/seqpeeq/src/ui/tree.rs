@@ -447,6 +447,7 @@ pub fn hit(
 
 /// The screen cell of a node: an internal node's junction, or the end of
 /// a row's branch; `None` when it is not on screen.
+#[cfg_attr(not(test), allow(dead_code))] // tests click with it
 pub fn node_position(
     layout: &TreeLayout,
     doc: &TreeDoc,

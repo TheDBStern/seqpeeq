@@ -10,13 +10,14 @@ use std::sync::Arc;
 use ratatui::layout::Size;
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, Progress, Session,
-    Started, Summary, View, summary_block,
+    Started, Summary, TreeDoc, View, summary_block,
 };
 
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
     Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
+use crate::tree_view::{TreeView, common_ancestor};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
@@ -155,6 +156,8 @@ pub struct App {
     ///
     /// [`Dataset::id`]: seqpeeq_core::Dataset::id
     pub views: HashMap<u64, MsaView>,
+    /// Where the user is in each open tree, by [`Dataset::id`].
+    pub trees: HashMap<u64, TreeView>,
     /// The largest alignment, in residues, to count on the spot.
     pub inline_cells: usize,
     /// The newest count of each alignment's columns, by [`Dataset::id`].
@@ -188,6 +191,7 @@ impl App {
             queue: VecDeque::new(),
             screen: Size::new(80, 24),
             views: HashMap::new(),
+            trees: HashMap::new(),
             inline_cells: INLINE_CELLS,
             conserved: HashMap::new(),
             counting: None,
@@ -540,8 +544,83 @@ impl App {
         }
     }
 
+    /// The tree on the visible tab and where the user is in it.
+    pub fn tree(&self) -> Option<(&Dataset, &TreeDoc, &TreeView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        Some((dataset, dataset.tree()?, self.trees.get(&dataset.id)?))
+    }
+
+    fn tree_view_mut(&mut self) -> Option<(&TreeDoc, &mut TreeView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        Some((dataset.tree()?, self.trees.get_mut(&dataset.id)?))
+    }
+
+    /// The rows the tree view of dataset `id` has on screen.
+    fn tree_height(&self, id: u64) -> Option<usize> {
+        let doc = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)?
+            .tree()?;
+        let view = self.trees.get(&id)?;
+        let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
+        let body = ui::regions(self, screen).body;
+        Some(ui::tree::tree_layout(body, doc, view).rows.height as usize)
+    }
+
+    /// Keep one view per open tree, fitted to the screen and following
+    /// every edit, undo and redo of its tree.
+    fn sync_trees(&mut self) {
+        let ids: Vec<u64> = self
+            .session
+            .datasets()
+            .iter()
+            .filter(|d| d.tree().is_some())
+            .map(|d| d.id)
+            .collect();
+        self.trees.retain(|id, _| ids.contains(id));
+        for id in ids {
+            let link = self.session.link_summary(id);
+            let fresh = !self.trees.contains_key(&id);
+            let Some(doc) = self.session.datasets().iter().find(|d| d.id == id) else {
+                continue;
+            };
+            let Some(doc) = doc.tree() else {
+                continue;
+            };
+            if fresh {
+                let mut view = TreeView::new(doc.tree());
+                view.revision = doc.revision();
+                self.trees.insert(id, view);
+            }
+            let height = self.tree_height(id).unwrap_or(1);
+            let doc = self.session.datasets().iter().find(|d| d.id == id);
+            let (Some(doc), Some(view)) = (doc.and_then(Dataset::tree), self.trees.get_mut(&id))
+            else {
+                continue;
+            };
+            view.link = link;
+            let (tree, facts) = (doc.tree(), doc.facts());
+            if fresh {
+                // The cursor starts on the first row.
+                view.refit(tree, facts, height);
+                if let Some(first) = view.rows.first() {
+                    view.cursor = first.node;
+                }
+                view.refit(tree, facts, height);
+            } else if view.revision != doc.revision() {
+                view.height = height;
+                view.repair(tree, facts, doc.revision());
+            } else if view.height != height {
+                view.refit(tree, facts, height);
+            }
+        }
+    }
+
     /// Scroll the visible alignment just enough to show its cursor.
     fn reveal(&mut self) {
+        self.sync_trees();
         self.rescale();
         let screen = self.screen_shape();
         if let Some(view) = self.view_mut() {
@@ -564,6 +643,7 @@ impl App {
             }
         }
         self.views.retain(|id, _| open.contains(id));
+        self.sync_trees();
         self.conserved.retain(|id, _| open.contains(id));
         self.summaries.retain(|id, _| open.contains(id));
         for job in [&mut self.counting, &mut self.summarising] {
@@ -615,6 +695,8 @@ impl App {
             Event::Resize(width, height) => self.resize(Size::new(*width, *height)),
             _ => {}
         }
+        // Tabs, the log pane and the status line change the rows a tree has.
+        self.sync_trees();
     }
 
     fn handle_key(&mut self, key: &KeyEvent) {
@@ -629,7 +711,12 @@ impl App {
                 // Esc lets go of the selection if there is one; otherwise it
                 // stops the work running in the background.
                 KeyCode::Esc => {
-                    if let Some(view) = self.view_mut().filter(|view| view.select.is_some()) {
+                    if let Some((_, view)) = self.tree_view_mut()
+                        && view.select.is_some()
+                    {
+                        view.select = None;
+                    } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
+                    {
                         view.select = None;
                     } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
@@ -642,6 +729,7 @@ impl App {
                 KeyCode::Char('L') => self.show_log = !self.show_log,
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
+                _ if self.tree().is_some() => self.tree_key(key),
                 _ => self.grid_key(key),
             },
             Mode::Prompt(prompt) => match key.code {
@@ -1405,15 +1493,75 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
-        self.wheel(mouse);
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         if left_click && mouse.row == 0 {
             let ranges = ui::tab_ranges(&ui::tab_titles(self), self.screen.width, self.active);
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
                 self.active = tab;
+                return;
             }
         }
+        if self.tree().is_some() {
+            return self.tree_mouse(mouse);
+        }
+        self.wheel(mouse);
         self.grid_mouse(mouse);
+    }
+
+    /// A key on the tree tab.
+    fn tree_key(&mut self, key: &KeyEvent) {
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let page = view.height.max(1) as isize;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => view.step(tree, facts, -1),
+            KeyCode::Down | KeyCode::Char('j') => view.step(tree, facts, 1),
+            KeyCode::PageUp => view.step(tree, facts, -page),
+            KeyCode::PageDown => view.step(tree, facts, page),
+            KeyCode::Left | KeyCode::Char('h') => view.go_parent(tree, facts),
+            KeyCode::Right | KeyCode::Char('l') => view.go_child(tree, facts),
+            KeyCode::Enter => view.toggle(tree, facts),
+            KeyCode::Char('+' | '=') => view.zoom_in(tree, facts),
+            KeyCode::Char('-') => view.zoom_out(tree, facts),
+            KeyCode::Char('z') => view.zoom_whole(tree, facts),
+            KeyCode::Char('b') => view.equal = !view.equal,
+            KeyCode::Char('v') => view.select = Some(view.cursor),
+            _ => {}
+        }
+    }
+
+    /// The mouse on the tree tab: click selects, right-click or
+    /// Shift-click extends, the wheel moves the cursor three rows.
+    fn tree_mouse(&mut self, mouse: &MouseEvent) {
+        const ROWS: isize = 3;
+        let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
+        let body = ui::regions(self, screen).body;
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let extend = match mouse.kind {
+            MouseEventKind::ScrollUp => return view.step(tree, facts, -ROWS),
+            MouseEventKind::ScrollDown => return view.step(tree, facts, ROWS),
+            MouseEventKind::Down(MouseButton::Left) => shift,
+            MouseEventKind::Down(MouseButton::Right) => true,
+            _ => return,
+        };
+        let layout = ui::tree::tree_layout(body, doc, view);
+        let Some(n) = ui::tree::hit(&layout, doc, view, mouse.column, mouse.row) else {
+            return;
+        };
+        if extend {
+            let from = view.select.unwrap_or(view.cursor);
+            view.select = Some(common_ancestor(tree, facts, from, n));
+        } else {
+            view.select = Some(n);
+            view.cursor = n;
+            view.refit(tree, facts, view.height);
+        }
     }
 
     /// The mouse on the alignment: press to place the cursor or to select a
@@ -1644,7 +1792,7 @@ mod tests {
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
         MouseEventKind,
     };
-    use seqpeeq_core::Session;
+    use seqpeeq_core::{NodeId, Session};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -3743,5 +3891,148 @@ mod tests {
         assert_eq!(app.active, 4);
         app.handle_event(&click(0, 0));
         assert_eq!(app.active, 3);
+    }
+
+    // The tree tab.
+
+    /// An app showing `t.nwk` holding `text`, on an 80 x 24 screen.
+    fn with_tree(text: &str) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let nwk = dir.path().join("t.nwk");
+        fs::write(&nwk, text).unwrap();
+        let mut app = App::new(Session::new(None));
+        type_str(&mut app, &format!(":open {}", nwk.display()));
+        enter(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        (app, dir)
+    }
+
+    const T6: &str = "((A,B),(C,(D,E)),F);";
+
+    fn tree_view(app: &App) -> &TreeView {
+        app.tree().expect("a tree is shown").2
+    }
+
+    fn shown_tree(app: &App) -> &seqpeeq_core::Tree {
+        app.tree().expect("a tree is shown").1.tree()
+    }
+
+    fn tip_of(app: &App, name: &str) -> NodeId {
+        crate::tree_view::tests::tip(shown_tree(app), name)
+    }
+
+    fn parent_of(app: &App, name: &str) -> NodeId {
+        shown_tree(app).parent(tip_of(app, name)).unwrap()
+    }
+
+    fn root_of(app: &App) -> NodeId {
+        shown_tree(app).root()
+    }
+
+    /// The text of the tree's rows on screen.
+    fn rows_of(app: &App) -> Vec<String> {
+        let (_, doc, view) = app.tree().unwrap();
+        view.rows
+            .iter()
+            .map(|row| ui::tree::row_text(doc, view, row))
+            .collect()
+    }
+
+    fn tree_layout_of(app: &App) -> ui::tree::TreeLayout {
+        let (_, doc, view) = app.tree().unwrap();
+        let screen = ratatui::layout::Rect::new(0, 0, app.screen.width, app.screen.height);
+        ui::tree::tree_layout(ui::regions(app, screen).body, doc, view)
+    }
+
+    /// Click the tip `name` with `button`.
+    fn click_node(app: &mut App, name: &str, modifiers: KeyModifiers, button: MouseButton) {
+        let n = tip_of(app, name);
+        let layout = tree_layout_of(app);
+        let (_, doc, view) = app.tree().unwrap();
+        let at = ui::tree::node_position(&layout, doc, view, n).expect("on screen");
+        app.handle_event(&mouse(MouseEventKind::Down(button), at, modifiers));
+    }
+
+    /// The screen's rows as text, trailing spaces removed.
+    fn render_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tree_tab_moves_opens_and_zooms_with_keys() {
+        let (mut app, _dir) = with_tree(T6);
+        let (c, cde) = (tip_of(&app, "C"), parent_of(&app, "C"));
+        assert_eq!(
+            tree_view(&app).cursor,
+            tip_of(&app, "A"),
+            "on the first row"
+        );
+        type_str(&mut app, "jj");
+        assert_eq!(tree_view(&app).cursor, c);
+        type_str(&mut app, "h");
+        assert_eq!(tree_view(&app).cursor, cde);
+        enter(&mut app);
+        assert!(tree_view(&app).closed.contains(&cde));
+        assert!(rows_of(&app).contains(&"▸ 3 tips  C … E".to_string()));
+        enter(&mut app);
+        type_str(&mut app, "+");
+        assert_eq!(tree_view(&app).shown, cde);
+        type_str(&mut app, "-");
+        assert_eq!(tree_view(&app).shown, root_of(&app));
+        type_str(&mut app, "+z");
+        assert_eq!(tree_view(&app).shown, root_of(&app));
+        type_str(&mut app, "b");
+        assert!(tree_view(&app).equal);
+        type_str(&mut app, "l");
+        assert_eq!(tree_view(&app).cursor, c, "back down to where h came from");
+    }
+
+    #[test]
+    fn clicks_select_extend_and_escape_clears() {
+        let (mut app, _dir) = with_tree(T6);
+        click_node(&mut app, "A", NONE, LEFT);
+        assert_eq!(tree_view(&app).select, Some(tip_of(&app, "A")));
+        click_node(&mut app, "B", KeyModifiers::SHIFT, LEFT);
+        assert_eq!(tree_view(&app).select, Some(parent_of(&app, "A")));
+        click_node(&mut app, "C", NONE, MouseButton::Right);
+        assert_eq!(tree_view(&app).select, Some(root_of(&app)));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(tree_view(&app).select, None);
+        type_str(&mut app, "v");
+        assert_eq!(tree_view(&app).select, Some(tree_view(&app).cursor));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor_three_rows() {
+        let (mut app, _dir) = with_tree(T6);
+        app.handle_event(&wheel(MouseEventKind::ScrollDown, NONE));
+        assert_eq!(tree_view(&app).cursor, tip_of(&app, "D"));
+    }
+
+    #[test]
+    fn the_tab_shows_the_tree_header_and_the_cursor_in_the_information_row() {
+        let (app, _dir) = with_tree("((A:1,B:2)90:3,C:1);");
+        let screen = render_rows(&app, 80, 24);
+        assert!(screen[1].contains("t.nwk · 3 tips"), "{screen:?}");
+        let (left, right) = ui::info_text(&app);
+        assert_eq!((left.as_str(), right.as_str()), ("A · length 1", ""));
+    }
+
+    #[test]
+    fn the_tree_fits_the_rows_the_screen_leaves_it() {
+        let (mut app, _dir) = with_tree(T6);
+        app.resize(Size::new(80, 8));
+        let rows = tree_layout_of(&app).rows.height as usize;
+        assert_eq!(tree_view(&app).height, rows);
+        assert!(tree_view(&app).rows.len() <= rows.max(3));
     }
 }
