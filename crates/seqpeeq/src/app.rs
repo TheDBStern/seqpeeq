@@ -17,7 +17,7 @@ use crate::line::{History, LineEdit};
 use crate::msa_view::{
     Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
 };
-use crate::tree_view::{TreeView, common_ancestor};
+use crate::tree_view::{TreeSearch, TreeView, common_ancestor};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
@@ -814,6 +814,9 @@ impl App {
         if pattern.is_empty() {
             return;
         }
+        if self.tree().is_some() {
+            return self.tree_search(Some(pattern), true);
+        }
         let Some((alignment, view)) = self.alignment() else {
             return;
         };
@@ -841,6 +844,9 @@ impl App {
 
     /// `n` and `N`: go to the next or the previous match.
     fn search_step(&mut self, forward: bool) {
+        if self.tree().is_some() {
+            return self.tree_search(None, forward);
+        }
         let Some((alignment, view)) = self.alignment() else {
             return;
         };
@@ -1528,8 +1534,61 @@ impl App {
             KeyCode::Char('z') => view.zoom_whole(tree, facts),
             KeyCode::Char('b') => view.equal = !view.equal,
             KeyCode::Char('v') => view.select = Some(view.cursor),
+            KeyCode::Char('/') => self.open_prompt(PromptKind::Search, ""),
+            KeyCode::Char('n') => self.search_step(true),
+            KeyCode::Char('N') => self.search_step(false),
             _ => {}
         }
+    }
+
+    /// Search the tree's tip names: a new `pattern` from the cursor on, or
+    /// (with `None`) the next or previous match, searching again if the
+    /// tree has changed. The cursor goes to the match, its path opened.
+    fn tree_search(&mut self, pattern: Option<&str>, forward: bool) {
+        let Some((doc, view)) = self.tree_view_mut() else {
+            return;
+        };
+        let (tree, facts) = (doc.tree(), doc.facts());
+        let again = match (pattern, &view.search) {
+            (Some(pattern), _) => Some(pattern.to_string()),
+            (None, Some(search)) if search.revision != doc.revision() => {
+                Some(search.pattern.clone())
+            }
+            (None, Some(_)) => None,
+            (None, None) => {
+                self.status = "error: nothing to search for; press / first".to_string();
+                return;
+            }
+        };
+        if let Some(pattern) = again {
+            match TreeSearch::find(doc, &pattern) {
+                Ok(search) if search.matches.is_empty() => {
+                    self.status = format!("error: no tip name matches '{pattern}'");
+                    return;
+                }
+                Ok(search) => view.search = Some(search),
+                Err(error) => {
+                    self.status = format!("error: {error}");
+                    return;
+                }
+            }
+        }
+        let search = view.search.as_ref().expect("a search");
+        let Some((index, tip)) = search.next(facts, view.cursor, forward, pattern.is_some()) else {
+            return;
+        };
+        let total = search.matches.len();
+        if common_ancestor(tree, facts, view.zoom, tip) != view.zoom {
+            view.zoom = tree.root();
+        }
+        view.cursor = tip;
+        view.found = Some(tip);
+        view.refit(tree, facts, view.height);
+        self.status = format!(
+            "match {} of {total}: {}",
+            index + 1,
+            tree.label(tip).unwrap_or_default()
+        );
     }
 
     /// The mouse on the tree tab: click selects, right-click or
@@ -4034,5 +4093,64 @@ mod tests {
         let rows = tree_layout_of(&app).rows.height as usize;
         assert_eq!(tree_view(&app).height, rows);
         assert!(tree_view(&app).rows.len() <= rows.max(3));
+    }
+
+    /// `/pattern` and Enter.
+    fn search_for(app: &mut App, pattern: &str) {
+        type_str(app, &format!("/{pattern}"));
+        enter(app);
+    }
+
+    /// `:line` and Enter.
+    fn run_typed(app: &mut App, line: &str) {
+        type_str(app, &format!(":{line}"));
+        enter(app);
+    }
+
+    #[test]
+    fn search_finds_tips_opens_the_path_and_steps_through_matches() {
+        let (mut app, _dir) = with_tree("((a1,b),((c,a2),(d,(e,a3))));");
+        // Tabs, header, 3 rows, information row, bottom line: the open
+        // message, with a long temp path, would take two.
+        app.status.clear();
+        app.resize(Size::new(80, 7));
+        assert_eq!(tree_view(&app).height, 3);
+        search_for(&mut app, "A");
+        assert_eq!(app.status, "match 1 of 3: a1");
+        type_str(&mut app, "n");
+        assert_eq!(
+            (app.status.as_str(), tree_view(&app).cursor),
+            ("match 2 of 3: a2", tip_of(&app, "a2"))
+        );
+        assert!(
+            rows_of(&app).contains(&"a2".to_string()),
+            "its path is open"
+        );
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "match 3 of 3: a3");
+        type_str(&mut app, "n");
+        assert_eq!(app.status, "match 1 of 3: a1");
+        type_str(&mut app, "N");
+        assert_eq!(app.status, "match 3 of 3: a3");
+        run_typed(&mut app, "tree prune --tip a2");
+        type_str(&mut app, "n");
+        assert_eq!(
+            app.status, "match 1 of 2: a1",
+            "the tree changed: searched again"
+        );
+        search_for(&mut app, "zzz");
+        assert_eq!(app.status, "error: no tip name matches 'zzz'");
+        search_for(&mut app, "(");
+        assert_eq!(app.status, "error: bad regular expression '('");
+    }
+
+    #[test]
+    fn a_match_outside_the_zoomed_clade_shows_the_whole_tree() {
+        let (mut app, _dir) = with_tree(T6);
+        type_str(&mut app, "+"); // the cursor is on A: zoom to A and B
+        assert_eq!(tree_view(&app).zoom, parent_of(&app, "A"));
+        search_for(&mut app, "^E$");
+        assert_eq!(tree_view(&app).zoom, root_of(&app));
+        assert_eq!(tree_view(&app).cursor, tip_of(&app, "E"));
     }
 }

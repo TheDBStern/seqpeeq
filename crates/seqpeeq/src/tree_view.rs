@@ -4,7 +4,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use seqpeeq_core::{LinkSummary, NodeId, Tree, TreeFacts};
+use seqpeeq_core::{LinkSummary, NodeId, Tree, TreeDoc, TreeFacts};
 
 /// One row of the drawn tree: a tip, or a collapsed clade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,62 @@ pub struct TreeSearch {
     /// For each node number, how many matches its clade holds.
     pub inside: Vec<u32>,
     pub revision: u64,
+}
+
+impl TreeSearch {
+    /// The tips whose name matches `pattern` (case ignored), each counted
+    /// into every clade above it in one pass up the tree.
+    pub fn find(doc: &TreeDoc, pattern: &str) -> seqpeeq_core::Result<TreeSearch> {
+        let matches = doc.find_tips(pattern)?;
+        let tree = doc.tree();
+        let preorder = tree.preorder();
+        let slots = preorder.iter().max().map_or(0, |&n| n as usize + 1);
+        let mut inside = vec![0u32; slots];
+        for &m in &matches {
+            inside[m as usize] = 1;
+        }
+        for &n in preorder.iter().rev() {
+            if let Some(parent) = tree.parent(n)
+                && n != tree.root()
+            {
+                inside[parent as usize] += inside[n as usize];
+            }
+        }
+        Ok(TreeSearch {
+            pattern: pattern.to_string(),
+            matches,
+            inside,
+            revision: doc.revision(),
+        })
+    }
+
+    /// The match after `from` in drawing order (or before it, going back),
+    /// wrapping around; `from` itself counts when `inclusive`. Gives its
+    /// index among the matches.
+    pub fn next(
+        &self,
+        facts: &TreeFacts,
+        from: NodeId,
+        forward: bool,
+        inclusive: bool,
+    ) -> Option<(usize, NodeId)> {
+        if self.matches.is_empty() {
+            return None;
+        }
+        let at = facts.order(from).unwrap_or(0);
+        let order = |&m: &NodeId| facts.order(m).unwrap_or(0);
+        // The first match at or after `from`.
+        let after = self.matches.partition_point(|m| order(m) < at);
+        let on = self.matches.get(after).is_some_and(|m| order(m) == at);
+        let n = self.matches.len();
+        let index = match (forward, inclusive && on) {
+            (_, true) => after,
+            (true, false) if on => (after + 1) % n,
+            (true, false) => after % n,
+            (false, false) => (after + n - 1) % n,
+        };
+        Some((index, self.matches[index]))
+    }
 }
 
 #[derive(Clone, Debug)]
