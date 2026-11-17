@@ -1175,6 +1175,28 @@ mod tests {
     }
 
     #[test]
+    fn an_insert_past_the_last_column_shows_the_columns_it_adds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trio.fa");
+        std::fs::write(
+            &path,
+            ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n",
+        )
+        .unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        for c in "iXYZ".chars() {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let screen = rows(&render(&app, 80, 12));
+        let line = |name: &str| screen.iter().find(|line| line.contains(name)).unwrap();
+        assert!(line("s1").contains("XYZACGTACGTA"), "{}", line("s1"));
+        assert!(line("s2").contains("ACGTTACG-A--"), "{}", line("s2"));
+    }
+
+    #[test]
     fn an_insert_shows_the_shifted_row_and_says_insert() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trio.fa");

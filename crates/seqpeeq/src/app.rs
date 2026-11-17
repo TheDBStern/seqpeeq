@@ -943,12 +943,19 @@ impl App {
                         row,
                         col: start,
                         seq,
+                        added: 0,
                     };
                     (next, true, col + 1)
                 }
                 _ => {
                     let seq = vec![c as u8];
-                    (Pending::Insert { row, col, seq }, false, col + 1)
+                    let next = Pending::Insert {
+                        row,
+                        col,
+                        seq,
+                        added: 0,
+                    };
+                    (next, false, col + 1)
                 }
             },
             KeyCode::Delete if col >= aln.cols => {
@@ -981,6 +988,30 @@ impl App {
                     (next, false, col)
                 }
             },
+            // Backspace straight after letters not yet made a command
+            // takes the last of them back.
+            KeyCode::Backspace
+                if matches!(&pending, Some(Pending::Insert { col: start, seq, .. })
+                    if start + seq.len() == col) =>
+            {
+                let Some(Pending::Insert {
+                    col: start,
+                    mut seq,
+                    ..
+                }) = pending
+                else {
+                    return;
+                };
+                seq.pop();
+                let next = (!seq.is_empty()).then_some(Pending::Insert {
+                    row,
+                    col: start,
+                    seq,
+                    added: 0,
+                });
+                self.set_typed(next, col - 1);
+                return;
+            }
             KeyCode::Backspace if col > 0 => {
                 let carried = match pending {
                     Some(Pending::Remove {
@@ -1028,21 +1059,27 @@ impl App {
             self.status = "error: nothing to remove: the row would stay the same".to_string();
             return;
         }
-        // An insert needing columns the alignment does not have yet is made
-        // at once, so that the preview never shows columns that do not
-        // exist. Planned after the run before it is made.
-        let now = match (&next, self.alignment()) {
-            (Pending::Insert { row, col, seq }, Some((alignment, _))) => {
-                alignment.view().plan_insert(*row, *col, seq).added > 0
+        self.set_typed(Some(next), cursor);
+    }
+
+    /// Make `typed` the run pending, its added columns planned against the
+    /// alignment as it now is, and put the cursor at `col`.
+    fn set_typed(&mut self, typed: Option<Pending>, col: usize) {
+        let typed = match (typed, self.alignment()) {
+            (Some(Pending::Insert { row, col, seq, .. }), Some((alignment, _))) => {
+                let added = alignment.view().plan_insert(row, col, &seq).added;
+                Some(Pending::Insert {
+                    row,
+                    col,
+                    seq,
+                    added,
+                })
             }
-            _ => false,
+            (typed, _) => typed,
         };
         if let Some(view) = self.view_mut() {
-            view.typed = Some(next);
-            view.cursor.col = cursor;
-        }
-        if now {
-            self.commit_typed();
+            view.typed = typed;
+            view.cursor.col = col;
         }
         self.reveal();
     }
@@ -3097,6 +3134,8 @@ mod tests {
         if let Some(pending) = &view.typed {
             let (at, start, bytes) = pending.preview(alignment.view());
             if at == row {
+                // A run may reach past the last column, into ones it adds.
+                text.resize(text.len().max(start + bytes.len()), b'-');
                 for (offset, byte) in bytes.into_iter().enumerate() {
                     text[start + offset] = byte;
                 }
@@ -3153,29 +3192,75 @@ mod tests {
     }
 
     #[test]
-    fn insert_mode_adds_at_the_end_of_a_row_one_letter_at_a_time() {
+    fn insert_mode_adds_at_the_end_of_a_row_as_one_insert() {
         let (mut app, _dir) = with_trio();
         app.handle_event(&press(KeyCode::End));
         type_str(&mut app, "i");
         app.handle_event(&press(KeyCode::Right));
         assert_eq!(view(&app).cursor.col, 10, "one past the last column");
+        let before = app.session.history().len();
         type_str(&mut app, "TG");
-        let history = app.session.history();
-        assert_eq!(
-            history[history.len() - 2..],
-            [
-                "msa insert --row 1 --col 11 --seq T",
-                "msa insert --row 1 --col 12 --seq G"
-            ]
-        );
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(view(&app).cursor.col, 12, "past the columns the run adds");
+        assert_eq!(shown(&app, 0), "ACGT-ACGTATG");
+        app.handle_event(&press(KeyCode::Delete));
+        assert_eq!(app.status, "error: nothing under the cursor to remove");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 1 --col 11 --seq TG");
         assert_eq!(
             (seq(&app, 0), seq(&app, 1)),
             ("ACGT-ACGTATG".into(), "ACGTTACG-A--".into())
         );
-        app.handle_event(&press(KeyCode::Delete));
-        assert_eq!(app.status, "error: nothing under the cursor to remove");
-        app.handle_event(&press(KeyCode::Esc));
         assert_eq!(view(&app).cursor.col, 11, "back inside the alignment");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 0), "ACGT-ACGTA", "one undo takes the whole run");
+    }
+
+    #[test]
+    fn letters_typed_past_the_gaps_of_a_row_are_one_insert() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "i");
+        let before = app.session.history().len();
+        type_str(&mut app, "XYZ");
+        assert_eq!(app.session.history().len(), before, "not a command yet");
+        assert_eq!(shown(&app, 0), "XYZACGTACGTA");
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 1 --col 1 --seq XYZ");
+        assert_eq!(seq(&app, 1), "ACGTTACG-A--");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 0), "ACGT-ACGTA");
+    }
+
+    #[test]
+    fn backspace_takes_back_letters_not_yet_made_a_command() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjliNX");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(app.session.history().len(), before, "no command");
+        assert_eq!(
+            (view(&app).cursor.col, shown(&app, 2)),
+            (2, "ANC-TACGTA".to_string())
+        );
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(last(&app), "msa insert --row 3 --col 2 --seq N");
+        assert_eq!(seq(&app, 2), "ANC-TACGTA");
+        type_str(&mut app, "u");
+        assert_eq!(seq(&app, 2), "AC--TACGTA");
+
+        // Taking back every letter leaves nothing to make a command of;
+        // a Backspace after that removes as usual.
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, "jjliNX");
+        let before = app.session.history().len();
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Backspace));
+        assert_eq!(view(&app).cursor.col, 1);
+        assert!(view(&app).typed.is_none());
+        app.handle_event(&press(KeyCode::Backspace));
+        app.handle_event(&press(KeyCode::Esc));
+        assert_eq!(app.session.history().len(), before + 1);
+        assert_eq!(last(&app), "msa remove --row 3 --col 1 --count 1");
     }
 
     use seqpeeq_core::{Conservation, Progress};

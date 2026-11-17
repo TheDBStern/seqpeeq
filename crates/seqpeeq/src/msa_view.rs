@@ -138,11 +138,13 @@ impl Typed {
 pub enum Pending {
     /// Characters typed over residues.
     Replace(Typed),
-    /// Characters inserted at `col`, shifting what follows.
+    /// Characters inserted at `col`, shifting what follows; `added` is
+    /// how many gap columns the alignment gains for them at its end.
     Insert {
         row: usize,
         col: usize,
         seq: Vec<u8>,
+        added: usize,
     },
     /// `count` cells removed from `col` on, by Delete or, when `back`, by
     /// Backspace.
@@ -166,7 +168,7 @@ impl Pending {
     pub fn command(&self) -> MsaCmd {
         match self {
             Pending::Replace(typed) => typed.command(),
-            Pending::Insert { row, col, seq } => MsaCmd::Insert {
+            Pending::Insert { row, col, seq, .. } => MsaCmd::Insert {
                 row: row + 1,
                 col: col + 1,
                 seq: String::from_utf8_lossy(seq).into_owned(),
@@ -181,13 +183,21 @@ impl Pending {
         }
     }
 
+    /// The gap columns the alignment gains when the run is made.
+    pub fn added(&self) -> usize {
+        match self {
+            Pending::Insert { added, .. } => *added,
+            _ => 0,
+        }
+    }
+
     /// How the row will read once the command runs: (row, first column,
     /// the bytes from there). Inserts and removes are planned by the same
     /// rule the commands use, so the preview is the result.
     pub fn preview(&self, view: &View) -> (usize, usize, Vec<u8>) {
         match self {
             Pending::Replace(typed) => (typed.row, typed.start, typed.bytes.clone()),
-            Pending::Insert { row, col, seq } => {
+            Pending::Insert { row, col, seq, .. } => {
                 (*row, *col, view.plan_insert(*row, *col, seq).bytes)
             }
             Pending::Remove {
@@ -346,8 +356,10 @@ impl MsaView {
             self.cursor.row = row.min(aln.rows.saturating_sub(1));
         }
         if let Some(col) = col {
+            // Inserting, the cursor may go one past the end, and past the
+            // columns the run being typed adds.
             let last = if self.append {
-                aln.cols
+                aln.cols + self.typed.as_ref().map_or(0, Pending::added)
             } else {
                 aln.cols.saturating_sub(1)
             };
@@ -421,7 +433,8 @@ impl MsaView {
     pub fn clamp(&mut self, aln: Shape) {
         self.move_to(Some(self.cursor.row), Some(self.cursor.col), aln);
         self.top = self.top.min(aln.rows.saturating_sub(1));
-        self.left = self.left.min(aln.cols.saturating_sub(1));
+        let cols = aln.cols + self.typed.as_ref().map_or(0, Pending::added);
+        self.left = self.left.min(cols.saturating_sub(1));
         // A selection anchored on a row or column that has gone means
         // nothing any more.
         if self
@@ -586,7 +599,8 @@ mod tests {
             line(Pending::Insert {
                 row: 2,
                 col: 1,
-                seq: b"NN".to_vec()
+                seq: b"NN".to_vec(),
+                added: 0,
             }),
             "msa insert --row 3 --col 2 --seq NN"
         );

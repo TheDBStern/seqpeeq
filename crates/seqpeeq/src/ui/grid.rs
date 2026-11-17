@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use seqpeeq_core::{Alignment, Conservation};
 use unicode_width::UnicodeWidthChar;
 
-use crate::msa_view::{Cell, Colouring, MsaView, Shape};
+use crate::msa_view::{Cell, Colouring, MsaView, Pending, Shape};
 use crate::palette;
 
 /// The fewest columns the residues keep when the names have to give way.
@@ -307,6 +307,27 @@ pub fn draw_grid(
             buffer[(cells.x + offset as u16, y)]
                 .set_char(shown)
                 .set_style(style);
+        }
+        // The gap columns a run being typed adds at the end: its own row's
+        // residues there, and gaps in every other row.
+        let added = view.typed.as_ref().map_or(0, Pending::added);
+        let typing = Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        for col in alignment.cols()..alignment.cols() + added {
+            let Some(offset) = col
+                .checked_sub(view.left)
+                .filter(|&offset| offset < cells.width as usize)
+            else {
+                continue;
+            };
+            let shown = typed_at(row, col).unwrap_or(b'-');
+            let shown = if shown.is_ascii_graphic() {
+                shown as char
+            } else {
+                '?'
+            };
+            buffer[(cells.x + offset as u16, y)]
+                .set_char(shown)
+                .set_style(typing);
         }
     }
 }
