@@ -105,6 +105,9 @@ pub struct TreeView {
     /// The tree's revision the view was last repaired for.
     pub revision: u64,
     pub link: Option<LinkSummary>,
+    /// What `link` was worked out for: the tree's revision, the
+    /// alignment's dataset id and its revision.
+    pub link_key: Option<(u64, u64, u64)>,
     /// The row each open node's junction is drawn on.
     pub junction: HashMap<NodeId, usize>,
     /// The rows of each open node's first and last child.
@@ -190,6 +193,7 @@ impl TreeView {
             height: 1,
             revision: 0,
             link: None,
+            link_key: None,
             junction: HashMap::new(),
             span: HashMap::new(),
             extent: HashMap::new(),
@@ -510,10 +514,15 @@ impl TreeView {
     /// gone, and fall back to the whole tree.
     pub fn repair(&mut self, tree: &Tree, facts: &TreeFacts, revision: u64) {
         self.revision = revision;
-        if self.zoom == self.root || !facts.contains(self.zoom) {
+        // A new root turns clades inside out: the zoomed or selected node
+        // may hold other tips now. A tip is still itself.
+        let rerooted = tree.root() != self.root;
+        if rerooted || !facts.contains(self.zoom) {
             self.zoom = tree.root();
         }
-        self.select = self.select.filter(|&n| facts.contains(n));
+        self.select = self
+            .select
+            .filter(|&n| facts.contains(n) && (!rerooted || tree.is_tip(n)));
         self.found = self.found.filter(|&n| facts.contains(n));
         self.opened.retain(|&n| facts.contains(n));
         self.closed.retain(|&n| facts.contains(n));
@@ -741,5 +750,25 @@ pub(crate) mod tests {
         assert_eq!((v.zoom, v.shown), (doc.tree().root(), doc.tree().root()));
         assert_eq!(v.rows.len(), 6);
         assert_eq!(v.cursor, tip(doc.tree(), "D"));
+    }
+
+    #[test]
+    fn a_reroot_shows_the_whole_tree_when_the_zoomed_clade_changed() {
+        let mut doc = doc(T);
+        let mut v = TreeView::new(doc.tree());
+        v.refit(doc.tree(), doc.facts(), 6);
+        let (c, cde) = (
+            tip(doc.tree(), "C"),
+            doc.tree().parent(tip(doc.tree(), "C")).unwrap(),
+        );
+        v.cursor = c;
+        v.zoom = cde;
+        v.select = Some(cde);
+        v.refit(doc.tree(), doc.facts(), 6);
+        apply(&mut doc, "tree reroot --tip D");
+        v.repair(doc.tree(), doc.facts(), doc.revision());
+        assert_eq!(v.zoom, doc.tree().root(), "not the clade's complement");
+        assert_eq!(v.select, None, "the selected clade holds other tips now");
+        assert_eq!(v.cursor, c, "a tip is still itself");
     }
 }

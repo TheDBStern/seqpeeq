@@ -78,6 +78,8 @@ struct Geometry {
     equal: bool,
     /// The shown clade's distance and branches from the root.
     base: (f32, u32),
+    /// The last column a branch may end at.
+    cap: usize,
 }
 
 impl Geometry {
@@ -94,7 +96,11 @@ impl Geometry {
         } else {
             f64::from(facts.depth(n) - self.base.0)
         };
-        (1 + (dist * self.per).round().max(0.0) as usize).max(from + 1)
+        let scaled = (dist * self.per).round().clamp(0.0, self.cap as f64) as usize;
+        // A child sits right of its parent while there is room; a ladder
+        // deeper than the branches' width shares the last column instead
+        // of running off the screen and taking its names with it.
+        (1 + scaled).max(from + 1).min(self.cap).max(from)
     }
 
     /// Row `y`'s parent's column and the column its branch ends at.
@@ -127,6 +133,7 @@ fn geometry(doc: &TreeDoc, view: &TreeView, branch_width: usize) -> Geometry {
         per: if far > 0.0 { span / far } else { 0.0 },
         equal,
         base: (facts.depth(view.shown), facts.steps(view.shown)),
+        cap: branch_width.saturating_sub(1).max(1),
     };
     // Each open node's column follows from its parent's: walk up to the
     // nearest one already placed, then place the walk back down.
@@ -778,6 +785,30 @@ mod tests {
                  search {searched:?}, to the deepest match {deep:?}"
             );
             assert!(slowest.as_millis() < 50, "{what}: {slowest:?}");
+        }
+    }
+
+    #[test]
+    fn a_ladder_deeper_than_the_branch_width_still_shows_every_name() {
+        // Internal branches near zero: every level wants its own column.
+        let mut text = String::new();
+        for i in 0..49 {
+            text.push_str(&format!("(t{i}:1,"));
+        }
+        text.push_str("t49:1");
+        text.push_str(&"):0.000001".repeat(49));
+        text.push(';');
+        for equal in [false, true] {
+            let screen = draw_with(&text, 40, 53, |doc, v| {
+                v.equal = equal;
+                v.refit(doc.tree(), doc.facts(), 51);
+            });
+            for i in 0..50 {
+                assert!(
+                    screen.lines().any(|l| l.ends_with(&format!(" t{i}"))),
+                    "t{i} (equal: {equal}):\n{screen}"
+                );
+            }
         }
     }
 }

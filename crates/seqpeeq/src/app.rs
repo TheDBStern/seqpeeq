@@ -590,7 +590,18 @@ impl App {
             .collect();
         self.trees.retain(|id, _| ids.contains(id));
         for id in ids {
-            let link = self.session.link_summary(id);
+            // The counts walk every tip: work them out again only when the
+            // tree or its alignment has changed.
+            let key = self.session.link_of(id).and_then(|aln| {
+                let datasets = self.session.datasets();
+                let tree = datasets.iter().find(|d| d.id == id)?.tree()?.revision();
+                let msa = datasets.iter().find(|d| d.id == aln)?.msa()?.revision();
+                Some((tree, aln, msa))
+            });
+            let link = match self.trees.get(&id) {
+                Some(view) if view.link_key == key => view.link,
+                _ => self.session.link_summary(id),
+            };
             let fresh = !self.trees.contains_key(&id);
             let Some(doc) = self.session.datasets().iter().find(|d| d.id == id) else {
                 continue;
@@ -610,6 +621,7 @@ impl App {
                 continue;
             };
             view.link = link;
+            view.link_key = key;
             let (tree, facts) = (doc.tree(), doc.facts());
             if fresh {
                 // The cursor starts on the first row.
@@ -4560,5 +4572,49 @@ mod tests {
             "error: none of these 2 tips has a sequence in a.fa"
         );
         assert!(app.tree().is_some(), "the tree's tab stays");
+    }
+
+    #[test]
+    fn the_link_counts_are_worked_out_again_only_when_something_changed() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n");
+        let key = tree_view(&app).link_key;
+        assert!(key.is_some());
+        assert_eq!(tree_view(&app).link.unwrap().matched, 3);
+        type_str(&mut app, "jjk");
+        assert_eq!(tree_view(&app).link_key, key, "moving changes nothing");
+        run_typed(&mut app, "use 2");
+        run_typed(&mut app, "msa rename --rows 1 --to Q");
+        let view = &app.trees[&app.session.datasets()[0].id];
+        assert_ne!(view.link_key, key, "the alignment changed");
+        assert_eq!(view.link.unwrap().matched, 2);
+    }
+
+    #[test]
+    #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored keys_on"]
+    fn keys_on_a_large_linked_tree_stay_fast() {
+        use std::time::Instant;
+        let n = 1_000_000;
+        let mut text = String::with_capacity(n * 12);
+        for i in 0..n - 1 {
+            text.push_str(&format!("(t{i},"));
+        }
+        text.push_str(&format!("t{}", n - 1));
+        text.push_str(&")".repeat(n - 1));
+        text.push(';');
+        let (mut app, dir) = with_tree(&text);
+        let fasta: String = (0..1000).map(|i| format!(">t{i}\nACGT\n")).collect();
+        link_alignment(&mut app, &dir, &fasta);
+        for tab in ["use 1", "use 2"] {
+            run_typed(&mut app, tab);
+            let mut slowest = std::time::Duration::ZERO;
+            for _ in 0..20 {
+                let started = Instant::now();
+                type_str(&mut app, "j");
+                slowest = slowest.max(started.elapsed());
+            }
+            println!("{tab}: slowest key {slowest:?}");
+            assert!(slowest.as_millis() < 10, "{tab}: {slowest:?}");
+        }
     }
 }
