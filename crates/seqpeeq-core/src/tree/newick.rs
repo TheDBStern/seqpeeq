@@ -1,6 +1,6 @@
 //! Reading and writing Newick.
 
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,6 +9,7 @@ use flate2::read::MultiGzDecoder;
 use crate::error::{Error, Result};
 use crate::progress::Progress;
 use crate::tree::{NodeId, Tree};
+use crate::write::create_text;
 
 /// A tree read from a file, with what the open message should mention.
 #[derive(Debug)]
@@ -234,6 +235,82 @@ impl Reader<'_> {
     }
 }
 
+/// Whether a name must be quoted to read back as itself.
+fn needs_quotes(name: &str) -> bool {
+    name.is_empty()
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "()[]':;,".contains(c))
+}
+
+fn write_label(name: &str, out: &mut dyn Write) -> io::Result<()> {
+    if needs_quotes(name) {
+        write!(out, "'{}'", name.replace('\'', "''"))
+    } else {
+        out.write_all(name.as_bytes())
+    }
+}
+
+/// Write the clade at `from` as a whole tree, ending `;\n`. Its own branch
+/// length is left out; its label is kept. Lengths are written in the
+/// shortest form that reads back as the same number.
+pub(crate) fn write_newick(tree: &Tree, from: NodeId, out: &mut dyn Write) -> io::Result<()> {
+    enum Visit {
+        Enter(NodeId),
+        Exit(NodeId),
+        Comma,
+    }
+    let finish = |n: NodeId, out: &mut dyn Write| -> io::Result<()> {
+        if let Some(label) = tree.label(n) {
+            write_label(label, out)?;
+        }
+        if n != from
+            && let Some(length) = tree.length(n)
+        {
+            write!(out, ":{length}")?;
+        }
+        Ok(())
+    };
+    let mut stack = vec![Visit::Enter(from)];
+    let mut children = Vec::new();
+    while let Some(visit) = stack.pop() {
+        match visit {
+            Visit::Enter(n) if tree.is_tip(n) => finish(n, out)?,
+            Visit::Enter(n) => {
+                out.write_all(b"(")?;
+                stack.push(Visit::Exit(n));
+                children.clear();
+                children.extend(tree.children(n));
+                for (i, &child) in children.iter().enumerate().rev() {
+                    stack.push(Visit::Enter(child));
+                    if i > 0 {
+                        stack.push(Visit::Comma);
+                    }
+                }
+            }
+            Visit::Exit(n) => {
+                out.write_all(b")")?;
+                finish(n, out)?;
+            }
+            Visit::Comma => out.write_all(b",")?,
+        }
+    }
+    out.write_all(b";\n")
+}
+
+/// The clade at `from` as Newick text.
+pub(crate) fn to_newick(tree: &Tree, from: NodeId) -> String {
+    let mut out = Vec::new();
+    write_newick(tree, from, &mut out).expect("writing to memory cannot fail");
+    String::from_utf8(out).expect("names are UTF-8")
+}
+
+/// Write the clade at `from` to a new file at `out`, gzip-compressed when
+/// the name ends `.gz`. Returns the file's size.
+pub(crate) fn save_newick(tree: &Tree, from: NodeId, out: &Path) -> Result<u64> {
+    create_text(out, |file| write_newick(tree, from, file))
+}
+
 /// Read the first tree; `None` when cancelled.
 fn parse_with(text: &[u8], progress: &Progress) -> Step<Option<Parsed>> {
     progress.set_total(text.len() as u64);
@@ -307,8 +384,7 @@ fn parse_with(text: &[u8], progress: &Progress) -> Step<Option<Parsed>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::progress::Progress;
-    use crate::tree::Tree;
+    use proptest::prelude::*;
 
     pub(crate) const QUOTED: &str = "(('Homo sapiens (human)':0.011,'Pan troglodytes, chimp':0.013)98:0.02,\
 ('Mus musculus':0.08,'Rattus norvegicus':0.09,'Cricetulus griseus')71:0.03,'It''s a fish':0.4,unquoted_name)root;";
@@ -406,6 +482,142 @@ pub(crate) mod tests {
         std::fs::write(&path, gz.finish().unwrap()).unwrap();
         let parsed = Tree::load(&path, &Progress::new()).unwrap();
         assert_eq!(names(&parsed.tree), ["A", "B"]);
+    }
+
+    /// Random trees of up to 30 tips: any shape, names of any text or
+    /// none, lengths missing or any finite number, internal labels missing,
+    /// numeric or text. With `unique`, every tip has its own name.
+    pub(crate) fn arb_tree(unique: bool) -> impl Strategy<Value = Tree> {
+        let name = proptest::option::of("[^\\x00]{0,6}");
+        let length = proptest::option::of(any::<f64>().prop_filter("finite", |l| l.is_finite()));
+        let label = proptest::option::of(prop_oneof!["[0-9]{1,3}(/[0-9]{1,2})?", "[a-z ]{1,4}"]);
+        (2usize..30).prop_flat_map(move |tips| {
+            (
+                proptest::collection::vec((name.clone(), length.clone()), tips),
+                proptest::collection::vec((any::<prop::sample::Index>(), 2usize..4), tips),
+                proptest::collection::vec((label.clone(), length.clone()), tips),
+            )
+                .prop_map(move |(tips, merges, inner)| {
+                    let mut t = Tree::new_root();
+                    let mut items = Vec::new();
+                    for (i, (name, length)) in tips.into_iter().enumerate() {
+                        let n = t.add_child(t.root());
+                        t.detach(n);
+                        let name = if unique {
+                            Some(format!("{}#{i}", name.unwrap_or_default()))
+                        } else {
+                            name
+                        };
+                        t.set_label(n, name.map(Arc::from));
+                        t.set_length(n, length);
+                        items.push(n);
+                    }
+                    let mut merges = merges.into_iter().zip(inner).cycle();
+                    while items.len() > 1 {
+                        let ((at, width), (label, length)) = merges.next().unwrap();
+                        let width = width.min(items.len());
+                        let start = at.index(items.len() - width + 1);
+                        let node = t.add_child(t.root());
+                        t.detach(node);
+                        for child in items.drain(start..start + width) {
+                            t.attach(node, child);
+                        }
+                        t.set_label(node, label.map(Arc::from));
+                        t.set_length(node, length);
+                        items.insert(start, node);
+                    }
+                    t.set_root(items[0]);
+                    t
+                })
+        })
+    }
+
+    #[test]
+    fn trees_are_written_back_as_read() {
+        for text in [
+            QUOTED,
+            "((A:1,B:2)90:3,C:4);",
+            "(A,B,(C,D)81/95:0.5)root:0;",
+            "(-x,b);",
+            "(a_b,'é ü');",
+        ] {
+            let t = tree(text);
+            let expect = text.replace("root:0;", "root;"); // the root's own length is not written
+            assert_eq!(to_newick(&t, t.root()), format!("{expect}\n"));
+        }
+    }
+
+    #[test]
+    fn a_clade_is_written_as_a_whole_tree() {
+        let t = tree("((A:1,B:2)90:3,C:4);");
+        let ab = t.parent(t.tips()[0]).unwrap();
+        assert_eq!(to_newick(&t, ab), "(A:1,B:2)90;\n");
+        assert_eq!(to_newick(&t, t.tips()[2]), "C;\n");
+    }
+
+    #[test]
+    fn a_name_is_quoted_only_when_it_must_be() {
+        let mut t = tree("(A,B);");
+        let a = t.tips()[0];
+        for (name, written) in [
+            ("a_b", "a_b"),
+            ("a b", "'a b'"),
+            ("It's", "'It''s'"),
+            ("x,y", "'x,y'"),
+            ("(p)", "'(p)'"),
+            ("", "''"),
+            ("é", "é"),
+            ("a\u{a0}b", "'a\u{a0}b'"),
+        ] {
+            t.set_label(a, Some(name.into()));
+            assert_eq!(
+                to_newick(&t, t.root()),
+                format!("({written},B);\n"),
+                "{name}"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn writing_then_reading_gives_the_same_tree(t in arb_tree(false)) {
+            let again = tree(&to_newick(&t, t.root()));
+            prop_assert_eq!(to_newick(&again, again.root()), to_newick(&t, t.root()));
+            prop_assert_eq!(names_or_none(&again), names_or_none(&t));
+        }
+    }
+
+    fn names_or_none(t: &Tree) -> Vec<Option<String>> {
+        t.preorder()
+            .into_iter()
+            .map(|n| t.label(n).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn a_deep_caterpillar_is_written_without_recursion() {
+        let text = caterpillar(200_000, "");
+        let t = tree(&text);
+        assert_eq!(to_newick(&t, t.root()), format!("{text}\n"));
+    }
+
+    #[test]
+    fn a_tree_file_is_only_ever_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("t.nwk");
+        let t = tree("(A,B);");
+        assert_eq!(save_newick(&t, t.root(), &out).unwrap(), 7);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "(A,B);\n");
+        assert!(matches!(
+            save_newick(&t, t.root(), &out),
+            Err(Error::Exists(_))
+        ));
+        let gz = dir.path().join("t.nwk.gz");
+        save_newick(&t, t.root(), &gz).unwrap();
+        assert_eq!(
+            names(&Tree::load(&gz, &Progress::new()).unwrap().tree),
+            ["A", "B"]
+        );
     }
 
     #[test]

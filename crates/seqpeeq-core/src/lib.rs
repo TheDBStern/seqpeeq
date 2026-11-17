@@ -14,6 +14,7 @@ pub mod session;
 // Until the session opens trees, parts are used only by tests.
 #[allow(dead_code)]
 pub mod tree;
+mod write;
 
 pub use command::msa::{MsaCmd, RowSel};
 pub use command::{Command, Kind};
