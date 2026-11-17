@@ -2,6 +2,7 @@
 
 mod cols;
 pub(crate) mod edit;
+mod facts;
 pub(crate) mod newick;
 pub(crate) mod reroot;
 
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cols::Cols;
+pub use facts::TreeFacts;
 pub use newick::Parsed;
 
 use crate::Result;
@@ -286,6 +288,8 @@ impl Tree {
 #[derive(Debug)]
 pub struct TreeDoc {
     tree: Tree,
+    /// Facts about `tree`, worked out whenever it changes.
+    facts: TreeFacts,
     /// Numbers each state; restored with the state on undo and redo.
     revision: u64,
     next_revision: u64,
@@ -329,6 +333,7 @@ impl TreeDoc {
             ));
         }
         TreeDoc {
+            facts: TreeFacts::of(&tree),
             tree,
             revision: 0,
             next_revision: 1,
@@ -349,6 +354,20 @@ impl TreeDoc {
         &self.tree
     }
 
+    /// Facts about the tree as it now is.
+    pub fn facts(&self) -> &TreeFacts {
+        &self.facts
+    }
+
+    /// Make `tree` the current state, returning the one it replaces. Every
+    /// change of state goes through here, so the facts stay current.
+    fn set(&mut self, tree: Tree, revision: u64) -> Tree {
+        let before = std::mem::replace(&mut self.tree, tree);
+        self.revision = revision;
+        self.facts = TreeFacts::of(&self.tree);
+        before
+    }
+
     /// Changes with every edit, undo and redo.
     pub fn revision(&self) -> u64 {
         self.revision
@@ -360,7 +379,7 @@ impl TreeDoc {
     }
 
     pub fn tips(&self) -> usize {
-        self.tree.tip_count()
+        self.facts.total_tips()
     }
 
     /// `500 tips`.
@@ -383,8 +402,7 @@ impl TreeDoc {
 
     /// Put back a snapshot. The undo history is left as it is.
     pub(crate) fn restore(&mut self, (tree, revision): (Tree, u64)) {
-        self.tree = tree;
-        self.revision = revision;
+        self.set(tree, revision);
     }
 
     pub(crate) fn apply(&mut self, cmd: &TreeCmd) -> Result<Applied> {
@@ -504,7 +522,7 @@ impl TreeDoc {
         }
         // Above a node holding every tip lie only nodes with one child: the
         // branch has nothing on its other side.
-        if self.tree.tip_counts()[n as usize] as usize == self.tree.tip_count() {
+        if self.facts.tips(n) as usize == self.facts.total_tips() {
             return invalid(
                 "no tip lies outside that clade, so its branch has no other side to root on",
             );
@@ -525,9 +543,9 @@ impl TreeDoc {
         let Some((tree, revision, name)) = self.undo.pop() else {
             return invalid("nothing to undo");
         };
-        let before = std::mem::replace(&mut self.tree, tree);
-        self.redo.push((before, self.revision, name));
-        self.revision = revision;
+        let was = self.revision;
+        let before = self.set(tree, revision);
+        self.redo.push((before, was, name));
         Ok(applied(format!("undid {name}; now {}", self.shape())))
     }
 
@@ -535,9 +553,9 @@ impl TreeDoc {
         let Some((tree, revision, name)) = self.redo.pop() else {
             return invalid("nothing to redo");
         };
-        let before = std::mem::replace(&mut self.tree, tree);
-        self.undo.push((before, self.revision, name));
-        self.revision = revision;
+        let was = self.revision;
+        let before = self.set(tree, revision);
+        self.undo.push((before, was, name));
         Ok(applied(format!("redid {name}; now {}", self.shape())))
     }
 
@@ -550,14 +568,14 @@ impl TreeDoc {
     ) -> Result<Applied> {
         let mut tree = self.tree.clone();
         let message = change(&mut tree)?;
-        let before = std::mem::replace(&mut self.tree, tree);
-        self.undo.push((before, self.revision, name));
+        let was = self.revision;
+        let before = self.set(tree, self.next_revision);
+        self.next_revision += 1;
+        self.undo.push((before, was, name));
         if self.undo.len() > UNDO_LEVELS {
             self.undo.remove(0);
         }
         self.redo.clear();
-        self.revision = self.next_revision;
-        self.next_revision += 1;
         Ok(applied(message))
     }
 
