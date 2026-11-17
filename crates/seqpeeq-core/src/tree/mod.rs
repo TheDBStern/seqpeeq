@@ -359,6 +359,21 @@ impl TreeDoc {
         &self.facts
     }
 
+    /// The tips whose name matches `pattern`, a regular expression with
+    /// letter case ignored, top to bottom as drawn.
+    pub fn find_tips(&self, pattern: &str) -> Result<Vec<NodeId>> {
+        let re = regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .or_else(|_| invalid(format!("bad regular expression '{pattern}'")))?;
+        Ok(self
+            .tree
+            .tips()
+            .into_iter()
+            .filter(|&n| re.is_match(self.tree.label(n).unwrap_or_default()))
+            .collect())
+    }
+
     /// Make `tree` the current state, returning the one it replaces. Every
     /// change of state goes through here, so the facts stay current.
     fn set(&mut self, tree: Tree, revision: u64) -> Tree {
@@ -830,6 +845,22 @@ mod tests {
             t.label.shared_chunks(&before.label),
             chunks - 1,
             "a reroot leaves names alone"
+        );
+    }
+
+    #[test]
+    fn find_tips_ignores_case_and_keeps_drawing_order() {
+        let doc = TreeDoc::from_text("((Homo_a,pan_b),(HOMO_c,d));");
+        let names: Vec<&str> = doc
+            .find_tips("homo")
+            .unwrap()
+            .iter()
+            .map(|&n| doc.tree().label(n).unwrap())
+            .collect();
+        assert_eq!(names, ["Homo_a", "HOMO_c"]);
+        assert_eq!(
+            doc.find_tips("(").unwrap_err().to_string(),
+            "bad regular expression '('"
         );
     }
 
