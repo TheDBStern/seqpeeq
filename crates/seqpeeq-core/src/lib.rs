@@ -7,6 +7,8 @@ pub mod command;
 pub mod error;
 pub mod log;
 pub mod msa;
+#[allow(dead_code)] // the session uses it from phase 3 Task 2
+mod pair;
 pub mod progress;
 pub mod ranges;
 pub mod replay;

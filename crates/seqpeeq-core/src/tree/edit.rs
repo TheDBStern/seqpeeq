@@ -280,6 +280,25 @@ impl Tree {
         Ok(was)
     }
 
+    /// Give each tip its new name, refused (with no change) when that would
+    /// give one name to more than one tip.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn rename_all(&mut self, renames: Vec<(NodeId, String)>) -> Result<()> {
+        if let Some((n, _)) = renames.iter().find(|(_, to)| to.trim().is_empty()) {
+            let name = self.label(*n).unwrap_or_default();
+            return invalid(format!("a name cannot be empty (tip '{name}')"));
+        }
+        let renames: Vec<(NodeId, String)> = renames
+            .into_iter()
+            .map(|(n, to)| (n, to.trim().to_string()))
+            .collect();
+        self.check_clashes(&renames)?;
+        for (tip, name) in renames {
+            self.set_label(tip, Some(name.into()));
+        }
+        Ok(())
+    }
+
     /// Replace matches of `pattern` in every tip name. Returns how many
     /// names changed.
     pub(crate) fn rename_matching(&mut self, pattern: &str, replace: &str) -> Result<usize> {

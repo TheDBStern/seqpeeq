@@ -18,6 +18,7 @@ use crate::Result;
 use crate::command::tree::{NodeSel, TreeCmd};
 use crate::msa::write::write_fasta;
 use crate::msa::{Alignment, Applied, UNDO_LEVELS, View, count};
+use crate::pair::{Pair, Step, holds, last_pair};
 use crate::progress::Progress;
 use edit::{invalid, resolve};
 
@@ -295,8 +296,8 @@ pub struct TreeDoc {
     next_revision: u64,
     /// The revision last written whole to a file, or as opened.
     written: u64,
-    undo: Vec<(Tree, u64, &'static str)>,
-    redo: Vec<(Tree, u64, &'static str)>,
+    undo: Vec<Step<(Tree, u64)>>,
+    redo: Vec<Step<(Tree, u64)>>,
     /// Parts of the open message.
     notes: Vec<String>,
 }
@@ -447,18 +448,7 @@ impl TreeDoc {
             TreeCmd::Rename {
                 at, to: Some(to), ..
             } => {
-                if at.is_empty() {
-                    return invalid("say which tip: --tip or --node");
-                }
-                let n = resolve(&self.tree, at)?;
-                if !self.tree.is_tip(n) {
-                    return match at.node {
-                        Some(number) => invalid(format!("--node {number} is not a tip")),
-                        None => {
-                            invalid("--mrca names a clade; rename one tip with --tip or --node")
-                        }
-                    };
-                }
+                let n = self.rename_target(at)?;
                 let mut was = String::new();
                 let mut applied = self.edit("rename", |tree| {
                     was = tree.rename_tip(n, to)?;
@@ -557,23 +547,132 @@ impl TreeDoc {
     }
 
     pub(crate) fn undo(&mut self) -> Result<Applied> {
-        let Some((tree, revision, name)) = self.undo.pop() else {
+        let Some(step) = self.undo.pop() else {
             return invalid("nothing to undo");
         };
+        let (name, (tree, revision)) = (step.name, step.state.clone());
         let was = self.revision;
         let before = self.set(tree, revision);
-        self.redo.push((before, was, name));
+        self.redo.push(Step {
+            state: (before, was),
+            ..step
+        });
         Ok(applied(format!("undid {name}; now {}", self.shape())))
     }
 
     pub(crate) fn redo(&mut self) -> Result<Applied> {
-        let Some((tree, revision, name)) = self.redo.pop() else {
+        let Some(step) = self.redo.pop() else {
             return invalid("nothing to redo");
         };
+        let (name, (tree, revision)) = (step.name, step.state.clone());
         let was = self.revision;
         let before = self.set(tree, revision);
-        self.undo.push((before, was, name));
+        self.undo.push(Step {
+            state: (before, was),
+            ..step
+        });
         Ok(applied(format!("redid {name}; now {}", self.shape())))
+    }
+
+    /// Tag the newest undo step as half of a two-file edit.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn pair_last(&mut self, pair: Pair) {
+        if let Some(step) = self.undo.last_mut() {
+            step.pair = Some(pair);
+        }
+    }
+
+    /// The pair tag of the step `undo` would reverse next.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn undo_pair(&self) -> Option<Pair> {
+        last_pair(&self.undo)
+    }
+
+    /// The pair tag of the step `redo` would make next.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn redo_pair(&self) -> Option<Pair> {
+        last_pair(&self.redo)
+    }
+
+    /// Whether the undo history still holds the step tagged `id`.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn keeps(&self, id: u64) -> bool {
+        holds(&self.undo, id)
+    }
+
+    /// The tip a `tree rename --to` names, refused for a clade.
+    fn rename_target(&self, at: &NodeSel) -> Result<NodeId> {
+        if at.is_empty() {
+            return invalid("say which tip: --tip or --node");
+        }
+        let n = resolve(&self.tree, at)?;
+        if !self.tree.is_tip(n) {
+            return match at.node {
+                Some(number) => invalid(format!("--node {number} is not a tip")),
+                None => invalid("--mrca names a clade; rename one tip with --tip or --node"),
+            };
+        }
+        Ok(n)
+    }
+
+    /// The name of the tip a `tree rename --to` names.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn tip_name(&self, at: &NodeSel) -> Result<String> {
+        let n = self.rename_target(at)?;
+        Ok(self.tree.label(n).unwrap_or_default().to_string())
+    }
+
+    /// The names of the clade's tips in drawing order; the whole tree when
+    /// `at` names no node. Unnamed tips are left out.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn clade_tip_names(&self, at: &NodeSel) -> Result<Vec<String>> {
+        let top = if at.is_empty() {
+            self.tree.root()
+        } else {
+            resolve(&self.tree, at)?
+        };
+        let mut names = Vec::new();
+        let mut stack = vec![top];
+        while let Some(n) = stack.pop() {
+            if self.tree.is_tip(n) {
+                if let Some(name) = self.tree.label(n) {
+                    names.push(name.to_string());
+                }
+                continue;
+            }
+            let children: Vec<NodeId> = self.tree.children(n).collect();
+            stack.extend(children.into_iter().rev());
+        }
+        Ok(names)
+    }
+
+    /// Rename every tip whose name is a key of `map`, as one undo step
+    /// called `step`. `None`, and no step, when no tip has such a name; a
+    /// rename giving one name to several tips is refused.
+    #[allow(dead_code)] // TEMP phase 3: used from Task 2
+    pub(crate) fn rename_names(
+        &mut self,
+        step: &'static str,
+        map: &HashMap<String, String>,
+    ) -> Result<Option<String>> {
+        let renames: Vec<(NodeId, String)> = self
+            .tree
+            .tips()
+            .into_iter()
+            .filter_map(|n| {
+                let to = map.get(self.tree.label(n)?)?;
+                Some((n, to.clone()))
+            })
+            .collect();
+        if renames.is_empty() {
+            return Ok(None);
+        }
+        let changed = renames.len();
+        self.edit(step, |tree| {
+            tree.rename_all(renames)?;
+            Ok(format!("renamed {}", count(changed, "tip")))
+        })
+        .map(|applied| Some(applied.message))
     }
 
     /// Change the tree, remembering the state before for undo. A change
@@ -588,7 +687,7 @@ impl TreeDoc {
         let was = self.revision;
         let before = self.set(tree, self.next_revision);
         self.next_revision += 1;
-        self.undo.push((before, was, name));
+        self.undo.push(Step::new((before, was), name));
         if self.undo.len() > UNDO_LEVELS {
             self.undo.remove(0);
         }
@@ -891,5 +990,62 @@ mod tests {
             at = t.add_child(at);
         }
         assert_eq!((t.preorder().len(), t.tip_count()), (400_001, 200_001));
+    }
+
+    #[test]
+    fn a_paired_tree_step_keeps_its_tag_through_undo_and_redo() {
+        use crate::tree::edit::tests::cmd;
+        let mut doc = TreeDoc::from_text("((A,B),(C,D));");
+        doc.apply(&cmd("prune --tip A")).unwrap();
+        let pair = Pair { id: 7, with: 2 };
+        doc.pair_last(pair);
+        doc.apply(&cmd("ladderize --reverse")).unwrap();
+        assert_eq!(doc.undo_pair(), None, "the newer step is not paired");
+        assert!(doc.keeps(7));
+        doc.undo().unwrap();
+        assert_eq!(doc.undo_pair(), Some(pair));
+        doc.undo().unwrap();
+        assert_eq!((doc.redo_pair(), doc.keeps(7)), (Some(pair), false));
+        doc.redo().unwrap();
+        assert_eq!(doc.undo_pair(), Some(pair));
+    }
+
+    #[test]
+    fn tips_are_renamed_by_name_in_one_step() {
+        let mut doc = TreeDoc::from_text("((A,A),(B,C));");
+        let to = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            doc.rename_names("rename", &to(&[("Q", "R")])).unwrap(),
+            None
+        );
+        assert_eq!(
+            doc.rename_names("rename", &to(&[("B", "x"), ("C", "y")]))
+                .unwrap()
+                .as_deref(),
+            Some("renamed 2 tips")
+        );
+        assert!(
+            doc.rename_names("rename", &to(&[("A", "x")])).is_err(),
+            "x is taken"
+        );
+        assert!(
+            doc.rename_names("rename", &to(&[("x", "y2"), ("y", "y2")]))
+                .is_err()
+        );
+        doc.undo().unwrap();
+        assert_eq!(
+            doc.clade_tip_names(&NodeSel::default()).unwrap(),
+            ["A", "A", "B", "C"]
+        );
+        let a = NodeSel {
+            tip: Some("B".into()),
+            ..NodeSel::default()
+        };
+        assert_eq!(doc.tip_name(&a).unwrap(), "B");
     }
 }
