@@ -596,6 +596,11 @@ impl TreeDoc {
         holds(&self.undo, id)
     }
 
+    /// Whether the redo history still holds the step tagged `id`.
+    pub(crate) fn redo_keeps(&self, id: u64) -> bool {
+        holds(&self.redo, id)
+    }
+
     /// The tip a `tree rename --to` names, refused for a clade.
     fn rename_target(&self, at: &NodeSel) -> Result<NodeId> {
         if at.is_empty() {

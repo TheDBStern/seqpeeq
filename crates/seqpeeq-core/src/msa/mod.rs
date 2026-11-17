@@ -376,6 +376,30 @@ impl Alignment {
         holds(&self.undo, id)
     }
 
+    /// Whether the redo history still holds the step tagged `id`.
+    pub(crate) fn redo_keeps(&self, id: u64) -> bool {
+        holds(&self.redo, id)
+    }
+
+    /// The name, if any, that `renames` would give to more than one
+    /// sequence: a row left alone already has it, or rows with different
+    /// names would get it. Rows that share a name may go on sharing a new
+    /// one.
+    pub(crate) fn name_clash(&self, renames: &[(usize, String)]) -> Option<String> {
+        let mut was: HashMap<&str, &str> = HashMap::new();
+        for (row, to) in renames {
+            let old = self.name(*row);
+            if *was.entry(to.as_str()).or_insert(old) != old {
+                return Some(to.clone());
+            }
+        }
+        let renamed: HashSet<usize> = renames.iter().map(|(row, _)| *row).collect();
+        (0..self.rows())
+            .filter(|row| !renamed.contains(row))
+            .find(|&row| was.contains_key(self.name(row)))
+            .map(|row| self.name(row).to_string())
+    }
+
     /// Every row whose name is a key of `map`, with its new name.
     pub(crate) fn renames_for(&self, map: &HashMap<String, String>) -> Vec<(usize, String)> {
         (0..self.rows())

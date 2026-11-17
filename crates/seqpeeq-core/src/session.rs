@@ -730,6 +730,9 @@ impl Session {
             // The tree's own rename says what is wrong.
             _ => return self.current_tree()?.apply(cmd),
         };
+        if let Some(name) = alignment.name_clash(&rows) {
+            return Err(row_clash(&aln_name, &name));
+        }
         let mut applied = self.current_tree()?.apply(cmd)?;
         if rows.is_empty() {
             applied
@@ -792,6 +795,9 @@ impl Session {
             to.as_deref(),
             regex.as_deref().zip(replace.as_deref()),
         )?;
+        if let Some(name) = alignment.name_clash(&plan) {
+            return Err(row_clash(&aln_name, &name));
+        }
         let map: HashMap<String, String> = plan
             .iter()
             .map(|(row, new)| (alignment.name(*row).to_string(), new.clone()))
@@ -834,17 +840,20 @@ impl Session {
         };
         let name = self.datasets[other].file_name();
         if self.step_pair(other, undo).map(|p| p.id) != Some(pair.id) {
-            let keeps = match &self.datasets[other].content {
-                Content::Msa(alignment) => alignment.keeps(pair.id),
-                Content::Tree(tree) => tree.keeps(pair.id),
-                Content::Unloaded => false,
+            let keeps = match (&self.datasets[other].content, undo) {
+                (Content::Msa(alignment), true) => alignment.keeps(pair.id),
+                (Content::Msa(alignment), false) => alignment.redo_keeps(pair.id),
+                (Content::Tree(tree), true) => tree.keeps(pair.id),
+                (Content::Tree(tree), false) => tree.redo_keeps(pair.id),
+                (Content::Unloaded, _) => false,
             };
             return Err(Error::Invalid(match (undo, keeps) {
                 (true, true) => format!("undo the later edit in {name} first"),
                 (true, false) => {
                     format!("{name} no longer keeps that step, so it cannot be undone in both")
                 }
-                (false, _) => {
+                (false, true) => format!("redo in {name} first"),
+                (false, false) => {
                     format!("{name} has been edited since, so this cannot be redone in both")
                 }
             }));
@@ -1241,6 +1250,13 @@ impl Session {
             }
         }
     }
+}
+
+/// A linked rename refused because it would give one name to several rows.
+fn row_clash(alignment: &str, name: &str) -> Error {
+    Error::Invalid(format!(
+        "{alignment}: that would give '{name}' to more than one sequence"
+    ))
 }
 
 #[cfg(test)]
@@ -2729,5 +2745,69 @@ mod tests {
                 .to_string(),
             "a.fa is linked to 2 trees; --tree needs exactly one"
         );
+    }
+
+    #[test]
+    fn a_linked_rename_refuses_to_give_two_rows_one_name() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        const CLASH: &str = "a.fa: that would give 'Z' to more than one sequence";
+        let err = ex(&mut s, "tree rename --tip A --to Z --seqs").unwrap_err();
+        assert_eq!(err.to_string(), CLASH);
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("A")
+                .is_ok()
+        );
+        ex(&mut s, "use 1").unwrap();
+        let err = ex(&mut s, "msa rename --name A --to Z --tree").unwrap_err();
+        assert_eq!(err.to_string(), CLASH);
+        assert_eq!(s.datasets()[0].msa().unwrap().name(0), "A");
+
+        // Two names merged into one by a regex.
+        fs::write(dir.join("m.fa"), ">A_1\nAC\n>A-1\nGG\n").unwrap();
+        fs::write(dir.join("m.nwk"), "(A_1,B,C);").unwrap();
+        let mut s = opened(&dir, &["m.fa", "m.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/m.fa").unwrap();
+        assert_eq!(
+            ex(&mut s, "tree rename --regex '[_-]' --replace ' ' --seqs")
+                .unwrap_err()
+                .to_string(),
+            "m.fa: that would give 'A 1' to more than one sequence"
+        );
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("A_1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn redo_advice_points_at_the_step_in_the_way() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "redo").unwrap_err().to_string(),
+            "redo in a.fa first"
+        );
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "redo").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
     }
 }
