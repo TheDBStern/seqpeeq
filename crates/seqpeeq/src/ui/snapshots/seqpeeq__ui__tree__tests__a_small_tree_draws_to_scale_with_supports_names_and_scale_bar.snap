@@ -1,0 +1,14 @@
+---
+source: crates/seqpeeq/src/ui/tree.rs
+assertion_line: 554
+expression: screen
+---
+ t.nwk · 5 tips
+ ┌─────────────────────────90┬───────── A
+ │                           └────────────────── B
+─┼──────70┬─────────────────── C
+ │        └───────── D
+ └───── E
+
+
+ ├────────┤ 1

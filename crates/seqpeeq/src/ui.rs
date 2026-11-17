@@ -2,6 +2,8 @@
 
 pub mod grid;
 pub mod overview;
+#[allow(dead_code)] // until the app uses it (task 5)
+pub mod tree;
 
 use std::ops::Range;
 
