@@ -5,6 +5,8 @@ mod line;
 mod msa_view;
 mod palette;
 mod term;
+#[allow(dead_code)] // until the app uses it (task 5)
+mod tree_view;
 mod ui;
 mod worker;
 mod zoom;
