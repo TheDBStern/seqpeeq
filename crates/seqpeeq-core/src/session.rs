@@ -699,6 +699,62 @@ impl Session {
         }
     }
 
+    /// `undo` or `redo` in the current file. A step that was half of an
+    /// edit to two files is undone (or redone) in both, or refused, unless
+    /// the other file has been closed.
+    fn undo_or_redo(&mut self, undo: bool) -> Result<Applied> {
+        let Some(index) = self.current else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let Some(pair) = self.step_pair(index, undo) else {
+            return self.step(undo);
+        };
+        let Some(other) = self.position(pair.with) else {
+            let mut applied = self.step(undo)?;
+            applied
+                .message
+                .push_str("; the other file is closed, so only this one changed");
+            return Ok(applied);
+        };
+        let name = self.datasets[other].file_name();
+        if self.step_pair(other, undo).map(|p| p.id) != Some(pair.id) {
+            let keeps = match &self.datasets[other].content {
+                Content::Msa(alignment) => alignment.keeps(pair.id),
+                Content::Tree(tree) => tree.keeps(pair.id),
+                Content::Unloaded => false,
+            };
+            return Err(Error::Invalid(match (undo, keeps) {
+                (true, true) => format!("undo the later edit in {name} first"),
+                (true, false) => {
+                    format!("{name} no longer keeps that step, so it cannot be undone in both")
+                }
+                (false, _) => {
+                    format!("{name} has been edited since, so this cannot be redone in both")
+                }
+            }));
+        }
+        let mut applied = self.step(undo)?;
+        let theirs = match &mut self.datasets[other].content {
+            Content::Msa(alignment) if undo => alignment.undo(),
+            Content::Msa(alignment) => alignment.redo(),
+            Content::Tree(tree) if undo => tree.undo(),
+            Content::Tree(tree) => tree.redo(),
+            Content::Unloaded => unreachable!("a file with an undo step is loaded"),
+        }?;
+        applied.message = format!("{}; and in {name}: {}", applied.message, theirs.message);
+        Ok(applied)
+    }
+
+    /// Undo or redo one step of the current file alone.
+    fn step(&mut self, undo: bool) -> Result<Applied> {
+        match (self.current_is_tree(), undo) {
+            (true, true) => self.current_tree()?.undo(),
+            (true, false) => self.current_tree()?.redo(),
+            (false, true) => self.current_alignment()?.undo(),
+            (false, false) => self.current_alignment()?.redo(),
+        }
+    }
+
     /// Tag the newest steps of the files at `a` and `b` as one edit.
     fn pair_steps(&mut self, a: usize, b: usize) {
         let id = self.next_pair;
@@ -1048,10 +1104,8 @@ impl Session {
                     created: Vec::new(),
                 })
             }
-            Command::Undo if self.current_is_tree() => self.current_tree()?.undo(),
-            Command::Redo if self.current_is_tree() => self.current_tree()?.redo(),
-            Command::Undo => self.current_alignment()?.undo(),
-            Command::Redo => self.current_alignment()?.redo(),
+            Command::Undo => self.undo_or_redo(true),
+            Command::Redo => self.undo_or_redo(false),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
             Command::Tree(TreeCmd::Link { file }) => self.link(&file),
             Command::Tree(TreeCmd::Unlink) => self.unlink(),
@@ -2281,5 +2335,142 @@ mod tests {
             None,
             "decision 1"
         );
+    }
+
+    /// a.fa and l.nwk open (tree current) and linked.
+    fn linked(dir: &Path) -> Session {
+        let mut s = opened(dir, &["a.fa", "l.nwk"]);
+        ex_in(&mut s, dir, "tree link {}/a.fa").unwrap();
+        s
+    }
+
+    fn sizes(s: &Session) -> (usize, usize) {
+        (
+            s.datasets()[0].msa().unwrap().rows(),
+            s.datasets()[1].tree().unwrap().tips(),
+        )
+    }
+
+    #[test]
+    fn one_undo_reverses_both_files_from_either_tab() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        let out = ex(&mut s, "undo").unwrap();
+        assert_eq!(
+            out.message,
+            "undid prune; now 4 sequences x 4 columns; and in l.nwk: undid prune; now 4 tips"
+        );
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn a_later_edit_in_the_other_file_comes_first() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "undo the later edit in a.fa first"
+        );
+        assert_eq!(sizes(&s), (2, 2), "nothing changed");
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "undo").unwrap(); // the column
+        ex(&mut s, "undo").unwrap(); // the pair, from the alignment's tab
+        assert_eq!(sizes(&s), (4, 4));
+    }
+
+    #[test]
+    fn redo_is_refused_once_the_other_file_has_moved_on() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "redo").unwrap_err().to_string(),
+            "a.fa has been edited since, so this cannot be redone in both"
+        );
+        assert_eq!(sizes(&s), (4, 4));
+    }
+
+    #[test]
+    fn a_step_the_other_file_has_dropped_cannot_be_undone() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        for i in 0..20 {
+            let with = if i % 2 == 0 { "N" } else { "A" };
+            ex(&mut s, &format!("msa fill --rows 1 --cols 1 --with {with}")).unwrap();
+        }
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "a.fa no longer keeps that step, so it cannot be undone in both"
+        );
+        assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn closing_the_other_file_leaves_this_half_to_undo_alone() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "tree unlink").unwrap();
+        ex(&mut s, "undo").unwrap();
+        assert_eq!(sizes(&s), (4, 4), "unlinking does not split the step");
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "close").unwrap();
+        let out = ex(&mut s, "undo").unwrap();
+        assert!(
+            out.message
+                .ends_with("; the other file is closed, so only this one changed"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.datasets()[0].tree().unwrap().tips(), 4);
+    }
+
+    #[test]
+    fn a_failed_log_write_undoes_both_files() {
+        let (_keep, dir) = trees();
+        // A log with room for the lines `steps` make and a little more.
+        let full_after = |steps: &[&str]| {
+            let (log, buffer) = limited_log(100_000);
+            let mut s = Session::with_clock(Some(log), fixed);
+            s.execute(open(&dir.join("a.fa"))).unwrap();
+            s.execute(open(&dir.join("l.nwk"))).unwrap();
+            for line in steps {
+                ex_in(&mut s, &dir, line).unwrap();
+            }
+            let used = buffer.lock().unwrap().len();
+            let mut s = Session::with_clock(Some(limited_log(used + 10).0), fixed);
+            s.execute(open(&dir.join("a.fa"))).unwrap();
+            s.execute(open(&dir.join("l.nwk"))).unwrap();
+            for line in steps {
+                ex_in(&mut s, &dir, line).unwrap();
+            }
+            s
+        };
+        let mut s = full_after(&["tree link {}/a.fa"]);
+        let err = ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert_eq!(sizes(&s), (4, 4), "both files as they were");
+
+        let mut s = full_after(&["tree link {}/a.fa", "tree prune --mrca A --mrca B --seqs"]);
+        let err = ex(&mut s, "undo").unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert_eq!(sizes(&s), (2, 2), "the undo did not stand in either file");
     }
 }

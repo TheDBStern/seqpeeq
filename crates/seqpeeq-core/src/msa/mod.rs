@@ -372,7 +372,6 @@ impl Alignment {
     }
 
     /// Whether the undo history still holds the step tagged `id`.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn keeps(&self, id: u64) -> bool {
         holds(&self.undo, id)
     }
