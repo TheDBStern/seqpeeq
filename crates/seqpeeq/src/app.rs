@@ -1319,6 +1319,7 @@ impl App {
             to: Some(name.to_string()),
             regex: None,
             replace: None,
+            tree: false,
         }));
     }
 
@@ -1589,7 +1590,7 @@ impl App {
         let n = view.select.unwrap_or(view.cursor);
         let at = tree.sel_for(n, facts);
         match code {
-            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at })),
+            KeyCode::Char('d') => self.act(Command::Tree(TreeCmd::Prune { at, seqs: false })),
             KeyCode::Char('o') => self.act(Command::Tree(TreeCmd::Reroot {
                 at,
                 outgroup: Vec::new(),
@@ -1694,6 +1695,7 @@ impl App {
             to: Some(name.to_string()),
             regex: None,
             replace: None,
+            seqs: false,
         }));
     }
 

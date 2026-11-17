@@ -63,6 +63,9 @@ pub enum TreeCmd {
     Prune {
         #[command(flatten)]
         at: NodeSel,
+        /// Also delete the clade's sequences from the linked alignment
+        #[arg(long)]
+        seqs: bool,
     },
     /// Root on the branch above a node, between an outgroup and the rest,
     /// or at the midpoint of the longest path between tips.
@@ -91,6 +94,9 @@ pub enum TreeCmd {
         regex: Option<String>,
         #[arg(long, allow_hyphen_values = true, requires = "regex")]
         replace: Option<String>,
+        /// Also rename the matching sequences in the linked alignment
+        #[arg(long)]
+        seqs: bool,
     },
     /// Pair the tree with an open alignment, matching tip and sequence names.
     Link { file: PathBuf },
@@ -130,7 +136,12 @@ impl TreeCmd {
                     words.flag("--wrap", wrap);
                 }
             }
-            TreeCmd::Prune { at } => at.write(words),
+            TreeCmd::Prune { at, seqs } => {
+                at.write(words);
+                if *seqs {
+                    words.switch("--seqs");
+                }
+            }
             TreeCmd::Reroot {
                 at,
                 outgroup,
@@ -154,6 +165,7 @@ impl TreeCmd {
                 to,
                 regex,
                 replace,
+                seqs,
             } => {
                 at.write(words);
                 if let Some(to) = to {
@@ -164,6 +176,9 @@ impl TreeCmd {
                 }
                 if let Some(replace) = replace {
                     words.flag("--replace", replace);
+                }
+                if *seqs {
+                    words.switch("--seqs");
                 }
             }
             TreeCmd::Link { file } => words.positional(path_word(file)?),

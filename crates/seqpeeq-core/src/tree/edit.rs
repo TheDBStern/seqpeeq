@@ -614,6 +614,7 @@ pub(crate) mod tests {
         let line = |n| {
             Command::Tree(TreeCmd::Prune {
                 at: t.sel_for(n, &f),
+                seqs: false,
             })
         };
         let cd = t.parent(t.tip_named("C").unwrap()).unwrap();

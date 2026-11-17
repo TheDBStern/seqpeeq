@@ -355,7 +355,6 @@ impl Alignment {
     }
 
     /// Tag the newest undo step as half of a two-file edit.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn pair_last(&mut self, pair: Pair) {
         if let Some(step) = self.undo.last_mut() {
             step.pair = Some(pair);
@@ -363,13 +362,11 @@ impl Alignment {
     }
 
     /// The pair tag of the step `undo` would reverse next.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn undo_pair(&self) -> Option<Pair> {
         last_pair(&self.undo)
     }
 
     /// The pair tag of the step `redo` would make next.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn redo_pair(&self) -> Option<Pair> {
         last_pair(&self.redo)
     }
@@ -417,7 +414,6 @@ impl Alignment {
     }
 
     /// The rows whose names are in `names`, ascending.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn rows_named(&self, names: &HashSet<&str>) -> Vec<usize> {
         (0..self.rows())
             .filter(|&row| names.contains(self.name(row)))
@@ -435,7 +431,6 @@ impl Alignment {
 
     /// Delete the rows listed (counted from 0, ascending), as one undo step
     /// called `step`.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn delete_listed(&mut self, step: &'static str, rows: &[usize]) {
         let ranges = to_ranges(rows);
         self.edit(step, |layer, source| layer.delete_rows(source, &ranges));

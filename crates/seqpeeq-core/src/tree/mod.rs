@@ -426,7 +426,7 @@ impl TreeDoc {
     pub(crate) fn apply(&mut self, cmd: &TreeCmd) -> Result<Applied> {
         match cmd {
             TreeCmd::Extract { .. } => unreachable!("the session runs extracts as jobs"),
-            TreeCmd::Prune { at } => {
+            TreeCmd::Prune { at, .. } => {
                 let n = resolve(&self.tree, at)?;
                 self.edit("prune", |tree| {
                     let removed = tree.prune(n)?;
@@ -575,7 +575,6 @@ impl TreeDoc {
     }
 
     /// Tag the newest undo step as half of a two-file edit.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn pair_last(&mut self, pair: Pair) {
         if let Some(step) = self.undo.last_mut() {
             step.pair = Some(pair);
@@ -583,13 +582,11 @@ impl TreeDoc {
     }
 
     /// The pair tag of the step `undo` would reverse next.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn undo_pair(&self) -> Option<Pair> {
         last_pair(&self.undo)
     }
 
     /// The pair tag of the step `redo` would make next.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn redo_pair(&self) -> Option<Pair> {
         last_pair(&self.redo)
     }
@@ -624,7 +621,6 @@ impl TreeDoc {
 
     /// The names of the clade's tips in drawing order; the whole tree when
     /// `at` names no node. Unnamed tips are left out.
-    #[allow(dead_code)] // TEMP phase 3: used from Task 2
     pub(crate) fn clade_tip_names(&self, at: &NodeSel) -> Result<Vec<String>> {
         let top = if at.is_empty() {
             self.tree.root()
