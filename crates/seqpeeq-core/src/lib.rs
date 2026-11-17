@@ -11,6 +11,9 @@ pub mod progress;
 pub mod ranges;
 pub mod replay;
 pub mod session;
+// Until the session opens trees, parts are used only by tests.
+#[allow(dead_code)]
+pub mod tree;
 
 pub use command::msa::{MsaCmd, RowSel};
 pub use command::{Command, Kind};
