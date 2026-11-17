@@ -485,8 +485,9 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
 /// What the help screen says, above the line about the log. No line is
 /// wider than 56 columns, so the box fits a 60-column terminal.
 const HELP: &[&str] = &[
-    "Move      arrows hjkl   PgUp PgDn   Home End",
-    "          g go to   / search names   n N next, previous",
+    "Move      arrows hjkl   Shift+arrows a screen",
+    "          PgUp PgDn   Home End   g go to",
+    "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
     "Edit      d delete or gap   f fill   r rename",
     "          i insert (shifts)   R type over   Esc stop",
@@ -498,7 +499,8 @@ const HELP: &[&str] = &[
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
     "          :rescue FILE if the log has failed",
-    "Mouse     hold Shift (Option on macOS) to select text",
+    "Mouse     wheel on the column numbers scrolls sideways",
+    "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
     "          in tmux: set -g mouse on",
 ];

@@ -1214,11 +1214,26 @@ impl App {
             }
             _ => {}
         }
-        let page = self.screen_shape().rows.max(1) as isize;
+        let screen = self.screen_shape();
+        let page = screen.rows.max(1) as isize;
+        let width = screen.cols.max(1) as isize;
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let Some(view) = self.view_mut() else {
             return;
         };
         match key.code {
+            // Shift with an arrow scrolls a screen at a time, the cursor
+            // going with it.
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if shift => {
+                let (rows, cols) = match key.code {
+                    KeyCode::Left => (0, -width),
+                    KeyCode::Right => (0, width),
+                    KeyCode::Up => (-page, 0),
+                    _ => (page, 0),
+                };
+                view.scroll(rows, cols, aln, screen);
+                view.move_by(rows, cols, aln);
+            }
             KeyCode::Left | KeyCode::Char('h') => view.move_by(0, -1, aln),
             KeyCode::Right | KeyCode::Char('l') => view.move_by(0, 1, aln),
             KeyCode::Up | KeyCode::Char('k') => view.move_by(-1, 0, aln),
@@ -1283,10 +1298,13 @@ impl App {
         const ROWS: isize = 3;
         const COLS: isize = 10;
         // Few terminals report sideways scrolling; many pass on the wheel
-        // with Shift or Alt held instead.
-        let sideways = mouse
-            .modifiers
-            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        // with Shift or Alt held instead. Some, Apple's Terminal among them,
+        // pass on neither: there the wheel over the column numbers does.
+        let over_ruler = ui::grid_of(self).is_some_and(|layout| mouse.row == layout.ruler.y);
+        let sideways = over_ruler
+            || mouse
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         let (rows, cols) = match mouse.kind {
             MouseEventKind::ScrollUp if sideways => (0, -COLS),
             MouseEventKind::ScrollDown if sideways => (0, COLS),
@@ -2170,6 +2188,48 @@ mod tests {
             row: 3,
             modifiers,
         })
+    }
+
+    /// 40 sequences x 300 columns: too wide and too tall for 80 x 12.
+    fn big() -> String {
+        (0..40)
+            .map(|i| format!(">s{i}\n{}\n", "ACGT".repeat(75)))
+            .collect()
+    }
+
+    #[test]
+    fn the_wheel_over_the_column_numbers_scrolls_sideways() {
+        // For terminals that never pass on sideways scrolling, Apple's
+        // Terminal among them.
+        let (mut app, _dir) = with_text(&big());
+        let ruler = active_layout(&app).ruler;
+        let over_ruler = (ruler.x + 5, ruler.y);
+        app.handle_event(&mouse(MouseEventKind::ScrollDown, over_ruler, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (10, 0));
+        app.handle_event(&mouse(MouseEventKind::ScrollUp, over_ruler, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (0, 0));
+        // Over the sequences the wheel still scrolls rows.
+        let over_cells = (ruler.x + 5, ruler.y + 3);
+        app.handle_event(&mouse(MouseEventKind::ScrollDown, over_cells, NONE));
+        assert_eq!((view(&app).left, view(&app).top), (0, 3));
+    }
+
+    #[test]
+    fn shift_arrows_move_a_screen_at_a_time() {
+        let (mut app, _dir) = with_text(&big());
+        let screen = app.screen_shape();
+        let shifted = |code| Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT));
+        app.handle_event(&shifted(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, screen.cols);
+        assert_eq!(view(&app).left, screen.cols, "the next screen of columns");
+        app.handle_event(&shifted(KeyCode::Down));
+        assert_eq!(view(&app).cursor.row, screen.rows);
+        app.handle_event(&shifted(KeyCode::Left));
+        app.handle_event(&shifted(KeyCode::Up));
+        assert_eq!(view(&app).cursor, Cell { row: 0, col: 0 });
+        // Unshifted, the arrows still move one cell.
+        app.handle_event(&press(KeyCode::Right));
+        assert_eq!(view(&app).cursor.col, 1);
     }
 
     #[test]
