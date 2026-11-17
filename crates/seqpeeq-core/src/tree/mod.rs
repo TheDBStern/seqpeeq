@@ -1,11 +1,21 @@
 //! Phylogenetic trees: the model, Newick reading and writing, and edits.
 
 mod cols;
+pub(crate) mod edit;
 pub(crate) mod newick;
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cols::Cols;
+pub use newick::Parsed;
+
+use crate::Result;
+use crate::command::tree::{NodeSel, TreeCmd};
+use crate::msa::{Applied, UNDO_LEVELS, count};
+use crate::progress::Progress;
+use edit::{invalid, resolve};
 
 /// A node's number within one line of states of a tree. Removed nodes are
 /// unlinked, never erased, so a number stays the same node until the tree
@@ -187,6 +197,7 @@ impl Tree {
     }
 
     /// Unlink `n` from its parent; it and its clade leave the tree.
+    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn detach(&mut self, n: NodeId) {
         let i = n as usize;
         let parent = *self.parent.get(i);
@@ -226,6 +237,7 @@ impl Tree {
 
     /// Put `parent`'s children in the given order. `children` must be
     /// exactly its children.
+    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
         let mut prev = NONE;
         for &child in children {
@@ -247,9 +259,235 @@ impl Tree {
     }
 
     /// Make `n` the root, detaching it from its parent first.
+    #[allow(dead_code)] // used by prune and reroot
     pub(crate) fn set_root(&mut self, n: NodeId) {
         self.detach(n);
         self.root = n;
+    }
+}
+
+/// An open tree: its current state, undo history, and what has been written.
+#[derive(Debug)]
+pub struct TreeDoc {
+    tree: Tree,
+    /// Numbers each state; restored with the state on undo and redo.
+    revision: u64,
+    next_revision: u64,
+    /// The revision last written whole to a file, or as opened.
+    written: u64,
+    undo: Vec<(Tree, u64, &'static str)>,
+    redo: Vec<(Tree, u64, &'static str)>,
+    /// Parts of the open message.
+    notes: Vec<String>,
+}
+
+impl TreeDoc {
+    /// Read a tree file.
+    pub fn load_with(path: &Path, progress: &Progress) -> Result<TreeDoc> {
+        Ok(TreeDoc::new(Tree::load(path, progress)?))
+    }
+
+    fn new(parsed: Parsed) -> TreeDoc {
+        let Parsed {
+            tree,
+            skipped,
+            comments,
+        } = parsed;
+        let mut notes = Vec::new();
+        if skipped > 0 {
+            let trees = if skipped == 1 { "tree" } else { "trees" };
+            notes.push(format!("skipped {skipped} more {trees} in the file"));
+        }
+        if comments {
+            notes.push("comments were dropped".to_string());
+        }
+        let shared = shared_names(&tree);
+        if shared > 0 {
+            let names = if shared == 1 {
+                "1 name is".to_string()
+            } else {
+                format!("{shared} names are")
+            };
+            notes.push(format!(
+                "{names} shared by more than one tip; name those tips with --node"
+            ));
+        }
+        TreeDoc {
+            tree,
+            revision: 0,
+            next_revision: 1,
+            written: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            notes,
+        }
+    }
+
+    /// A tree from Newick text that must be valid.
+    #[cfg(test)]
+    #[allow(dead_code)] // used by the edit tests in the next tasks
+    pub(crate) fn from_text(text: &str) -> TreeDoc {
+        TreeDoc::new(newick::parse(text.as_bytes()).unwrap())
+    }
+
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    /// Changes with every edit, undo and redo.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Whether there are edits not written whole to a file.
+    pub fn is_modified(&self) -> bool {
+        self.revision != self.written
+    }
+
+    pub fn tips(&self) -> usize {
+        self.tree.tip_count()
+    }
+
+    /// `500 tips`.
+    pub fn shape(&self) -> String {
+        count(self.tips(), "tip")
+    }
+
+    /// What the open message should mention besides the tip count.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    pub(crate) fn mark_written(&mut self) {
+        self.written = self.revision;
+    }
+
+    pub(crate) fn snapshot(&self) -> (Tree, u64) {
+        (self.tree.clone(), self.revision)
+    }
+
+    /// Put back a snapshot. The undo history is left as it is.
+    pub(crate) fn restore(&mut self, (tree, revision): (Tree, u64)) {
+        self.tree = tree;
+        self.revision = revision;
+    }
+
+    pub(crate) fn apply(&mut self, cmd: &TreeCmd) -> Result<Applied> {
+        match cmd {
+            TreeCmd::Extract { .. } => unreachable!("the session runs extracts as jobs"),
+            other => invalid(format!("tree {} is not built yet", other.name())),
+        }
+    }
+
+    pub(crate) fn undo(&mut self) -> Result<Applied> {
+        let Some((tree, revision, name)) = self.undo.pop() else {
+            return invalid("nothing to undo");
+        };
+        let before = std::mem::replace(&mut self.tree, tree);
+        self.redo.push((before, self.revision, name));
+        self.revision = revision;
+        Ok(applied(format!("undid {name}; now {}", self.shape())))
+    }
+
+    pub(crate) fn redo(&mut self) -> Result<Applied> {
+        let Some((tree, revision, name)) = self.redo.pop() else {
+            return invalid("nothing to redo");
+        };
+        let before = std::mem::replace(&mut self.tree, tree);
+        self.undo.push((before, self.revision, name));
+        self.revision = revision;
+        Ok(applied(format!("redid {name}; now {}", self.shape())))
+    }
+
+    /// Change the tree, remembering the state before for undo. A change
+    /// that fails leaves the tree as it was.
+    #[allow(dead_code)] // the edits arrive in the next tasks
+    pub(crate) fn edit(
+        &mut self,
+        name: &'static str,
+        change: impl FnOnce(&mut Tree) -> Result<String>,
+    ) -> Result<Applied> {
+        let mut tree = self.tree.clone();
+        let message = change(&mut tree)?;
+        let before = std::mem::replace(&mut self.tree, tree);
+        self.undo.push((before, self.revision, name));
+        if self.undo.len() > UNDO_LEVELS {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.revision = self.next_revision;
+        self.next_revision += 1;
+        Ok(applied(message))
+    }
+
+    /// Check a `tree extract` and get it ready to run.
+    pub(crate) fn plan_extract(&self, at: &NodeSel, out: &Path) -> Result<TreeExtraction> {
+        let from = if at.is_empty() {
+            self.tree.root()
+        } else {
+            resolve(&self.tree, at)?
+        };
+        Ok(TreeExtraction {
+            tree: self.tree.clone(),
+            from,
+            out: out.to_path_buf(),
+        })
+    }
+}
+
+fn applied(message: String) -> Applied {
+    Applied {
+        message,
+        note: None,
+        created: None,
+    }
+}
+
+/// How many names are each shared by more than one tip.
+fn shared_names(tree: &Tree) -> usize {
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    for tip in tree.tips() {
+        if let Some(name) = tree.label(tip) {
+            *seen.entry(name).or_default() += 1;
+        }
+    }
+    seen.values().filter(|&&n| n > 1).count()
+}
+
+/// A `tree extract` checked and ready to write.
+#[derive(Debug)]
+pub(crate) struct TreeExtraction {
+    tree: Tree,
+    from: NodeId,
+    out: PathBuf,
+}
+
+impl TreeExtraction {
+    pub(crate) fn out(&self) -> &Path {
+        &self.out
+    }
+
+    /// Whether the whole tree is written.
+    pub(crate) fn is_whole(&self) -> bool {
+        self.from == self.tree.root()
+    }
+
+    /// Write the file.
+    pub(crate) fn run(&self, progress: &Progress) -> Result<Applied> {
+        if progress.is_cancelled() {
+            return Err(crate::Error::Cancelled);
+        }
+        let size = newick::save_newick(&self.tree, self.from, &self.out)?;
+        let tips = self.tree.tip_counts()[self.from as usize] as usize;
+        // The full path, so the log says where the file went whatever the
+        // working directory was.
+        let out = &self.out;
+        let full = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+        Ok(Applied {
+            message: format!("wrote {} ({})", out.display(), count(tips, "tip")),
+            note: Some(format!("output {} size={size}", full.display())),
+            created: Some(out.to_path_buf()),
+        })
     }
 }
 

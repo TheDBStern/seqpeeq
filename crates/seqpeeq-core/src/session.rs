@@ -9,13 +9,16 @@ use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, write};
 use crate::progress::Progress;
-use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog};
+use crate::tree::newick::save_newick;
+use crate::tree::{Tree, TreeDoc, TreeExtraction};
+use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog, TreeCmd};
 
 /// What an open file holds.
 #[derive(Debug)]
 pub enum Content {
     // Boxed so that a list of datasets stays small whatever they hold.
     Msa(Box<Alignment>),
+    Tree(Box<TreeDoc>),
     /// A kind of file that has no viewer yet; only its path and size are known.
     Unloaded,
 }
@@ -39,7 +42,24 @@ impl Dataset {
     pub fn msa(&self) -> Option<&Alignment> {
         match &self.content {
             Content::Msa(alignment) => Some(alignment),
-            Content::Unloaded => None,
+            Content::Tree(_) | Content::Unloaded => None,
+        }
+    }
+
+    /// The tree, if this file is one.
+    pub fn tree(&self) -> Option<&TreeDoc> {
+        match &self.content {
+            Content::Tree(tree) => Some(tree),
+            Content::Msa(_) | Content::Unloaded => None,
+        }
+    }
+
+    /// Whether the file has edits not written whole to another file.
+    pub fn is_modified(&self) -> bool {
+        match &self.content {
+            Content::Msa(alignment) => alignment.is_modified(),
+            Content::Tree(tree) => tree.is_modified(),
+            Content::Unloaded => false,
         }
     }
 
@@ -145,6 +165,10 @@ enum Work {
         dataset: u64,
         extraction: Extraction,
     },
+    TreeExtract {
+        dataset: u64,
+        extraction: TreeExtraction,
+    },
 }
 
 impl Job {
@@ -161,18 +185,38 @@ impl Job {
     /// Do the work.
     pub fn run(self) -> Finished {
         let result = match *self.work {
-            Work::Open(input) => {
-                Alignment::load_with(&input.path, &self.progress).map(|alignment| Product::Opened {
+            Work::Open(input) => open_content(&input, &self.progress).map(|(content, holds)| {
+                let mut message = input.opened(&holds[0]);
+                for note in &holds[1..] {
+                    message.push_str("; ");
+                    message.push_str(note);
+                }
+                Product::Opened {
                     input,
-                    alignment: Box::new(alignment),
-                })
-            }
+                    content,
+                    message,
+                }
+            }),
             Work::Extract {
                 dataset,
                 extraction,
             } => extraction
                 .run(&self.progress)
-                .map(|applied| Product::Wrote { dataset, applied }),
+                .map(|applied| Product::Wrote {
+                    dataset,
+                    applied,
+                    whole: true,
+                }),
+            Work::TreeExtract {
+                dataset,
+                extraction,
+            } => extraction
+                .run(&self.progress)
+                .map(|applied| Product::Wrote {
+                    dataset,
+                    applied,
+                    whole: extraction.is_whole(),
+                }),
         };
         Finished {
             line: self.line,
@@ -187,14 +231,36 @@ pub struct Finished {
     result: Result<Product>,
 }
 
+/// Read a file of a kind that has a viewer. Returns it with what the open
+/// message says: what it holds, then any notes.
+fn open_content(input: &Input, progress: &Progress) -> Result<(Content, Vec<String>)> {
+    match input.kind {
+        Kind::Msa => {
+            let alignment = Alignment::load_with(&input.path, progress)?;
+            let holds = vec![alignment.shape()];
+            Ok((Content::Msa(Box::new(alignment)), holds))
+        }
+        Kind::Tree => {
+            let tree = TreeDoc::load_with(&input.path, progress)?;
+            let mut holds = vec![tree.shape()];
+            holds.extend(tree.notes().iter().cloned());
+            Ok((Content::Tree(Box::new(tree)), holds))
+        }
+        Kind::Bam => unreachable!("BAM files are not read yet"),
+    }
+}
+
 enum Product {
     Opened {
         input: Input,
-        alignment: Box<Alignment>,
+        content: Content,
+        message: String,
     },
     Wrote {
         dataset: u64,
         applied: Applied,
+        /// Whether the whole file was written, so its edits are saved.
+        whole: bool,
     },
 }
 
@@ -216,8 +282,13 @@ pub struct Session {
 struct Checkpoint {
     datasets: usize,
     current: Option<usize>,
-    /// The edits of the current alignment, when the command may change them.
-    layer: Option<Layer>,
+    /// The current file's state, when the command may change it.
+    snapshot: Option<Snapshot>,
+}
+
+enum Snapshot {
+    Msa(Layer),
+    Tree((Tree, u64)),
 }
 
 impl Session {
@@ -275,7 +346,7 @@ impl Session {
         let cmd = match cmd {
             Command::Open { path, kind } => {
                 let input = Input::check(&path, kind, &now)?;
-                if input.kind == Kind::Msa {
+                if matches!(input.kind, Kind::Msa | Kind::Tree) {
                     let label = format!("opening {}", file_name(&input.path));
                     return Ok(self.hand_out(label, line, Work::Open(input)));
                 }
@@ -297,6 +368,26 @@ impl Session {
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
                 let label = format!("writing {}", file_name(extraction.out()));
                 let work = Work::Extract {
+                    dataset,
+                    extraction,
+                };
+                return Ok(self.hand_out(label, line, work));
+            }
+            Command::Tree(TreeCmd::Extract {
+                at,
+                out,
+                seqs,
+                wrap: _,
+            }) => {
+                let extraction = self.current_tree()?.plan_extract(&at, &out)?;
+                if seqs.is_some() {
+                    return Err(Error::Invalid(
+                        "--seqs needs the tree linked to an alignment: tree link FILE".to_string(),
+                    ));
+                }
+                let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let label = format!("writing {}", file_name(extraction.out()));
+                let work = Work::TreeExtract {
                     dataset,
                     extraction,
                 };
@@ -337,12 +428,16 @@ impl Session {
         let Finished { line, result } = finished;
         let now = (self.clock)();
         match result? {
-            Product::Opened { input, alignment } => {
-                let message = input.opened(&alignment.shape());
-                let content = Content::Msa(alignment);
-                self.record_open(&line, input, content, message, &now)
-            }
-            Product::Wrote { dataset, applied } => {
+            Product::Opened {
+                input,
+                content,
+                message,
+            } => self.record_open(&line, input, content, message, &now),
+            Product::Wrote {
+                dataset,
+                applied,
+                whole,
+            } => {
                 if let Some(log) = &mut self.log
                     && let Err(error) = log.record(&line, applied.note.as_deref(), &now)
                 {
@@ -353,8 +448,10 @@ impl Session {
                     return Err(error);
                 }
                 let written = self.datasets.iter_mut().find(|d| d.id == dataset);
-                if let Some(Content::Msa(alignment)) = written.map(|d| &mut d.content) {
-                    alignment.mark_written();
+                match written.map(|d| &mut d.content) {
+                    Some(Content::Msa(alignment)) if whole => alignment.mark_written(),
+                    Some(Content::Tree(tree)) if whole => tree.mark_written(),
+                    _ => {}
                 }
                 self.history.push(line);
                 Ok(Outcome {
@@ -410,6 +507,18 @@ impl Session {
         let Some(dataset) = self.datasets.get(dataset) else {
             return Err(Error::Invalid("no file is open".to_string()));
         };
+        if let Some(tree) = dataset.tree() {
+            let tree = tree.tree();
+            save_newick(tree, tree.root(), out)?;
+            return Ok(Outcome {
+                message: format!(
+                    "wrote {} from {} ({}); not logged, because the session log could not be written",
+                    out.display(),
+                    dataset.file_name(),
+                    crate::msa::count(tree.tip_count(), "tip")
+                ),
+            });
+        }
         let Some(alignment) = dataset.msa() else {
             return Err(Error::Invalid(format!(
                 "{} is not an alignment",
@@ -466,15 +575,19 @@ impl Session {
     }
 
     fn checkpoint(&self, cmd: &Command) -> Checkpoint {
-        let edits = matches!(cmd, Command::Msa(_) | Command::Undo | Command::Redo);
-        let alignment = self
-            .current
-            .and_then(|index| self.datasets[index].msa())
-            .filter(|_| edits);
+        let edits = matches!(
+            cmd,
+            Command::Msa(_) | Command::Tree(_) | Command::Undo | Command::Redo
+        );
+        let snapshot = match self.current.map(|index| &self.datasets[index].content) {
+            Some(Content::Msa(alignment)) if edits => Some(Snapshot::Msa(alignment.snapshot())),
+            Some(Content::Tree(tree)) if edits => Some(Snapshot::Tree(tree.snapshot())),
+            _ => None,
+        };
         Checkpoint {
             datasets: self.datasets.len(),
             current: self.current,
-            layer: alignment.map(Alignment::snapshot),
+            snapshot,
         }
     }
 
@@ -487,10 +600,11 @@ impl Session {
             self.datasets.insert(at, dataset);
         }
         self.current = checkpoint.current;
-        if let Some(layer) = checkpoint.layer
-            && let Ok(alignment) = self.current_alignment()
-        {
-            alignment.restore(layer);
+        let content = self.current.map(|index| &mut self.datasets[index].content);
+        match (checkpoint.snapshot, content) {
+            (Some(Snapshot::Msa(layer)), Some(Content::Msa(alignment))) => alignment.restore(layer),
+            (Some(Snapshot::Tree(state)), Some(Content::Tree(tree))) => tree.restore(state),
+            _ => {}
         }
     }
 
@@ -503,8 +617,28 @@ impl Session {
         let name = dataset.file_name();
         match &mut dataset.content {
             Content::Msa(alignment) => Ok(alignment),
-            Content::Unloaded => Err(Error::Invalid(format!(
+            Content::Tree(_) | Content::Unloaded => Err(Error::Invalid(format!(
                 "{name} is not an alignment; switch with use N"
+            ))),
+        }
+    }
+
+    fn current_is_tree(&self) -> bool {
+        self.current
+            .is_some_and(|index| self.datasets[index].tree().is_some())
+    }
+
+    /// The tree that tree commands apply to.
+    fn current_tree(&mut self) -> Result<&mut TreeDoc> {
+        let Some(index) = self.current else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let dataset = &mut self.datasets[index];
+        let name = dataset.file_name();
+        match &mut dataset.content {
+            Content::Tree(tree) => Ok(tree),
+            Content::Msa(_) | Content::Unloaded => Err(Error::Invalid(format!(
+                "{name} is not a tree; switch with use N"
             ))),
         }
     }
@@ -564,10 +698,12 @@ impl Session {
                     created: None,
                 })
             }
+            Command::Undo if self.current_is_tree() => self.current_tree()?.undo(),
+            Command::Redo if self.current_is_tree() => self.current_tree()?.redo(),
             Command::Undo => self.current_alignment()?.undo(),
             Command::Redo => self.current_alignment()?.redo(),
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
-            Command::Tree(_) => Err(Error::Invalid("tree commands are not ready".to_string())),
+            Command::Tree(cmd) => self.current_tree()?.apply(&cmd),
         }
     }
 }
@@ -808,7 +944,7 @@ mod tests {
         assert_eq!(s.datasets()[0].msa().unwrap().rows(), 3);
         assert_eq!(s.current(), Some(0));
         let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
-        assert!(out.message.ends_with("(tree, 6 bytes)"), "{}", out.message);
+        assert!(out.message.ends_with("(tree, 2 tips)"), "{}", out.message);
         assert!(s.datasets()[1].msa().is_none());
         assert_eq!(s.current(), Some(1));
     }
@@ -887,13 +1023,201 @@ mod tests {
             assert_eq!(ex(&mut s, line).unwrap_err().to_string(), "no file is open");
         }
         let mut s = opened(&dir, &["a.fa", "t.nwk"]);
-        for line in ["msa delete-cols --cols 1", "undo"] {
-            assert_eq!(
-                ex(&mut s, line).unwrap_err().to_string(),
-                "t.nwk is not an alignment; switch with use N"
-            );
-        }
+        assert_eq!(
+            ex(&mut s, "msa delete-cols --cols 1")
+                .unwrap_err()
+                .to_string(),
+            "t.nwk is not an alignment; switch with use N"
+        );
         assert_eq!(cols(&s, 0), 10);
+    }
+
+    /// A temp dir holding `t.nwk` = `((A:1,B:2)90:3,C:4);`, `dup.nwk` =
+    /// `((A,A),B);` and `a.fa` with sequences A, B, C and Z.
+    fn trees() -> (TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        fs::write(path.join("t.nwk"), "((A:1,B:2)90:3,C:4);").unwrap();
+        fs::write(path.join("dup.nwk"), "((A,A),B);").unwrap();
+        fs::write(
+            path.join("a.fa"),
+            ">A\nAC-T\n>B\nACGT\n>C\nTTTT\n>Z\nGGGG\n",
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    /// Run a command line with `{}` replaced by the directory.
+    fn ex_in(session: &mut Session, dir: &Path, line: &str) -> crate::Result<Outcome> {
+        let dir = shlex::try_quote(dir.to_str().unwrap())
+            .unwrap()
+            .into_owned();
+        ex(session, &line.replace("{}", &dir))
+    }
+
+    #[test]
+    fn a_tree_opens_and_says_what_it_holds() {
+        let (_keep, dir) = trees();
+        let mut s = Session::new(None);
+        let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
+        assert_eq!(
+            out.message,
+            format!("opened {} (tree, 3 tips)", dir.join("t.nwk").display())
+        );
+        assert_eq!(s.datasets()[0].tree().unwrap().tips(), 3);
+        assert!(s.datasets()[0].msa().is_none() && !s.datasets()[0].is_modified());
+        let out = s.execute(open(&dir.join("dup.nwk"))).unwrap();
+        assert!(
+            out.message.ends_with(
+                "(tree, 3 tips); 1 name is shared by more than one tip; name those tips with --node"
+            ),
+            "{}",
+            out.message
+        );
+        fs::write(dir.join("two.nwk"), "[c](x,y);(p,q);").unwrap();
+        let out = s.execute(open(&dir.join("two.nwk"))).unwrap();
+        assert!(
+            out.message.ends_with(
+                "(tree, 2 tips); skipped 1 more tree in the file; comments were dropped"
+            ),
+            "{}",
+            out.message
+        );
+        fs::write(dir.join("bad.nwk"), "(x,y").unwrap();
+        let error = s
+            .execute(open(&dir.join("bad.nwk")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "{}: line 1, column 5: missing ')'",
+                dir.join("bad.nwk").display()
+            )
+        );
+        assert_eq!(s.datasets().len(), 3);
+    }
+
+    #[test]
+    fn a_clade_or_the_whole_tree_is_extracted() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["t.nwk"]);
+        let out = ex_in(
+            &mut s,
+            &dir,
+            "tree extract --mrca A --mrca B --out {}/ab.nwk",
+        )
+        .unwrap();
+        assert_eq!(
+            out.message,
+            format!("wrote {} (2 tips)", dir.join("ab.nwk").display())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("ab.nwk")).unwrap(),
+            "(A:1,B:2)90;\n"
+        );
+        ex_in(&mut s, &dir, "tree save -o {}/all.nwk").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("all.nwk")).unwrap(),
+            "((A:1,B:2)90:3,C:4);\n"
+        );
+        assert_eq!(
+            ex_in(&mut s, &dir, "tree extract --out {}/ab.nwk")
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "{} already exists; choose another name or remove it first",
+                dir.join("ab.nwk").display()
+            )
+        );
+        assert!(!s.datasets()[0].is_modified());
+        assert_eq!(
+            s.history()[1..],
+            [
+                format!(
+                    "tree extract --mrca A --mrca B --out {}/ab.nwk",
+                    dir.display()
+                ),
+                format!("tree extract --out {}/all.nwk", dir.display())
+            ]
+        );
+    }
+
+    #[test]
+    fn nodes_are_named_by_tip_pair_or_number_and_shared_names_are_refused() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["dup.nwk"]);
+        let err = |s: &mut Session, line| ex_in(s, &dir, line).unwrap_err().to_string();
+        assert_eq!(
+            err(&mut s, "tree extract --tip A --out {}/x.nwk"),
+            "'A' names 2 tips; name one with --node (see the tree view)"
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --mrca A --mrca B --out {}/x.nwk"),
+            "'A' names 2 tips; name one with --node (see the tree view)"
+        );
+        ex_in(&mut s, &dir, "tree extract --node 2 --out {}/x.nwk").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("x.nwk")).unwrap(), "(A,A);\n");
+        assert_eq!(
+            err(&mut s, "tree extract --node 9 --out {}/y.nwk"),
+            "there is no node 9 (the tree has 5)"
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --node 0 --out {}/y.nwk"),
+            "there is no node 0 (the tree has 5)"
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --mrca B --out {}/y.nwk"),
+            "--mrca takes two tips"
+        );
+        assert_eq!(
+            err(&mut s, "tree extract --tip Q --out {}/y.nwk"),
+            "no tip is named 'Q'"
+        );
+        let mut s = opened(&dir, &["t.nwk"]);
+        ex_in(
+            &mut s,
+            &dir,
+            "tree extract --mrca B --mrca B --out {}/b.nwk",
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(dir.join("b.nwk")).unwrap(), "B;\n");
+        ex_in(
+            &mut s,
+            &dir,
+            "tree extract --mrca C --mrca A --out {}/r.nwk",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("r.nwk")).unwrap(),
+            "((A:1,B:2)90:3,C:4);\n"
+        );
+        assert!(!dir.join("y.nwk").exists());
+    }
+
+    #[test]
+    fn kinds_do_not_mix() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        assert_eq!(
+            ex(&mut s, "msa delete-cols --cols 1")
+                .unwrap_err()
+                .to_string(),
+            "t.nwk is not an alignment; switch with use N"
+        );
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "nothing to undo"
+        );
+        assert_eq!(
+            ex(&mut s, "redo").unwrap_err().to_string(),
+            "nothing to redo"
+        );
+        ex(&mut s, "use 1").unwrap();
+        assert_eq!(
+            ex(&mut s, "tree ladderize").unwrap_err().to_string(),
+            "a.fa is not a tree; switch with use N"
+        );
     }
 
     #[test]
@@ -1129,16 +1453,16 @@ mod tests {
     fn quick_commands_are_done_at_once() {
         let (_keep, dir) = trio_dir();
         let mut session = opened(&dir, &["a.fa"]);
-        for line in [
-            "msa delete-cols --cols 1",
-            "undo",
-            "use 1",
-            &format!("open {}", dir.join("t.nwk").display()),
-            "close",
-        ] {
+        for line in ["msa delete-cols --cols 1", "undo", "use 1", "close"] {
             let started = start(&mut session, line).unwrap();
             assert!(matches!(started, Started::Done(_)), "{line}");
         }
+        let line = format!("open {}", dir.join("t.nwk").display());
+        let started = start(&mut session, &line).unwrap();
+        assert!(
+            matches!(started, Started::Running(_)),
+            "a tree is read in the background"
+        );
     }
 
     #[test]

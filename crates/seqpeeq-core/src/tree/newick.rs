@@ -58,6 +58,7 @@ impl Tree {
 }
 
 /// Read the first tree in Newick text.
+#[cfg(test)]
 pub(crate) fn parse(text: &[u8]) -> std::result::Result<Parsed, String> {
     Ok(parse_with(text, &Progress::new())?.expect("nothing cancels it"))
 }
@@ -299,6 +300,7 @@ pub(crate) fn write_newick(tree: &Tree, from: NodeId, out: &mut dyn Write) -> io
 }
 
 /// The clade at `from` as Newick text.
+#[cfg(test)]
 pub(crate) fn to_newick(tree: &Tree, from: NodeId) -> String {
     let mut out = Vec::new();
     write_newick(tree, from, &mut out).expect("writing to memory cannot fail");

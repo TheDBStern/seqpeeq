@@ -11,8 +11,6 @@ pub mod progress;
 pub mod ranges;
 pub mod replay;
 pub mod session;
-// Until the session opens trees, parts are used only by tests.
-#[allow(dead_code)]
 pub mod tree;
 mod write;
 
@@ -28,3 +26,4 @@ pub use progress::Progress;
 pub use ranges::Ranges;
 pub use replay::{ReplayReport, replay};
 pub use session::{Content, Dataset, Finished, Job, Outcome, Session, Started, check_input};
+pub use tree::{NodeId, Parsed, Tree, TreeDoc};
