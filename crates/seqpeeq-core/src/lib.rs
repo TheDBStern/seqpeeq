@@ -16,6 +16,7 @@ pub mod session;
 pub mod tree;
 mod write;
 
+pub use command::bam::BamCmd;
 pub use command::msa::{MsaCmd, RowSel};
 pub use command::tree::{NodeSel, TreeCmd};
 pub use command::{Command, Kind};

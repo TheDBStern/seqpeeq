@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
-use crate::bam::BamDoc;
+use crate::bam::{BamDoc, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
@@ -15,7 +15,7 @@ use crate::progress::Progress;
 use crate::tree::newick::save_newick;
 use crate::tree::reroot::some_names;
 use crate::tree::{Tree, TreeDoc, TreeExtraction};
-use crate::{Command, Error, Kind, MsaCmd, Result, SessionLog, TreeCmd};
+use crate::{BamCmd, Command, Error, Kind, MsaCmd, Result, SessionLog, TreeCmd};
 
 /// What an open file holds.
 #[derive(Debug)]
@@ -202,6 +202,11 @@ enum Work {
         dataset: u64,
         extraction: Box<TreeExtraction>,
     },
+    /// Read a reference FASTA's index, for `bam ref`.
+    BamRef {
+        dataset: u64,
+        file: PathBuf,
+    },
 }
 
 impl Job {
@@ -250,6 +255,12 @@ impl Job {
                     applied,
                     whole: extraction.is_whole(),
                 }),
+            Work::BamRef { dataset, file } => {
+                Reference::open(&file, &self.progress).map(|reference| Product::Attached {
+                    dataset,
+                    reference: Box::new(reference),
+                })
+            }
         };
         Finished {
             line: self.line,
@@ -289,6 +300,11 @@ fn open_content(input: &Input, progress: &Progress) -> Result<(Content, Vec<Stri
 }
 
 enum Product {
+    /// A reference read for the BAM `dataset`.
+    Attached {
+        dataset: u64,
+        reference: Box<Reference>,
+    },
     Opened {
         input: Input,
         content: Content,
@@ -473,6 +489,12 @@ impl Session {
                 };
                 return Ok(self.hand_out(label, line, work));
             }
+            Command::Bam(BamCmd::Ref { file }) => {
+                self.current_bam()?;
+                let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let label = format!("reading {}", file_name(&file));
+                return Ok(self.hand_out(label, line, Work::BamRef { dataset, file }));
+            }
             quick => quick,
         };
 
@@ -508,6 +530,22 @@ impl Session {
         let Finished { line, result } = finished;
         let now = (self.clock)();
         match result? {
+            Product::Attached { dataset, reference } => {
+                let Some(doc) = self.datasets.iter_mut().find(|d| d.id == dataset) else {
+                    return Err(Error::Invalid(
+                        "the BAM was closed while its reference was read".to_string(),
+                    ));
+                };
+                let Content::Bam(bam) = &mut doc.content else {
+                    unreachable!("bam ref is handed out for a BAM");
+                };
+                if let Some(log) = &mut self.log {
+                    log.record(&line, None, &now)?;
+                }
+                let message = bam.set_reference(*reference);
+                self.history.push(line);
+                Ok(Outcome { message })
+            }
             Product::Opened {
                 input,
                 content,
@@ -1212,6 +1250,20 @@ impl Session {
     }
 
     /// The tree that tree commands apply to.
+    fn current_bam(&mut self) -> Result<&mut BamDoc> {
+        let Some(index) = self.current else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let dataset = &mut self.datasets[index];
+        let name = dataset.file_name();
+        match &mut dataset.content {
+            Content::Bam(bam) => Ok(bam),
+            Content::Msa(_) | Content::Tree(_) | Content::Unloaded => Err(Error::Invalid(format!(
+                "{name} is not a BAM; switch with use N"
+            ))),
+        }
+    }
+
     fn current_tree(&mut self) -> Result<&mut TreeDoc> {
         let Some(index) = self.current else {
             return Err(Error::Invalid("no file is open".to_string()));
@@ -1281,6 +1333,7 @@ impl Session {
             Command::Open { .. } | Command::Close => {
                 unreachable!("start handles opening and closing itself")
             }
+            Command::Bam(_) => unreachable!("start hands every bam command out as a job"),
             Command::Use { dataset } => {
                 let open = self.datasets.len();
                 if open == 0 {

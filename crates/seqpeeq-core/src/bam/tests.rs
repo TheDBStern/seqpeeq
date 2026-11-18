@@ -553,3 +553,69 @@ fn the_pass_hands_out_partial_results_that_are_final_so_far() {
         Some(70_100)
     );
 }
+
+#[test]
+fn a_reference_attaches_and_reads_stretches() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let line = format!("bam ref {}", f.reference.display());
+    let out = ex(&mut s, &line).unwrap();
+    assert_eq!(out.message, "attached ref.fa to reads.bam (3 of 3 contigs)");
+    let reference = s.datasets()[0].bam().unwrap().source().reference().unwrap();
+    assert_eq!(reference.fetch("c1", 101, 110).unwrap(), b"ACGTACGTAC");
+    assert!(reference.has("c3"));
+    assert!(!data.path().join("ref.fa.fai").exists(), "built in memory");
+    assert_eq!(s.history().last().unwrap(), &line);
+
+    fs::write(data.path().join("short.fa"), ">c1\nACGT\n>c2\nTTGCA\n").unwrap();
+    let out = ex(
+        &mut s,
+        &format!("bam ref {}", data.path().join("short.fa").display()),
+    )
+    .unwrap();
+    assert_eq!(
+        out.message,
+        "attached short.fa to reads.bam (2 of 3 contigs; 1 is not in short.fa)"
+    );
+
+    fs::write(data.path().join("t.nwk"), "(A,B);").unwrap();
+    open(&mut s, &data.path().join("t.nwk")).unwrap();
+    assert_eq!(
+        ex(&mut s, &line).unwrap_err().to_string(),
+        "t.nwk is not a BAM; switch with use N"
+    );
+}
+
+#[test]
+fn gzip_references_need_bgzip_and_its_indexes() {
+    use std::io::Write as _;
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let text = fs::read(&f.reference).unwrap();
+
+    let gz = data.path().join("ref.fa.gz");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&text).unwrap();
+    fs::write(&gz, encoder.finish().unwrap()).unwrap();
+    assert_eq!(
+        ex(&mut s, &format!("bam ref {}", gz.display()))
+            .unwrap_err()
+            .to_string(),
+        "ref.fa.gz is gzip, not bgzip: reading a stretch needs bgzip -i"
+    );
+
+    let bgz = data.path().join("ref2.fa.gz");
+    let mut writer = noodles::bgzf::io::Writer::new(File::create(&bgz).unwrap());
+    writer.write_all(&text).unwrap();
+    writer.finish().unwrap();
+    assert_eq!(
+        ex(&mut s, &format!("bam ref {}", bgz.display()))
+            .unwrap_err()
+            .to_string(),
+        "ref2.fa.gz needs ref2.fa.gz.fai and ref2.fa.gz.gzi (samtools faidx makes both)"
+    );
+}

@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
-use seqpeeq_core::{Command, Kind, Session, SessionLog, check_input, replay};
+use seqpeeq_core::{BamCmd, Command, Kind, Session, SessionLog, check_input, replay};
 
 /// View and edit alignments, trees and mapped reads in the terminal.
 #[derive(Parser)]
@@ -32,6 +32,10 @@ struct Cli {
     /// Treat the files as this kind instead of going by their extensions
     #[arg(long, value_enum)]
     kind: Option<Kind>,
+
+    /// A reference FASTA for the BAM files given (bam ref FASTA after each)
+    #[arg(long = "ref", value_name = "FASTA")]
+    reference: Option<PathBuf>,
 
     /// Write the session log here instead of seqpeeq-YYYYMMDD-HHMMSS.log
     #[arg(long, global = true, value_name = "PATH")]
@@ -121,7 +125,7 @@ fn run(cli: Cli) -> Result<()> {
             // The files are read once the interface is up, in the
             // background, so a large one does not delay it.
             let mut app = app::App::new(Session::new(log));
-            for command in open_commands(cli.files, cli.kind) {
+            for command in open_commands(cli.files, cli.kind, cli.reference)? {
                 app.enqueue(command);
             }
             term::run(&mut app).context("the interface stopped")?;
@@ -130,12 +134,27 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The `open` command for each file named on the command line.
-fn open_commands(files: Vec<PathBuf>, kind: Option<Kind>) -> Vec<Command> {
-    files
-        .into_iter()
-        .map(|path| Command::Open { path, kind })
-        .collect()
+/// The `open` command for each file named on the command line, each BAM
+/// followed by `bam ref` when a reference was given.
+fn open_commands(
+    files: Vec<PathBuf>,
+    kind: Option<Kind>,
+    reference: Option<PathBuf>,
+) -> anyhow::Result<Vec<Command>> {
+    let mut commands = Vec::new();
+    let mut bams = 0;
+    for path in files {
+        let is_bam = kind.or_else(|| Kind::from_path(&path)) == Some(Kind::Bam);
+        commands.push(Command::Open { path, kind });
+        if let (true, Some(file)) = (is_bam, &reference) {
+            commands.push(Command::Bam(BamCmd::Ref { file: file.clone() }));
+            bams += 1;
+        }
+    }
+    if reference.is_some() && bams == 0 {
+        anyhow::bail!("--ref is for BAM files; none was given");
+    }
+    Ok(commands)
 }
 
 #[cfg(test)]
@@ -146,7 +165,7 @@ mod tests {
     fn kind_flag_applies_to_files_given_at_start() {
         let cli = Cli::try_parse_from(["seqpeeq", "x.txt", "--kind", "tree"]).unwrap();
         assert_eq!(
-            open_commands(cli.files, cli.kind),
+            open_commands(cli.files, cli.kind, cli.reference).unwrap(),
             [Command::Open {
                 path: "x.txt".into(),
                 kind: Some(Kind::Tree)
@@ -158,7 +177,7 @@ mod tests {
     fn files_without_kind_flag_are_detected_by_extension() {
         let cli = Cli::try_parse_from(["seqpeeq", "a.fa", "t.nwk"]).unwrap();
         assert_eq!(
-            open_commands(cli.files, cli.kind),
+            open_commands(cli.files, cli.kind, cli.reference).unwrap(),
             [
                 Command::Open {
                     path: "a.fa".into(),
@@ -169,6 +188,38 @@ mod tests {
                     kind: None
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn ref_follows_each_bam_opened_at_start() {
+        let cli =
+            Cli::try_parse_from(["seqpeeq", "a.bam", "t.nwk", "b.bam", "--ref", "r.fa"]).unwrap();
+        let open = |p: &str| Command::Open {
+            path: p.into(),
+            kind: None,
+        };
+        let reference = || {
+            Command::Bam(BamCmd::Ref {
+                file: "r.fa".into(),
+            })
+        };
+        assert_eq!(
+            open_commands(cli.files, cli.kind, cli.reference).unwrap(),
+            [
+                open("a.bam"),
+                reference(),
+                open("t.nwk"),
+                open("b.bam"),
+                reference()
+            ]
+        );
+        let cli = Cli::try_parse_from(["seqpeeq", "t.nwk", "--ref", "r.fa"]).unwrap();
+        assert_eq!(
+            open_commands(cli.files, cli.kind, cli.reference)
+                .unwrap_err()
+                .to_string(),
+            "--ref is for BAM files; none was given"
         );
     }
 }

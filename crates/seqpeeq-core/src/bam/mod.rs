@@ -3,6 +3,7 @@
 mod coverage;
 mod index;
 mod read;
+mod reference;
 mod region;
 mod stretch;
 #[cfg(test)]
@@ -22,6 +23,7 @@ use crate::{Error, Result};
 
 pub use coverage::Coverage;
 pub use read::{Part, Place, Read};
+pub use reference::Reference;
 pub use region::{Region, parse_region};
 pub use stretch::{Direction, Stretch, next_start};
 
@@ -65,6 +67,7 @@ pub struct BamSource {
     contigs: Arc<[Contig]>,
     /// Reads placed nowhere, from the index; `None` when it keeps no count.
     unplaced: Option<u64>,
+    reference: Option<Arc<Reference>>,
 }
 
 impl BamDoc {
@@ -119,6 +122,7 @@ impl BamDoc {
                 index: Arc::new(index),
                 contigs,
                 unplaced,
+                reference: None,
             },
             notes: note.into_iter().collect(),
         })
@@ -154,6 +158,31 @@ impl BamDoc {
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
+
+    /// Use `reference` for reference bases from now on. Returns what the
+    /// message says: `attached ref.fa to reads.bam (3 of 3 contigs)`.
+    pub(crate) fn set_reference(&mut self, reference: Reference) -> String {
+        let contigs = self.source.contigs();
+        let found = contigs.iter().filter(|c| reference.has(&c.name)).count();
+        let missing = contigs.len() - found;
+        let ref_name = index::file_name(reference.path());
+        let mut message = format!(
+            "attached {ref_name} to {} ({} of {} contigs",
+            self.source.file_name(),
+            grouped(found as u64),
+            grouped(contigs.len() as u64)
+        );
+        if missing > 0 {
+            message.push_str(&format!(
+                "; {} {} not in {ref_name}",
+                grouped(missing as u64),
+                if missing == 1 { "is" } else { "are" }
+            ));
+        }
+        message.push(')');
+        self.source.reference = Some(Arc::new(reference));
+        message
+    }
 }
 
 impl BamSource {
@@ -163,6 +192,11 @@ impl BamSource {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The reference attached with `bam ref`, if any.
+    pub fn reference(&self) -> Option<&Reference> {
+        self.reference.as_deref()
     }
 
     /// The BAM's name without its folder, for messages.

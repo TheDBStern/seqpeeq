@@ -5,6 +5,7 @@
 //! the session log stores, what the in-app command line accepts and what
 //! `seqpeeq run` takes, so the three can never drift apart.
 
+pub mod bam;
 pub mod msa;
 pub mod tree;
 
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, ValueEnum};
 
 use crate::{Error, Result};
+use bam::BamCmd;
 use msa::MsaCmd;
 use tree::TreeCmd;
 
@@ -76,6 +78,9 @@ pub enum Command {
     /// Tree commands.
     #[command(subcommand)]
     Tree(TreeCmd),
+    /// BAM commands.
+    #[command(subcommand)]
+    Bam(BamCmd),
 }
 
 /// The words of a command's text form, before quoting.
@@ -159,6 +164,11 @@ impl Command {
                 cmd.write(&mut words)?;
                 words
             }
+            Command::Bam(cmd) => {
+                let mut words = Words::new("bam");
+                cmd.write(&mut words)?;
+                words
+            }
         };
         let Words {
             mut words,
@@ -230,6 +240,7 @@ fn path_word(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use crate::Error;
+    use crate::command::bam::BamCmd;
     use crate::command::msa::{MsaCmd, RowSel};
     use crate::command::tree::{NodeSel, TreeCmd};
     use crate::ranges::Ranges;
@@ -544,7 +555,12 @@ mod tests {
             Just(Command::Close),
             msa_cmd().prop_map(Command::Msa),
             tree_cmd().prop_map(Command::Tree),
+            bam_cmd().prop_map(Command::Bam),
         ]
+    }
+
+    fn bam_cmd() -> impl Strategy<Value = BamCmd> {
+        prop_oneof![path().prop_map(|file| BamCmd::Ref { file })]
     }
 
     fn node_sel() -> impl Strategy<Value = NodeSel> {
