@@ -19,6 +19,26 @@ pub enum BamCmd {
         #[arg(long, short)]
         out: PathBuf,
     },
+    /// Write reads to a new BAM, FASTA or FASTQ (by --out's extension).
+    ExportReads {
+        /// contig:start-end, or a contig's name for all of it
+        #[arg(long)]
+        region: String,
+        /// Only reads with this name (repeat for more)
+        #[arg(long = "name", allow_hyphen_values = true)]
+        names: Vec<String>,
+        /// Only reads named in this file, one per line
+        #[arg(long, conflicts_with = "names")]
+        names_file: Option<PathBuf>,
+        #[arg(long, short)]
+        out: PathBuf,
+        /// Add each read's mate and the other parts of split reads
+        #[arg(long)]
+        with_mates: bool,
+        /// Keep only the bases inside the region (FASTA or FASTQ)
+        #[arg(long)]
+        clip: bool,
+    },
     /// Write a stretch of the reference to a new FASTA.
     ExportRef {
         /// contig:start-end, or a contig's name for all of it
@@ -35,6 +55,7 @@ impl BamCmd {
             BamCmd::Ref { .. } => "ref",
             BamCmd::ExportRegion { .. } => "export-region",
             BamCmd::ExportRef { .. } => "export-ref",
+            BamCmd::ExportReads { .. } => "export-reads",
         }
     }
 
@@ -45,6 +66,29 @@ impl BamCmd {
             BamCmd::ExportRegion { region, out } | BamCmd::ExportRef { region, out } => {
                 words.flag("--out", path_word(out)?);
                 words.positional(region);
+            }
+            BamCmd::ExportReads {
+                region,
+                names,
+                names_file,
+                out,
+                with_mates,
+                clip,
+            } => {
+                words.flag("--region", region);
+                for name in names {
+                    words.flag("--name", name);
+                }
+                if let Some(file) = names_file {
+                    words.flag("--names-file", path_word(file)?);
+                }
+                words.flag("--out", path_word(out)?);
+                if *with_mates {
+                    words.switch("--with-mates");
+                }
+                if *clip {
+                    words.switch("--clip");
+                }
             }
         }
         Ok(())

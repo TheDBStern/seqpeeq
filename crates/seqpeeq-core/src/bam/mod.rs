@@ -2,6 +2,7 @@
 
 mod coverage;
 mod export;
+mod export_reads;
 mod index;
 mod read;
 mod reference;

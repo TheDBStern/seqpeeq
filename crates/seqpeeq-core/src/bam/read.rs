@@ -188,11 +188,7 @@ impl BamSource {
             .alignment_end()
             .transpose()?
             .map_or(start, |p| p.get() as u64);
-        let cigar = record
-            .cigar()
-            .iter()
-            .map(|op| op.map(|op| (op_char(op.kind()), op.len() as u32)))
-            .collect::<io::Result<Vec<_>>>()?;
+        let cigar = cigar_of(record)?;
         let data = record.data();
         let text = |tag: Tag| -> io::Result<Option<String>> {
             match data.get(&tag).transpose()? {
@@ -212,9 +208,7 @@ impl BamSource {
             }),
             _ => None,
         };
-        let parts = text(Tag::OTHER_ALIGNMENTS)?
-            .map(|sa| self.parse_sa(&sa))
-            .unwrap_or_default();
+        let parts = self.sa_parts(record)?;
         Ok(Read {
             name: record.name().map(|n| n.to_string()).unwrap_or_default(),
             flags: flags.bits(),
@@ -228,6 +222,16 @@ impl BamSource {
             mate,
             parts,
         })
+    }
+
+    /// The other parts of a split read, from its SA tag, leaving out any on
+    /// a contig this BAM's header does not name.
+    pub(crate) fn sa_parts(&self, record: &bam::Record) -> io::Result<Vec<Part>> {
+        let data = record.data();
+        match data.get(&Tag::OTHER_ALIGNMENTS).transpose()? {
+            Some(Value::String(sa)) => Ok(self.parse_sa(&sa.to_string())),
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// The parts an SA tag lists, leaving out any on a contig this BAM's
@@ -269,10 +273,14 @@ pub(crate) fn counted_blocks(record: &bam::Record) -> io::Result<Option<(u64, Bl
         return Ok(None);
     };
     let start = start.get() as u64;
-    let cigar = record
+    Ok(Some((start, blocks(start, &cigar_of(record)?))))
+}
+
+/// A record's CIGAR as (operation, length) pairs.
+pub(crate) fn cigar_of(record: &bam::Record) -> io::Result<Vec<(char, u32)>> {
+    record
         .cigar()
         .iter()
         .map(|op| op.map(|op| (op_char(op.kind()), op.len() as u32)))
-        .collect::<io::Result<Vec<_>>>()?;
-    Ok(Some((start, blocks(start, &cigar))))
+        .collect()
 }

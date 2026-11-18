@@ -41,6 +41,8 @@ pub struct SessionLog {
     out: Option<Output>,
     /// Command lines written so far.
     commands: usize,
+    /// Names files written so far.
+    names: usize,
     /// Set by a failed write. The file may then end in a partial record, so
     /// nothing more is added to it and the session refuses further commands.
     broken: bool,
@@ -107,7 +109,35 @@ impl SessionLog {
             opener,
             out: None,
             commands: 0,
+            names: 0,
             broken: false,
+        }
+    }
+
+    /// Write `names`, one per line, to a new file beside the log,
+    /// `{log stem}.names-{N}.txt` with N counting from 1, for a command too
+    /// long to give its names one by one (`--names-file`).
+    pub fn write_names(&mut self, names: &[String]) -> Result<PathBuf> {
+        let stem = self
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "seqpeeq".to_string());
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        loop {
+            self.names += 1;
+            let path = dir.join(format!("{stem}.names-{}.txt", self.names));
+            let written = crate::write::create_text(&path, |w| {
+                for name in names {
+                    writeln!(w, "{name}")?;
+                }
+                Ok(())
+            });
+            match written {
+                Ok(_) => return Ok(path),
+                Err(crate::Error::Exists(_)) => continue,
+                Err(error) => return Err(error),
+            }
         }
     }
 

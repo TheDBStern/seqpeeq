@@ -1268,6 +1268,15 @@ impl Session {
     }
 
     /// The tree that tree commands apply to.
+    /// Write `names` to a new names file beside the log, for a command's
+    /// `--names-file`; `None` when the session keeps no log.
+    pub fn names_file(&mut self, names: &[String]) -> Result<Option<PathBuf>> {
+        match &mut self.log {
+            Some(log) => log.write_names(names).map(Some),
+            None => Ok(None),
+        }
+    }
+
     fn current_bam(&mut self) -> Result<&mut BamDoc> {
         let Some(index) = self.current else {
             return Err(Error::Invalid("no file is open".to_string()));

@@ -565,6 +565,26 @@ mod tests {
             path().prop_map(|file| BamCmd::Ref { file }),
             (region(), path()).prop_map(|(region, out)| BamCmd::ExportRegion { region, out }),
             (region(), path()).prop_map(|(region, out)| BamCmd::ExportRef { region, out }),
+            (
+                region(),
+                proptest::collection::vec(text().prop_filter("a name", |t| !t.is_empty()), 0..3),
+                proptest::option::of(path()),
+                path(),
+                any::<bool>(),
+                any::<bool>(),
+            )
+                .prop_map(|(region, names, file, out, with_mates, clip)| {
+                    // --names-file and --name are never given together.
+                    let names_file = if names.is_empty() { file } else { None };
+                    BamCmd::ExportReads {
+                        region,
+                        names,
+                        names_file,
+                        out,
+                        with_mates,
+                        clip,
+                    }
+                }),
         ]
     }
 

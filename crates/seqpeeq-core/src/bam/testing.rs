@@ -48,7 +48,6 @@ fn reference_seq(c: &str) -> String {
 }
 
 /// The reverse complement of `bases`.
-#[allow(dead_code)] // TEMP phase 4a: used from Task 8
 pub(crate) fn revcomp(bases: &str) -> String {
     bases
         .bytes()

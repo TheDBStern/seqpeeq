@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use noodles::bam;
 
+use crate::bam::export_reads::{ReadsArgs, ReadsExport};
 use crate::bam::index::{build_index, file_name, write_index};
 use crate::bam::{BamDoc, BamSource, Reference, Region, grouped, parse_region};
 use crate::command::bam::BamCmd;
@@ -27,6 +28,7 @@ pub(crate) enum BamExport {
         cut: Option<String>,
         out: PathBuf,
     },
+    Reads(Box<ReadsExport>),
     Ref {
         reference: Arc<Reference>,
         name: String,
@@ -36,14 +38,14 @@ pub(crate) enum BamExport {
     },
 }
 
-fn refuse_taken(path: &Path) -> Result<()> {
+pub(crate) fn refuse_taken(path: &Path) -> Result<()> {
     if path.symlink_metadata().is_ok() {
         return Err(Error::Exists(path.to_path_buf()));
     }
     Ok(())
 }
 
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
@@ -91,6 +93,24 @@ impl BamExport {
                     out: out.clone(),
                 })
             }
+            BamCmd::ExportReads {
+                region,
+                names,
+                names_file,
+                out,
+                with_mates,
+                clip,
+            } => Ok(BamExport::Reads(Box::new(ReadsExport::plan(
+                source,
+                ReadsArgs {
+                    region,
+                    names,
+                    names_file: names_file.as_deref(),
+                    out,
+                    with_mates: *with_mates,
+                    clip: *clip,
+                },
+            )?))),
             BamCmd::Ref { .. } => unreachable!("bam ref is not an export"),
         }
     }
@@ -99,6 +119,7 @@ impl BamExport {
     pub(crate) fn out(&self) -> &Path {
         match self {
             BamExport::Region { out, .. } | BamExport::Ref { out, .. } => out,
+            BamExport::Reads(reads) => reads.out(),
         }
     }
 
@@ -107,6 +128,7 @@ impl BamExport {
             return Err(Error::Cancelled);
         }
         let applied = match self {
+            BamExport::Reads(reads) => reads.run(progress)?,
             BamExport::Region {
                 source,
                 region,
@@ -172,6 +194,22 @@ fn write_region(
     out: &Path,
     progress: &Progress,
 ) -> Result<Applied> {
+    write_bam(source, out, progress, |put| {
+        source.scan(region, progress, |record| {
+            put(record)?;
+            Ok(true)
+        })
+    })
+}
+
+/// Write a new BAM with `source`'s header and the records `fill` hands to
+/// `put`, then its index beside it.
+pub(crate) fn write_bam(
+    source: &BamSource,
+    out: &Path,
+    progress: &Progress,
+    fill: impl FnOnce(&mut dyn FnMut(&bam::Record) -> io::Result<()>) -> Result<()>,
+) -> Result<Applied> {
     let mut records = 0usize;
     // An error from reading the source, kept whole (a cancel stays a cancel)
     // while the writer sees only that it failed.
@@ -179,12 +217,11 @@ fn write_region(
     let size = create_then(out, |file| {
         let mut writer = bam::io::Writer::new(file);
         writer.write_header(&source.header)?;
-        let scanned = source.scan(region, progress, |record| {
-            writer.write_record(&source.header, record)?;
+        let filled = fill(&mut |record| {
             records += 1;
-            Ok(true)
+            writer.write_record(&source.header, record)
         });
-        if let Err(error) = scanned {
+        if let Err(error) = filled {
             reading = Some(error);
             return Err(io::Error::other("reading the BAM failed"));
         }

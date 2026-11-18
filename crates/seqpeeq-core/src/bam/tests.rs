@@ -724,3 +724,287 @@ fn export_ref_writes_the_stretch() {
         [60, 60, 10]
     );
 }
+
+#[test]
+fn reads_export_once_each_in_their_own_orientation() {
+    use super::testing::{ref_bases as r, revcomp};
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let o = |name: &str| out.path().join(name);
+    let read = |name: &str| fs::read_to_string(o(name)).unwrap();
+    let mut r1 = r("c1", 101, 150).into_bytes();
+    r1[9] = b'G';
+    let r1 = String::from_utf8(r1).unwrap();
+    let r2 = format!(
+        "{}{}{}",
+        r("c2", 51, 60),
+        r("c1", 121, 150),
+        r("c1", 156, 165)
+    );
+
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --out {}",
+            o("r.fa").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(done.message, "wrote 2 reads to r.fa");
+    assert_eq!(read("r.fa"), format!(">r1/1\n{r1}\n>r2\n{r2}\n"));
+
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --with-mates --out {}",
+            o("m.fa").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(done.message, "wrote 3 reads to m.fa");
+    let r1_2 = revcomp(&r("c1", 301, 350));
+    assert_eq!(
+        read("m.fa"),
+        format!(">r1/1\n{r1}\n>r2\n{r2}\n>r1/2\n{r1_2}\n")
+    );
+
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --with-mates --out {}",
+            o("m.bam").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 4 records to m.bam and its index m.bam.bai"
+    );
+    let names: Vec<(String, u16)> = bam_records(&o("m.bam")).1;
+    assert_eq!(
+        names,
+        [
+            ("r1".to_string(), 99),
+            ("r2".to_string(), 0),
+            ("r1".to_string(), 147),
+            ("r2".to_string(), 2048)
+        ]
+    );
+
+    ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c2:51-60 --out {}",
+            o("s.fa").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        read("s.fa"),
+        format!(">r2\n{r2}\n"),
+        "the primary, found through SA"
+    );
+
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:701-760 --out {}",
+            o("v.fq").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 2 reads to v.fq; left out 1 secondary alignment"
+    );
+    let q = "!".repeat(40);
+    assert_eq!(
+        read("v.fq"),
+        format!(
+            "@r3\n{}\n+\n{q}\n@r5\n{}\n+\n{q}\n",
+            r("c1", 701, 740),
+            r("c1", 721, 760)
+        )
+    );
+
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --name r2 --name zz --out {}",
+            o("n.fa").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 1 read to n.fa; 1 name had no read in the region"
+    );
+    assert_eq!(read("n.fa"), format!(">r2\n{r2}\n"));
+
+    ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:121-130 --clip --out {}",
+            o("c.fa").display()
+        ),
+    )
+    .unwrap();
+    let mid = r("c1", 121, 130);
+    assert_eq!(
+        read("c.fa"),
+        format!(">r1/1:121-130\n{mid}\n>r2:121-130\n{mid}\n")
+    );
+
+    ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --out {}",
+            o("r.fa.gz").display()
+        ),
+    )
+    .unwrap();
+    let mut text = String::new();
+    use std::io::Read as _;
+    flate2::read::GzDecoder::new(File::open(o("r.fa.gz")).unwrap())
+        .read_to_string(&mut text)
+        .unwrap();
+    assert_eq!(text, read("r.fa"));
+
+    let mut refused = |line: String| ex(&mut s, &line).unwrap_err().to_string();
+    assert_eq!(
+        refused(format!(
+            "bam export-reads --region c1 --out {}",
+            o("r.txt").display()
+        )),
+        "--out must end in .bam, .fa, .fasta, .fna, .fq or .fastq (or those with .gz)"
+    );
+    assert_eq!(
+        refused(format!(
+            "bam export-reads --region c1 --clip --out {}",
+            o("c.bam").display()
+        )),
+        "--clip is for FASTA or FASTQ output"
+    );
+    assert_eq!(
+        refused(format!(
+            "bam export-reads --region c1 --clip --with-mates --out {}",
+            o("cm.fa").display()
+        )),
+        "--clip keeps only the bases inside the region, so it cannot take --with-mates"
+    );
+    assert!(!o("r.txt").exists() && !o("c.bam").exists() && !o("cm.fa").exists());
+}
+
+#[test]
+fn a_names_file_sits_beside_the_log() {
+    let (data, cache) = dirs();
+    let logs = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let log = logs.path().join("seqpeeq-20261117-120000.log");
+    let mut s = Session::new(Some(crate::SessionLog::new(log)));
+    s.set_cache_dir(cache.path().to_path_buf());
+    open(&mut s, &f.bam).unwrap();
+
+    let first = s.names_file(&["r2".to_string()]).unwrap().unwrap();
+    assert_eq!(
+        first,
+        logs.path().join("seqpeeq-20261117-120000.names-1.txt")
+    );
+    assert_eq!(fs::read_to_string(&first).unwrap(), "r2\n");
+    let second = s
+        .names_file(&["a".to_string(), "b".to_string()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        second,
+        logs.path().join("seqpeeq-20261117-120000.names-2.txt")
+    );
+    assert_eq!(fs::read_to_string(&second).unwrap(), "a\nb\n");
+    assert_eq!(
+        session(cache.path())
+            .names_file(&["r2".to_string()])
+            .unwrap(),
+        None
+    );
+
+    let x = data.path().join("x.fa");
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c1:101-150 --names-file {} --out {}",
+            first.display(),
+            x.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(done.message, "wrote 1 read to x.fa");
+    assert!(fs::read_to_string(&x).unwrap().starts_with(">r2\n"));
+
+    let empty = data.path().join("empty.txt");
+    fs::write(&empty, "\n").unwrap();
+    let line = format!(
+        "bam export-reads --region c1 --names-file {} --out {}",
+        empty.display(),
+        data.path().join("e.fa").display()
+    );
+    assert_eq!(
+        ex(&mut s, &line).unwrap_err().to_string(),
+        "empty.txt names no reads"
+    );
+    let missing = data.path().join("none.txt");
+    let line = format!(
+        "bam export-reads --region c1 --names-file {} --out {}",
+        missing.display(),
+        data.path().join("e.fa").display()
+    );
+    assert!(matches!(ex(&mut s, &line), Err(Error::Io { .. })));
+}
+
+#[test]
+fn clipping_keeps_insertions_and_counts_what_could_not_be_written() {
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n\
+        a\t0\tc\t1\t60\t5M2I5M\t*\t0\t0\tACGTAGGCGTAC\t*\n\
+        b\t0\tc\t1\t60\t2M20D2M\t*\t0\t0\tACGT\t*\n\
+        s\t2048\tc\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\t*\tSA:Z:c,500,+,10M,60,0;\n\
+        p\t97\tc\t200\t60\t10M\tc\t600\t0\tACGTACGTAC\t*\n";
+    let bam = bam_from_sam(data.path(), "x.bam", sam);
+    let mut s = session(cache.path());
+    open(&mut s, &bam).unwrap();
+    let c = data.path().join("c.fa");
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c:3-8 --clip --out {}",
+            c.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 1 read to c.fa; 1 read had no base in the region"
+    );
+    assert_eq!(fs::read_to_string(&c).unwrap(), ">a:3-8\nGTAGGCGT\n");
+
+    let m = data.path().join("m.fa");
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --region c:100-210 --with-mates --out {}",
+            m.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 2 reads to m.fa; 1 read written from a split part (no primary found); \
+         2 mates or parts not found"
+    );
+    assert_eq!(
+        fs::read_to_string(&m).unwrap(),
+        ">s\nACGTACGTAC\n>p/1\nACGTACGTAC\n"
+    );
+}
