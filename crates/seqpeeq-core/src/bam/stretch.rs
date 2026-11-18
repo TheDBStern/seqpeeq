@@ -140,6 +140,8 @@ impl BamSource {
             start: from.max(1),
             end: length,
         };
+        progress.set_total(length - region.start + 1);
+        let mut reached = region.start;
         let mut union = Union::default();
         let mut found = None;
         // Coverage at positions from `from` on is exact, so a stretch
@@ -149,6 +151,10 @@ impl BamSource {
             if let Some((start, cigar)) = counted(record)? {
                 union.push(start, &spans(start, &cigar));
                 found = settled_answer(&union.done, from, want);
+                if start > reached {
+                    progress.add(start - reached);
+                    reached = start;
+                }
             }
             Ok(found.is_none())
         })?;
@@ -179,6 +185,9 @@ impl BamSource {
         if from <= 1 {
             return Ok(None);
         }
+        // Shown as the distance back to the contig's start, read so far.
+        progress.set_total(from - 1);
+        let mut read_back = 0;
         let mut width = BACK_WINDOW;
         loop {
             let start = from.saturating_sub(width).max(1);
@@ -199,6 +208,8 @@ impl BamSource {
                 }
                 Ok(true)
             })?;
+            progress.add(from - start - read_back);
+            read_back = from - start;
             let covered = union.finish();
             // Within the window, a stretch start is known only past its
             // first base, unless the window begins the contig.

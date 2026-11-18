@@ -14,6 +14,7 @@ mod stretch;
 pub mod testing;
 #[cfg(test)]
 mod tests;
+mod window;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +33,7 @@ pub use read::{Part, Place, Read};
 pub use reference::Reference;
 pub use region::{Region, parse_region};
 pub use stretch::{Direction, Stretch, next_start};
+pub use window::Window;
 
 /// A reference sequence named in a BAM's header, with the read counts its
 /// index holds (`None` when the index keeps no counts).

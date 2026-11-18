@@ -1330,3 +1330,85 @@ fn a_moved_log_finds_its_names_file_beside_it() {
         fs::read(data.path().join("b.fa")).unwrap()
     );
 }
+
+#[test]
+fn a_window_gives_binned_depth_and_its_reads() {
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    let w = source
+        .window(&region(&source, "c1:101-200"), 10, Some(100), &progress)
+        .unwrap();
+    assert_eq!(
+        w.depth,
+        [1.0, 1.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.0, 0.0, 0.0],
+        "deleted bases are not depth"
+    );
+    let names: Vec<String> = w.reads.unwrap().iter().map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["r1", "r2"]);
+    assert_eq!((w.bin, w.count), (10, 2));
+    assert_eq!(progress.fraction(), Some(1.0));
+
+    // c1 has seven mapped records: r1 twice, r2, r3, r4 (secondary), r5
+    // (duplicate) and r6.
+    let all = source
+        .window(
+            &region(&source, "c1"),
+            100,
+            Some(2),
+            &crate::Progress::new(),
+        )
+        .unwrap();
+    assert_eq!((all.reads.is_none(), all.count), (true, 7));
+    let depth_only = source
+        .window(&region(&source, "c1"), 100, None, &crate::Progress::new())
+        .unwrap();
+    assert!(depth_only.reads.is_none());
+    assert_eq!(depth_only.depth.len(), 10);
+    assert_eq!(
+        depth_only.depth[1], 0.9,
+        "101-200: r1's 50 and r2's 40 bases"
+    );
+    // r4 and r5 do not count towards depth.
+    assert_eq!(depth_only.depth[7], 0.4, "701-800: r3's 40 bases");
+
+    // A last bin cut short by the region's end is averaged over what it has.
+    let short = source
+        .window(
+            &region(&source, "c1:141-155"),
+            10,
+            None,
+            &crate::Progress::new(),
+        )
+        .unwrap();
+    assert_eq!(short.depth, [2.0, 0.0]);
+}
+
+#[test]
+fn a_cancelled_window_stops() {
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    progress.cancel();
+    let err = source
+        .window(&region(&source, "c1"), 1, Some(10), &progress)
+        .unwrap_err();
+    assert!(matches!(err, Error::Cancelled), "{err}");
+}
+
+#[test]
+fn a_jump_reports_progress() {
+    use super::{Direction, Stretch};
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    source
+        .jump(0, 1, Direction::Forward, Stretch::Empty, &progress)
+        .unwrap();
+    assert!(progress.fraction().is_some(), "a forward jump");
+    let progress = crate::Progress::new();
+    source
+        .jump(0, 1000, Direction::Back, Stretch::Covered, &progress)
+        .unwrap();
+    assert!(progress.fraction().is_some(), "a jump back");
+}
