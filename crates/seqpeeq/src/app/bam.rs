@@ -2,7 +2,7 @@
 //! it hands to worker threads.
 
 use super::*;
-use crate::bam_view::{pass_bin, serves, zoom_levels};
+use crate::bam_view::{ContigList, ContigSort, pass_bin, serves, zoom_levels};
 use seqpeeq_core::bam::parse_region;
 
 /// A jump reading the BAM in the background.
@@ -236,6 +236,13 @@ impl App {
             KeyCode::Char('m') => return self.bam_mate(),
             KeyCode::Char('s') => return self.bam_part(),
             KeyCode::Char('\'') => return self.bam_back(),
+            KeyCode::Char('c') => {
+                if let Some((_, doc, _)) = self.bam() {
+                    let list = ContigList::new(doc.source().contigs());
+                    self.mode = Mode::Contigs(Box::new(list));
+                }
+                return;
+            }
             _ => {}
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -396,6 +403,67 @@ impl App {
             Ok(None) => self.status = no_more(want, dir, name),
             Err(Error::Cancelled) => self.status = "jump cancelled".to_string(),
             Err(e) => self.status = format!("error: {e}"),
+        }
+    }
+
+    /// A key while the contig list is open.
+    pub(super) fn contigs_key(&mut self, key: &KeyEvent) {
+        let Some(source) = self.bam().map(|(_, doc, _)| doc.source().clone()) else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let contigs = source.contigs();
+        let visible = ui::bam::contig_list_rows(self).max(1);
+        let Mode::Contigs(list) = &mut self.mode else {
+            return;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let start_over = |list: &mut ContigList| {
+            list.cursor = 0;
+            list.top = 0;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                let picked = list.rows(contigs).get(list.cursor).copied();
+                self.mode = Mode::Normal;
+                if let Some((source, view)) = picked.and(self.bam_mut()) {
+                    let contig = picked.expect("just checked");
+                    view.whole_contig(contig, source.contigs()[contig].length);
+                }
+                return;
+            }
+            KeyCode::Up => list.cursor = list.cursor.saturating_sub(1),
+            KeyCode::Down => list.cursor += 1,
+            KeyCode::PageUp => list.cursor = list.cursor.saturating_sub(visible),
+            KeyCode::PageDown => list.cursor += visible,
+            KeyCode::Tab => {
+                list.sort = match list.sort {
+                    ContigSort::Name => ContigSort::Reads,
+                    ContigSort::Reads => ContigSort::Name,
+                };
+                start_over(list);
+            }
+            KeyCode::Char('a') if ctrl => {
+                list.all = !list.all;
+                start_over(list);
+            }
+            _ if ctrl => {}
+            _ => {
+                if list.filter.key(key) {
+                    start_over(list);
+                }
+            }
+        }
+        let shown = list.rows(contigs).len();
+        list.cursor = list.cursor.min(shown.saturating_sub(1));
+        if list.cursor < list.top {
+            list.top = list.cursor;
+        } else if list.cursor >= list.top + visible {
+            list.top = list.cursor + 1 - visible;
         }
     }
 
@@ -916,5 +984,55 @@ pub(crate) mod tests {
         assert!(v.read_at(col, 1).is_some(), "r2's clip is drawn");
         keys(&mut app, "S");
         assert!(view(&app).read_at(col, 1).is_none());
+    }
+
+    fn ctrl(app: &mut App, c: char) {
+        app.handle_event(&Event::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL,
+        )));
+    }
+
+    fn listed(app: &App) -> Vec<usize> {
+        let Mode::Contigs(list) = &app.mode else {
+            panic!("the contig list is not open")
+        };
+        list.rows(app.bam().unwrap().1.source().contigs())
+    }
+
+    #[test]
+    fn c_opens_the_list_and_enter_goes_there() {
+        let (mut app, _dir) = with_bam();
+        keys(&mut app, "c");
+        assert_eq!(listed(&app), [0, 1], "c3 has no reads");
+        ctrl(&mut app, 'a');
+        assert_eq!(listed(&app), [0, 1, 2]);
+        ctrl(&mut app, 'a');
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(listed(&app), [0, 1], "c1 has 7 reads, c2 3");
+        keys(&mut app, "2");
+        assert_eq!(listed(&app), [1]);
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert!(matches!(app.mode, Mode::Normal));
+        let v = view(&app);
+        assert_eq!((v.contig, v.cursor, v.left), (1, 1, 1));
+        assert_eq!(v.end(500), 500, "the whole contig");
+
+        keys(&mut app, "c");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(view(&app).contig, 1, "Esc goes nowhere");
+        keys(&mut app, "c");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(view(&app).contig, 1, "the cursor stops on the last row");
+        keys(&mut app, "c");
+        keys(&mut app, "zzz");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal), "nothing to go to");
+        assert_eq!(view(&app).contig, 1);
     }
 }

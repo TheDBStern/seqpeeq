@@ -5,7 +5,11 @@
 // Wired into the app by the tasks that follow; until then only tests use it.
 #![allow(dead_code)]
 
+use std::cmp::{Ordering, Reverse};
+
 use seqpeeq_core::bam::{Contig, Place, Read, Region, Window};
+
+use crate::line::LineEdit;
 
 /// Views at most this wide, in bases, show their reads.
 pub const READS_WIDTH: u64 = 200_000;
@@ -181,6 +185,109 @@ pub fn details(read: &Read, contigs: &[Contig]) -> String {
         ));
     }
     parts.join(" · ")
+}
+
+/// How the contig list is sorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContigSort {
+    #[default]
+    Name,
+    /// Most mapped reads first.
+    Reads,
+}
+
+/// `c`: the contigs of a BAM to pick one from.
+#[derive(Debug, Clone)]
+pub struct ContigList {
+    pub filter: LineEdit,
+    pub sort: ContigSort,
+    /// Show contigs with no reads too.
+    pub all: bool,
+    /// The row picked, among those shown.
+    pub cursor: usize,
+    /// The first row shown.
+    pub top: usize,
+    /// How many contigs have no reads.
+    pub hidden: usize,
+    by_name: Vec<usize>,
+    by_reads: Vec<usize>,
+}
+
+/// Names compared with runs of digits as numbers: chr2 before chr10.
+fn natural(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a.as_bytes(), b.as_bytes());
+    loop {
+        match (x.first(), y.first()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let n = x.iter().take_while(|b| b.is_ascii_digit()).count();
+                let m = y.iter().take_while(|b| b.is_ascii_digit()).count();
+                let trim = |s: &[u8]| -> usize { s.iter().take_while(|&&b| b == b'0').count() };
+                let (p, q) = (&x[trim(&x[..n])..n], &y[trim(&y[..m])..m]);
+                let order = p.len().cmp(&q.len()).then(p.cmp(q)).then(n.cmp(&m));
+                if order != Ordering::Equal {
+                    return order;
+                }
+                (x, y) = (&x[n..], &y[m..]);
+            }
+            (Some(c), Some(d)) => {
+                if c != d {
+                    return c.cmp(d);
+                }
+                (x, y) = (&x[1..], &y[1..]);
+            }
+        }
+    }
+}
+
+/// Whether `name` holds `needle`, which is in lower case, in any case.
+fn holds(name: &str, needle: &str) -> bool {
+    if name.is_ascii() && needle.is_ascii() {
+        let (name, needle) = (name.as_bytes(), needle.as_bytes());
+        return name.len() >= needle.len()
+            && name
+                .windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle));
+    }
+    name.to_lowercase().contains(needle)
+}
+
+impl ContigList {
+    /// A list of `contigs`, sorted both ways once.
+    pub fn new(contigs: &[Contig]) -> ContigList {
+        let mut by_name: Vec<usize> = (0..contigs.len()).collect();
+        by_name.sort_by(|&a, &b| natural(&contigs[a].name, &contigs[b].name));
+        let mut by_reads = by_name.clone();
+        // Stable, so ties stay in name order; unknown counts go last.
+        by_reads.sort_by_key(|&i| Reverse(contigs[i].mapped.map_or(0, |m| m + 1)));
+        ContigList {
+            filter: LineEdit::default(),
+            sort: ContigSort::Name,
+            all: false,
+            cursor: 0,
+            top: 0,
+            hidden: contigs.iter().filter(|c| c.mapped == Some(0)).count(),
+            by_name,
+            by_reads,
+        }
+    }
+
+    /// The contigs shown, as indexes, in order.
+    pub fn rows(&self, contigs: &[Contig]) -> Vec<usize> {
+        let order = match self.sort {
+            ContigSort::Name => &self.by_name,
+            ContigSort::Reads => &self.by_reads,
+        };
+        let needle = self.filter.text().to_lowercase();
+        order
+            .iter()
+            .copied()
+            .filter(|&i| self.all || contigs[i].mapped != Some(0))
+            .filter(|&i| needle.is_empty() || holds(&contigs[i].name, &needle))
+            .collect()
+    }
 }
 
 /// What a window read in the background brought back.
@@ -377,6 +484,15 @@ impl BamView {
             let half = self.cols() / 2 * self.per_col;
             self.place_left(self.cursor.saturating_sub(half), length);
         }
+    }
+
+    /// The whole of `contig`, cursor at its start.
+    pub fn whole_contig(&mut self, contig: usize, length: u64) {
+        self.go(contig, 1, length);
+        self.per_col = *zoom_levels(length, self.width).last().expect("a level");
+        self.left = 1;
+        self.before_whole = None;
+        self.repack();
     }
 
     /// Show `a..=b` at the closest zoom that fits it, cursor at `a`.
@@ -779,5 +895,65 @@ pub(crate) mod tests {
         v.repack();
         assert_eq!(v.read_at(10, 1), None, "clips hidden");
         assert_eq!(v.read_at(20, 1), Some(1));
+    }
+
+    fn contig(name: &str, length: u64, mapped: u64) -> Contig {
+        Contig {
+            name: name.to_string(),
+            length,
+            mapped: Some(mapped),
+            unmapped: Some(0),
+        }
+    }
+
+    #[test]
+    fn the_contig_list_filters_sorts_and_hides_empty_contigs() {
+        let contigs = [
+            contig("c1", 1000, 7),
+            contig("c2", 500, 3),
+            contig("c3", 300, 0),
+            contig("x12", 50, 9),
+        ];
+        let mut list = ContigList::new(&contigs);
+        assert_eq!(list.rows(&contigs), [0, 1, 3], "c3 has no reads");
+        assert_eq!(list.hidden, 1);
+        list.all = true;
+        assert_eq!(list.rows(&contigs), [0, 1, 2, 3]);
+        list.filter.set("2");
+        assert_eq!(list.rows(&contigs), [1, 3]);
+        list.sort = ContigSort::Reads;
+        assert_eq!(list.rows(&contigs), [3, 1]);
+        list.filter.set("X");
+        assert_eq!(list.rows(&contigs), [3], "any case");
+    }
+
+    #[test]
+    fn names_sort_with_their_numbers_in_order() {
+        let contigs = [
+            contig("chr10", 1, 1),
+            contig("chr2", 1, 1),
+            contig("chr1", 1, 1),
+            contig("chrX", 1, 1),
+        ];
+        assert_eq!(ContigList::new(&contigs).rows(&contigs), [2, 1, 0, 3]);
+    }
+
+    #[test]
+    fn many_contigs_filter_quickly() {
+        let contigs: Vec<Contig> = (0..100_000)
+            .map(|i| contig(&format!("contig_{i}"), 1000, i % 3))
+            .collect();
+        let start = std::time::Instant::now();
+        let mut list = ContigList::new(&contigs);
+        assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        list.filter.set("7");
+        let start = std::time::Instant::now();
+        let rows = list.rows(&contigs);
+        assert!(
+            start.elapsed().as_secs_f64() < 0.05,
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(rows.len() > 1000);
     }
 }

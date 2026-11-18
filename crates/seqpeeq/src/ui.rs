@@ -168,6 +168,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
     }
+    if let Mode::Contigs(list) = &app.mode
+        && !regions.body.is_empty()
+    {
+        bam::draw_contigs(frame, app, list, regions.body);
+    }
 }
 
 /// Break text into rows of at most `width` display columns.

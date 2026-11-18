@@ -11,7 +11,7 @@ use seqpeeq_core::bam::{Contig, Coverage, Piece, Read, grouped};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode};
-use crate::bam_view::{BamView, READS_WIDTH, ReadId, details, read_kind};
+use crate::bam_view::{BamView, ContigList, ContigSort, READS_WIDTH, ReadId, details, read_kind};
 use crate::palette;
 
 /// Where each row of the BAM tab goes. A row not shown has no height.
@@ -148,6 +148,89 @@ fn reference_bases(view: &BamView, length: u64) -> HashMap<u64, u8> {
         }
     }
     bases
+}
+
+/// The rows of contigs the contig list shows: the body less its border,
+/// the filter and the column heads.
+pub fn contig_list_rows(app: &App) -> usize {
+    let screen = Rect::new(0, 0, app.screen.width, app.screen.height);
+    crate::ui::regions(app, screen)
+        .body
+        .height
+        .saturating_sub(4) as usize
+}
+
+/// `c`: the contig list over the body.
+pub fn draw_contigs(frame: &mut Frame, app: &App, list: &ContigList, area: Rect) {
+    use ratatui::widgets::{Block, Clear};
+    let Some((_, doc, _)) = app.bam() else {
+        return;
+    };
+    let contigs = doc.source().contigs();
+    let rows = list.rows(contigs);
+    let mut title = format!("{} contigs", grouped(rows.len() as u64));
+    if !list.all && list.hidden > 0 {
+        title.push_str(&format!(
+            " ({} with no reads hidden; Ctrl-A shows them)",
+            grouped(list.hidden as u64)
+        ));
+    }
+    let block = Block::bordered().title(title);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+    let width = inner.width as usize;
+    let buf = frame.buffer_mut();
+    let lead = "filter: ";
+    buf.set_stringn(inner.x, inner.y, lead, width, Style::new());
+    buf.set_stringn(
+        inner.x + lead.len() as u16,
+        inner.y,
+        list.filter.text(),
+        width.saturating_sub(lead.len()),
+        Style::new(),
+    );
+    let sorted = match list.sort {
+        ContigSort::Name => "by name (Tab: by reads)",
+        ContigSort::Reads => "by reads (Tab: by name)",
+    };
+    let name_width = width.saturating_sub(24).max(1);
+    let line = |name: &str, length: &str, reads: &str| {
+        let name: String = name.chars().take(name_width).collect();
+        format!("{name:<name_width$} {length:>12} {reads:>10}")
+    };
+    if inner.height > 1 {
+        let heads = line(&format!("name, {sorted}"), "length", "reads");
+        let dim = Style::new().add_modifier(Modifier::DIM);
+        buf.set_stringn(inner.x, inner.y + 1, heads, width, dim);
+    }
+    for (line_no, &i) in rows.iter().enumerate().skip(list.top) {
+        let y = inner.y + 2 + (line_no - list.top) as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        let c = &contigs[i];
+        let reads = c.mapped.map_or("?".to_string(), grouped);
+        let style = if line_no == list.cursor {
+            palette::SELECTED
+        } else {
+            Style::new()
+        };
+        buf.set_stringn(
+            inner.x,
+            y,
+            line(&c.name, &grouped(c.length), &reads),
+            width,
+            style,
+        );
+    }
+    let x = inner.x + (lead.len() + list.filter.text()[..list.filter.cursor()].width()) as u16;
+    if x < inner.right() {
+        frame.set_cursor_position(Position::new(x, inner.y));
+    }
 }
 
 /// Whether the view can say where reads differ from the reference.
@@ -704,5 +787,26 @@ mod tests {
             "no reference row when zoomed out"
         );
         assert_eq!(layout.reads.height, 6);
+    }
+
+    #[test]
+    fn the_contig_list() {
+        let (mut app, _dir) = with_bam();
+        sized(&mut app, 60, 14);
+        app.handle_event(&ratatui::crossterm::event::Event::Key(
+            ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Char('c'),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+        let terminal = render(&app, 60, 14);
+        insta::assert_snapshot!(terminal.backend());
+        let screen = rows(&terminal);
+        assert!(
+            screen
+                .iter()
+                .any(|r| r.contains("2 contigs (1 with no reads hidden; Ctrl-A shows them)")),
+            "{screen:#?}"
+        );
     }
 }

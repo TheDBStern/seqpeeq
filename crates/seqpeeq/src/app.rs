@@ -37,6 +37,8 @@ pub enum Mode {
     /// Waiting for `y` or anything else in answer to a question.
     Confirm(Confirm),
     Help,
+    /// `c` on a BAM tab: picking a contig.
+    Contigs(Box<crate::bam_view::ContigList>),
 }
 
 /// How typed characters go into a row.
@@ -919,6 +921,7 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Contigs(_) => self.contigs_key(key),
         }
     }
 
