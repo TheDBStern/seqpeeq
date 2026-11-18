@@ -45,6 +45,8 @@ pub struct ReadId {
     pub flags: u16,
     pub contig: usize,
     pub start: u64,
+    /// The last reference position aligned.
+    pub end: u64,
 }
 
 impl ReadId {
@@ -54,6 +56,7 @@ impl ReadId {
             flags: read.flags,
             contig: read.contig,
             start: read.start,
+            end: read.end,
         }
     }
 }

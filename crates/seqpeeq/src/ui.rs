@@ -599,6 +599,11 @@ const HELP: &[&str] = &[
     "          + - z zoom  b lengths  / n N find  v select",
     "          d prune  e extract  r rename  o re-root",
     "          s ladderize  u U undo redo  a to the alignment",
+    "BAM       g go to   ] [ covered   } { no coverage",
+    "          m mate   s other part   ' back   c contigs",
+    "          - + z zoom   F filtered   S clips",
+    "          click, drag select   Space add   Esc clear",
+    "          e export reads   E reference   to a file",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -1549,6 +1554,26 @@ mod tests {
                 .modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn help_has_a_bam_section() {
+        let help = HELP.join("\n");
+        for text in [
+            "] [ covered",
+            "} { no coverage",
+            "m mate",
+            "s other part",
+            "' back",
+            "c contigs",
+            "F filtered",
+            "S clips",
+            "Space add",
+            "e export reads",
+            "E reference",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
     }
 
     #[test]

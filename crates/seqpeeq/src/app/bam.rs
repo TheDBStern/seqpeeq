@@ -7,6 +7,9 @@ use crate::ui::bam::BamHit;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use seqpeeq_core::bam::parse_region;
 
+/// More selected names than this go to a names file beside the log.
+const NAMES_ON_THE_LINE: usize = 20;
+
 /// A jump reading the BAM in the background.
 pub struct Jumping {
     pub dataset: u64,
@@ -238,6 +241,8 @@ impl App {
             KeyCode::Char('m') => return self.bam_mate(),
             KeyCode::Char('s') => return self.bam_part(),
             KeyCode::Char('\'') => return self.bam_back(),
+            KeyCode::Char('e') => return self.bam_export_reads(),
+            KeyCode::Char('E') => return self.bam_export_ref(),
             KeyCode::Char('c') => {
                 if let Some((_, doc, _)) = self.bam() {
                     let list = ContigList::new(doc.source().contigs());
@@ -411,6 +416,107 @@ impl App {
             Err(Error::Cancelled) => self.status = "jump cancelled".to_string(),
             Err(e) => self.status = format!("error: {e}"),
         }
+    }
+
+    /// What `e` and `E` export: the stretch the selected reads cover on
+    /// one contig (the view's, when any are on it), or the view's region
+    /// with nothing selected. Also the names of the reads, in the order
+    /// picked, and how many selected reads were on other contigs.
+    fn export_target(&self) -> Option<(String, Vec<String>, String)> {
+        let (_, doc, view) = self.bam()?;
+        let contigs = doc.source().contigs();
+        let word =
+            |w: &str| seqpeeq_core::command::quote(w).map_or(w.to_string(), |q| q.into_owned());
+        let Some(first) = view.selected.first() else {
+            let r = view.view_region(contigs[view.contig].length);
+            let region = format!("{}:{}-{}", contigs[r.contig].name, r.start, r.end);
+            return Some((word(&region), Vec::new(), String::new()));
+        };
+        let contig = if view.selected.iter().any(|r| r.contig == view.contig) {
+            view.contig
+        } else {
+            first.contig
+        };
+        let (here, elsewhere): (Vec<&ReadId>, Vec<&ReadId>) =
+            view.selected.iter().partition(|r| r.contig == contig);
+        let start = here
+            .iter()
+            .map(|r| r.start)
+            .min()
+            .expect("one read at least");
+        let end = here.iter().map(|r| r.end).max().expect("one read at least");
+        let region = format!("{}:{start}-{end}", contigs[contig].name);
+        let mut names: Vec<String> = Vec::new();
+        for read in &here {
+            if !names.contains(&read.name) {
+                names.push(read.name.clone());
+            }
+        }
+        let mut note = String::new();
+        if !elsewhere.is_empty() {
+            let mut on: Vec<&str> = Vec::new();
+            for read in &elsewhere {
+                let name = contigs[read.contig].name.as_str();
+                if !on.contains(&name) {
+                    on.push(name);
+                }
+            }
+            let n = elsewhere.len();
+            note = format!(
+                "{n} selected read{} on {} left out: an export takes one region",
+                if n == 1 { "" } else { "s" },
+                on.join(", ")
+            );
+        }
+        Some((word(&region), names, note))
+    }
+
+    /// `e`: open the command line holding the export of the selected
+    /// reads, or of every read in view, ready for the file name.
+    pub(super) fn bam_export_reads(&mut self) {
+        let Some((region, names, note)) = self.export_target() else {
+            return;
+        };
+        let word =
+            |w: &str| seqpeeq_core::command::quote(w).map_or(w.to_string(), |q| q.into_owned());
+        let mut line = format!("bam export-reads --region {region}");
+        let file = if names.len() > NAMES_ON_THE_LINE {
+            match self.session.names_file(&names) {
+                Ok(file) => file,
+                Err(e) => {
+                    self.status = format!("error: {e}");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        match file {
+            Some(file) => {
+                line.push_str(&format!(" --names-file {}", word(&file.to_string_lossy())))
+            }
+            None => {
+                for name in &names {
+                    line.push_str(&format!(" --name {}", word(name)));
+                }
+            }
+        }
+        line.push_str(" --out ");
+        self.open_prompt(PromptKind::Command, &line);
+        self.status = note;
+    }
+
+    /// `E`: open the command line holding the export of the reference
+    /// under the selected reads, or in view, ready for the file name.
+    pub(super) fn bam_export_ref(&mut self) {
+        let Some((region, _, note)) = self.export_target() else {
+            return;
+        };
+        self.open_prompt(
+            PromptKind::Command,
+            &format!("bam export-ref {region} --out "),
+        );
+        self.status = note;
     }
 
     /// A key while the contig list is open.
@@ -1151,11 +1257,16 @@ pub(crate) mod tests {
     }
 
     fn id_of(name: &str, flags: u16, start: u64) -> ReadId {
+        let end = match name {
+            "r1" => 150,
+            _ => 165,
+        };
         ReadId {
             name: name.to_string(),
             flags,
             contig: 0,
             start,
+            end,
         }
     }
 
@@ -1318,5 +1429,169 @@ pub(crate) mod tests {
         assert!(view(&app).selected.is_empty() && !progress.is_cancelled());
         press(&mut app, KeyCode::Esc);
         assert!(progress.is_cancelled(), "the second Esc cancels the jump");
+    }
+
+    fn line_of(app: &App) -> &str {
+        match &app.mode {
+            Mode::Prompt(prompt) => prompt.line.text(),
+            _ => panic!("the command line is not open"),
+        }
+    }
+
+    #[test]
+    fn e_and_shift_e_open_the_command_line_filled_in() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 101, 0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().left = 101;
+        let reads = view(&app).reads();
+        let r1 = ReadId::of(reads.iter().find(|r| r.name == "r1").unwrap());
+        let r2 = ReadId::of(reads.iter().find(|r| r.name == "r2").unwrap());
+        app.bams.get_mut(&id).unwrap().selected = vec![r1, r2];
+        keys(&mut app, "e");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --region c1:101-165 --name r1 --name r2 --out "
+        );
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).selected.is_empty());
+
+        keys(&mut app, "e");
+        let region = view(&app).view_region(1000);
+        assert_eq!(region.start, 101);
+        let r = format!("c1:{}-{}", region.start, region.end);
+        assert_eq!(
+            line_of(&app),
+            format!("bam export-reads --region {r} --out ")
+        );
+        press(&mut app, KeyCode::Esc);
+        keys(&mut app, "E");
+        assert_eq!(line_of(&app), format!("bam export-ref {r} --out "));
+    }
+
+    #[test]
+    fn more_than_twenty_names_go_to_a_names_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(dir.path());
+        let log = seqpeeq_core::SessionLog::new(dir.path().join("s.log"));
+        let mut app = App::new(Session::new(Some(log)));
+        open(&mut app, f.bam);
+        settle(&mut app);
+        let id = id(&app);
+        let names: Vec<String> = (0..21).map(|i| format!("q{i}")).collect();
+        app.bams.get_mut(&id).unwrap().selected = names
+            .iter()
+            .map(|name| ReadId {
+                name: name.clone(),
+                flags: 0,
+                contig: 0,
+                start: 11,
+                end: 20,
+            })
+            .collect();
+        keys(&mut app, "e");
+        let file = dir.path().join("s.names-1.txt");
+        assert_eq!(
+            line_of(&app),
+            format!(
+                "bam export-reads --region c1:11-20 --names-file {} --out ",
+                file.display()
+            )
+        );
+        let listed = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(listed.lines().collect::<Vec<_>>(), names);
+    }
+
+    #[test]
+    fn selected_reads_on_another_contig_are_left_out_and_said_so() {
+        let (mut app, _dir) = with_bam();
+        let id = id(&app);
+        let read = |name: &str, contig, start, end| ReadId {
+            name: name.to_string(),
+            flags: 0,
+            contig,
+            start,
+            end,
+        };
+        app.bams.get_mut(&id).unwrap().selected = vec![
+            read("a", 0, 11, 20),
+            read("b", 1, 51, 60),
+            read("a", 0, 31, 40),
+        ];
+        keys(&mut app, "e");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --region c1:11-40 --name a --out "
+        );
+        assert!(
+            app.status.contains("1 selected read on c2 left out"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    #[ignore = "timing on testdata/; run with: cargo test --release -p seqpeeq -- --ignored timings_on"]
+    fn timings_on_the_test_bams() {
+        use std::time::Instant;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        let started = Instant::now();
+        open(&mut app, data.join("deep.bam"));
+        settle(&mut app);
+        eprintln!(
+            "deep: open and the strip (the coverage pass) {:?}",
+            started.elapsed()
+        );
+        app.run_line(&format!("bam ref {}", data.join("deep.fa").display()));
+        settle(&mut app);
+        let started = Instant::now();
+        at_base_level(&mut app, 0, 2_000_000, 0);
+        eprintln!(
+            "deep: a window at base level {:?}, {} rows",
+            started.elapsed(),
+            view(&app).packed.rows.len()
+        );
+        assert!(!view(&app).packed.rows.is_empty());
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().cursor = 1;
+        app.passes.clear();
+        app.pass_failed.insert((id, 0));
+        let started = Instant::now();
+        press(&mut app, KeyCode::Char('}'));
+        settle(&mut app);
+        eprintln!(
+            "deep: }} from 1, read from the BAM, {:?}",
+            started.elapsed()
+        );
+        let read_from_the_bam = view(&app).cursor;
+        app.pass_failed.clear();
+        settle(&mut app);
+        app.bams.get_mut(&id).unwrap().cursor = 1;
+        let started = Instant::now();
+        press(&mut app, KeyCode::Char('}'));
+        settle(&mut app);
+        eprintln!("deep: }} from 1, from the pass, {:?}", started.elapsed());
+        assert_eq!(view(&app).cursor, read_from_the_bam);
+        // Reads were left out of 4,000,001-4,000,500, so coverage runs
+        // out a little before it.
+        assert!((3_999_850..=4_000_001).contains(&read_from_the_bam));
+
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        let started = Instant::now();
+        open(&mut app, data.join("assembly.bam"));
+        settle(&mut app);
+        eprintln!("assembly: open and the strip {:?}", started.elapsed());
+        let started = Instant::now();
+        keys(&mut app, "c");
+        keys(&mut app, "12");
+        eprintln!(
+            "assembly: c and a filter {:?}, {} shown",
+            started.elapsed(),
+            listed(&app).len()
+        );
     }
 }

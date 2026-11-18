@@ -224,7 +224,7 @@ fn describe(error: &clap::Error, words: &[String]) -> String {
 /// Quote a word for the text form only when it needs it. shlex alone would
 /// also quote `,` and `=`, turning `--rows 3-7,12` into `--rows '3-7,12'`;
 /// neither character means anything to the parser.
-fn quote(word: &str) -> Result<std::borrow::Cow<'_, str>> {
+pub fn quote(word: &str) -> Result<std::borrow::Cow<'_, str>> {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:,=+@%".contains(c);
     if !word.is_empty() && word.chars().all(plain) {
         return Ok(word.into());
