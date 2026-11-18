@@ -107,7 +107,7 @@ pub(crate) struct Applied {
 }
 
 impl Applied {
-    fn new(message: String) -> Applied {
+    pub(crate) fn new(message: String) -> Applied {
         Applied {
             message,
             note: None,
@@ -771,6 +771,37 @@ impl Alignment {
             }
             (None, None) => invalid("say the new name with --to, or use --regex with --replace"),
         }
+    }
+
+    /// The names `msa rename --tree` changes, each with its new name: the
+    /// renames of the selected rows, checked as `plan_rename` checks them,
+    /// except that `--to` may select several rows when they share a name.
+    pub(crate) fn plan_renamed_names(
+        &self,
+        sel: &RowSel,
+        to: Option<&str>,
+        regex_replace: Option<(&str, &str)>,
+    ) -> Result<HashMap<String, String>> {
+        if let Some(to) = to {
+            let rows = self.select_rows(sel)?;
+            if let [first, rest @ ..] = rows.as_slice()
+                && rest.iter().all(|&row| self.name(row) == self.name(*first))
+            {
+                let to = to.trim();
+                if to.is_empty() {
+                    return invalid(format!("a name cannot be empty (row {})", first + 1));
+                }
+                return Ok(HashMap::from([(
+                    self.name(*first).to_string(),
+                    to.to_string(),
+                )]));
+            }
+        }
+        Ok(self
+            .plan_rename(sel, to, regex_replace)?
+            .into_iter()
+            .map(|(row, new)| (self.name(row).to_string(), new))
+            .collect())
     }
 
     fn rename_one(&mut self, sel: &RowSel, to: &str) -> Result<Applied> {

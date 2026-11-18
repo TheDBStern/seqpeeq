@@ -622,6 +622,15 @@ impl TreeDoc {
         Ok(self.tree.label(n).unwrap_or_default().to_string())
     }
 
+    /// How many tips are called `name`.
+    pub(crate) fn tips_named(&self, name: &str) -> usize {
+        self.tree
+            .tips()
+            .into_iter()
+            .filter(|&n| self.tree.label(n) == Some(name))
+            .count()
+    }
+
     /// The names of the clade's tips in drawing order; the whole tree when
     /// `at` names no node. Unnamed tips are left out.
     pub(crate) fn clade_tip_names(&self, at: &NodeSel) -> Result<Vec<String>> {

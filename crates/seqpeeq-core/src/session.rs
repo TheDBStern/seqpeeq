@@ -719,10 +719,18 @@ impl Session {
         let aln_name = self.datasets[aln_at].file_name();
         let doc = self.datasets[tree_at].tree().expect("a tree");
         let alignment = self.datasets[aln_at].msa().expect("an alignment");
+        // A tip whose name other tips share is renamed with them, as every
+        // row carrying the name is, so no tip loses its sequence.
+        let mut shared = None;
         let rows = match (to, regex, replace) {
             (Some(to), _, _) => {
                 let old = doc.tip_name(at)?;
-                alignment.renames_for(&HashMap::from([(old, to.trim().to_string())]))
+                let map = HashMap::from([(old.clone(), to.trim().to_string())]);
+                let rows = alignment.renames_for(&map);
+                if !old.is_empty() && doc.tips_named(&old) > 1 {
+                    shared = Some((old, map));
+                }
+                rows
             }
             (None, Some(pattern), Some(replace)) if at.is_empty() => {
                 alignment.regex_renames(pattern, replace)?
@@ -733,7 +741,20 @@ impl Session {
         if let Some(name) = alignment.name_clash(&rows) {
             return Err(row_clash(&aln_name, &name));
         }
-        let mut applied = self.current_tree()?.apply(cmd)?;
+        let mut applied = match shared {
+            Some((old, map)) => {
+                let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
+                    unreachable!("the current file is a tree");
+                };
+                let renamed = doc
+                    .rename_names("rename", &map)?
+                    .expect("the tips carry the name");
+                let mut applied = Applied::new(format!("{renamed} named '{old}'"));
+                applied.note = Some(format!("was: {old}"));
+                applied
+            }
+            None => self.current_tree()?.apply(cmd)?,
+        };
         if rows.is_empty() {
             applied
                 .message
@@ -790,23 +811,33 @@ impl Session {
         };
         let tree_name = self.datasets[tree_at].file_name();
         let alignment = self.datasets[aln_at].msa().expect("an alignment");
-        let plan = alignment.plan_rename(
+        // Every row carrying a chosen row's name is renamed with it, as
+        // every tip carrying it is, so no row loses its tip.
+        let map = alignment.plan_renamed_names(
             rows,
             to.as_deref(),
             regex.as_deref().zip(replace.as_deref()),
         )?;
+        let plan = alignment.renames_for(&map);
         if let Some(name) = alignment.name_clash(&plan) {
             return Err(row_clash(&aln_name, &name));
         }
-        let map: HashMap<String, String> = plan
-            .iter()
-            .map(|(row, new)| (alignment.name(*row).to_string(), new.clone()))
-            .collect();
+        let mut applied = match (plan.as_slice(), &map.iter().next()) {
+            ([(row, new)], Some((old, _))) => {
+                let mut applied = Applied::new(format!("renamed row {} to '{new}'", row + 1));
+                applied.note = Some(format!("was: {old}"));
+                applied
+            }
+            _ => Applied::new(format!("renamed {}", count(plan.len(), "row"))),
+        };
         let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
             unreachable!("a linked tree is a tree");
         };
         let tips = doc.rename_names("rename", &map)?;
-        let mut applied = self.current_alignment()?.apply(cmd)?;
+        let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+            unreachable!("the current file is an alignment");
+        };
+        alignment.commit_renames("rename", plan);
         match tips {
             Some(renamed) => {
                 self.pair_steps(aln_at, tree_at);
@@ -2809,5 +2840,61 @@ mod tests {
         ex(&mut s, "use 2").unwrap();
         ex(&mut s, "redo").unwrap();
         assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn a_linked_rename_reaches_every_copy_on_both_sides() {
+        let (_keep, dir) = trees();
+        // One of two tips named A, renamed from the tree: both tips follow
+        // the row, so neither tip loses its sequence.
+        let mut s = opened(&dir, &["a.fa", "dup.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        ex(&mut s, "tree rename --node 3 --to Q --seqs").unwrap();
+        let tips = |s: &Session| {
+            let tree = s.datasets()[1].tree().unwrap().tree();
+            let mut names: Vec<String> = tree
+                .tips()
+                .into_iter()
+                .map(|n| tree.label(n).unwrap_or_default().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(tips(&s), ["B", "Q", "Q"]);
+        assert_eq!(s.datasets()[0].msa().unwrap().name(0), "Q");
+        ex(&mut s, "undo").unwrap();
+        assert_eq!(tips(&s), ["A", "A", "B"]);
+
+        // One of two rows named A, renamed from the alignment: both rows.
+        fs::write(dir.join("aab.fa"), ">A\nAC\n>A\nGG\n>B\nTT\n").unwrap();
+        fs::write(dir.join("ab.nwk"), "(A,B);").unwrap();
+        let names = |s: &Session| {
+            let a = s.datasets()[0].msa().unwrap();
+            (0..a.rows())
+                .map(|r| a.name(r).to_string())
+                .collect::<Vec<_>>()
+        };
+        for line in [
+            "msa rename --rows 1 --to Q --tree",
+            "msa rename --name A --to Q --tree",
+            "msa rename --rows 2 --regex A --replace Q --tree",
+        ] {
+            let mut s = opened(&dir, &["aab.fa", "ab.nwk"]);
+            ex_in(&mut s, &dir, "tree link {}/aab.fa").unwrap();
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, line).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(names(&s), ["Q", "Q", "B"], "{line}");
+            assert!(
+                s.datasets()[1]
+                    .tree()
+                    .unwrap()
+                    .tree()
+                    .tip_named("Q")
+                    .is_ok(),
+                "{line}"
+            );
+            ex(&mut s, "undo").unwrap();
+            assert_eq!(names(&s), ["A", "A", "B"], "{line}");
+        }
     }
 }
