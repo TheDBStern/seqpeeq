@@ -279,6 +279,9 @@ pub struct App {
     /// Where a drag across a BAM's reads started: the first and last
     /// positions of its column, and its row of reads.
     pub bam_drag: Option<((u64, u64), usize)>,
+    /// The span of the column pressed on the ruler band, for a drag there
+    /// to mark a stretch.
+    pub ruler_drag: Option<(u64, u64)>,
     /// The jump reading the BAM.
     pub jumping: Option<bam::Jumping>,
     /// The last window that failed to read, not to be asked for again.
@@ -321,6 +324,7 @@ impl App {
             reading: None,
             jumping: None,
             bam_drag: None,
+            ruler_drag: None,
             window_failed: None,
             searches: HashMap::new(),
             gathering: Vec::new(),
@@ -928,10 +932,12 @@ impl App {
                     } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
                     {
                         view.select = None;
-                    } else if let Some((_, view)) =
-                        self.bam_mut().filter(|(_, view)| !view.selected.is_empty())
+                    } else if let Some((_, view)) = self
+                        .bam_mut()
+                        .filter(|(_, view)| !view.selected.is_empty() || view.stretch().is_some())
                     {
                         view.selected.clear();
+                        view.clear_stretch();
                     } else if let Some(jumping) = &self.jumping {
                         jumping.progress.cancel();
                         self.status = "cancelling the jump…".to_string();

@@ -356,13 +356,26 @@ pub fn info_text(app: &App) -> (String, String) {
             "{}:{}  {} bp a column",
             contig.name, view.cursor, view.per_col
         );
-        match view.selected.len() {
-            0 => {}
-            1 => left.push_str("  1 read selected"),
-            n => left.push_str(&format!("  {n} reads selected")),
-        }
-        if view.per_col == 1 && !bam::knows_reference(app) {
-            left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+        if let Some((a, b)) = view.stretch() {
+            let tail = if view.marking.is_some() {
+                "v ends the stretch  Esc clear"
+            } else {
+                "E reference  e reads over it  Esc clear"
+            };
+            left = format!(
+                "{}:{a}-{b}  {} bp  {tail}",
+                contig.name,
+                seqpeeq_core::bam::grouped(b - a + 1)
+            );
+        } else {
+            match view.selected.len() {
+                0 => {}
+                1 => left.push_str("  1 read selected"),
+                n => left.push_str(&format!("  {n} reads selected")),
+            }
+            if view.per_col == 1 && !bam::knows_reference(app) {
+                left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+            }
         }
     }
     if let Some((alignment, view)) = app.alignment()

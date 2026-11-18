@@ -291,6 +291,12 @@ impl App {
             KeyCode::Char('\'') => return self.bam_back(),
             KeyCode::Char('e') => return self.bam_export_reads(),
             KeyCode::Char('E') => return self.bam_export_ref(),
+            KeyCode::Char('v') => {
+                if let Some((_, view)) = self.bam_mut() {
+                    view.mark();
+                }
+                return;
+            }
             KeyCode::Char('c') => {
                 if let Some((dataset, doc, _)) = self.bam() {
                     let list = ContigList::new(dataset.id, doc.source().contigs());
@@ -478,6 +484,10 @@ impl App {
         let contigs = doc.source().contigs();
         let word =
             |w: &str| seqpeeq_core::command::quote(w).map_or(w.to_string(), |q| q.into_owned());
+        if let Some((a, b)) = view.stretch() {
+            let region = format!("{}:{a}-{b}", contigs[view.contig].name);
+            return Some((word(&region), Vec::new(), String::new()));
+        }
         let Some(first) = view.selected.first() else {
             let r = view.view_region(contigs[view.contig].length);
             let region = format!("{}:{}-{}", contigs[r.contig].name, r.start, r.end);
@@ -678,14 +688,17 @@ impl App {
             MouseEventKind::ScrollUp => view.scroll_rows(-3),
             MouseEventKind::Down(button) => {
                 self.bam_drag = None;
+                self.ruler_drag = None;
                 match hit {
                     BamHit::Strip(pos) if button == MouseButton::Left => {
                         view.go(view.contig, pos, length);
                     }
                     BamHit::Ruler(pos) if button == MouseButton::Left => {
                         view.cursor = pos;
+                        self.ruler_drag = view.col_of(pos).map(|c| view.span_of(c));
                     }
                     BamHit::Read { col, row } => {
+                        view.clear_stretch();
                         let span = view.span_of(col);
                         if span.0 > length {
                             return;
@@ -709,6 +722,15 @@ impl App {
                     _ => {}
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.ruler_drag.is_some() => {
+                let (Some((a1, b1)), BamHit::Ruler(pos)) = (self.ruler_drag, hit) else {
+                    return;
+                };
+                let Some((a2, b2)) = view.col_of(pos).map(|c| view.span_of(c)) else {
+                    return;
+                };
+                view.set_stretch(a1.min(a2), b1.max(b2), length);
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
                 let (Some((start, from)), BamHit::Read { col, row }) = (self.bam_drag, hit) else {
                     return;
@@ -718,7 +740,10 @@ impl App {
                 let positions = (start.0.min(span.0), start.1.max(span.1));
                 view.selected = view.touched(positions, from.min(to)..=from.max(to));
             }
-            MouseEventKind::Up(MouseButton::Left) => self.bam_drag = None,
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.bam_drag = None;
+                self.ruler_drag = None;
+            }
             _ => {}
         }
     }
@@ -2210,5 +2235,167 @@ pub(crate) mod tests {
             (v.contig, v.left, v.per_col, v.cursor, v.row, v.top),
             before
         );
+    }
+
+    // A stretch of reference.
+
+    fn right(app: &mut App, n: usize) {
+        for _ in 0..n {
+            press(app, KeyCode::Right);
+        }
+    }
+
+    #[test]
+    fn v_twice_marks_a_stretch_and_e_and_capital_e_export_it() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 113, 0);
+        keys(&mut app, "v");
+        assert_eq!(view(&app).stretch(), Some((113, 113)));
+        right(&mut app, 18);
+        assert_eq!(view(&app).stretch(), Some((113, 131)), "follows the cursor");
+        keys(&mut app, "v");
+        assert_eq!(view(&app).marked, Some((113, 131)));
+        assert_eq!(view(&app).marking, None);
+        keys(&mut app, "E");
+        assert_eq!(line_of(&app), "bam export-ref c1:113-131 --out ");
+        press(&mut app, KeyCode::Esc);
+        keys(&mut app, "e");
+        assert_eq!(line_of(&app), "bam export-reads --region c1:113-131 --out ");
+    }
+
+    #[test]
+    fn v_backwards_orders_the_ends_and_v_v_in_place_is_one_base() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 131, 0);
+        keys(&mut app, "v");
+        for _ in 0..18 {
+            press(&mut app, KeyCode::Left);
+        }
+        keys(&mut app, "v");
+        assert_eq!(view(&app).marked, Some((113, 131)));
+        at_base_level(&mut app, 0, 140, 0);
+        keys(&mut app, "vv");
+        assert_eq!(view(&app).marked, Some((140, 140)));
+    }
+
+    #[test]
+    fn dragging_the_column_numbers_marks_a_stretch_and_a_click_does_not() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 101, 0);
+        let layout = layout_of(&mut app);
+        let y = layout.ruler.y;
+        let at = |pos: u64| layout.ruler.x + view(&app).col_of(pos).unwrap() as u16;
+        let (from, to) = (at(113), at(131));
+        click(&mut app, (from, y));
+        assert_eq!(view(&app).stretch(), None);
+        assert_eq!(view(&app).cursor, 113);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (from, y),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (to, y),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            (to, y),
+            false,
+        );
+        assert_eq!(view(&app).marked, Some((113, 131)));
+    }
+
+    #[test]
+    fn a_stretch_and_selected_reads_replace_each_other() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 101, 0);
+        let layout = layout_of(&mut app);
+        keys(&mut app, " ");
+        assert_eq!(view(&app).selected.len(), 1);
+        keys(&mut app, "vv");
+        assert!(view(&app).selected.is_empty());
+        assert!(view(&app).marked.is_some());
+        let x = layout.reads.x + view(&app).col_of(105).unwrap() as u16;
+        click(&mut app, (x, layout.reads.y));
+        assert_eq!(view(&app).stretch(), None);
+        assert_eq!(view(&app).selected.len(), 1);
+        keys(&mut app, "v");
+        assert!(view(&app).marking.is_some());
+        assert!(view(&app).selected.is_empty());
+        keys(&mut app, " ");
+        assert_eq!(view(&app).stretch(), None);
+        assert_eq!(view(&app).selected.len(), 1);
+    }
+
+    #[test]
+    fn esc_clears_the_stretch() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 113, 0);
+        keys(&mut app, "vv");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(view(&app).stretch(), None);
+        keys(&mut app, "v");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(view(&app).stretch(), None);
+    }
+
+    #[test]
+    fn going_to_another_contig_clears_the_stretch() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 113, 0);
+        keys(&mut app, "vv");
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().place(1, 1, 500);
+        assert_eq!(view(&app).stretch(), None);
+        at_base_level(&mut app, 0, 113, 0);
+        keys(&mut app, "v");
+        app.bams.get_mut(&id).unwrap().place(1, 1, 500);
+        assert_eq!(view(&app).stretch(), None);
+    }
+
+    #[test]
+    fn a_stretch_dragged_past_the_end_stops_at_the_contig_end() {
+        let (mut app, _dir) = with_bam();
+        let layout = layout_of(&mut app);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 20;
+        v.place(0, 1000, 1000);
+        settle(&mut app);
+        let last = view(&app).col_of(1000).unwrap() as u16;
+        let (x, y) = (layout.ruler.x, layout.ruler.y);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + last - 2, y),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (x + last, y),
+            false,
+        );
+        let (a, b) = view(&app).marked.unwrap();
+        assert_eq!(b, 1000);
+        assert!(a >= 1 && a < b);
+    }
+
+    #[test]
+    fn the_stretch_stays_put_when_zooming() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 113, 0);
+        keys(&mut app, "v");
+        right(&mut app, 18);
+        keys(&mut app, "v");
+        keys(&mut app, "-");
+        settle(&mut app);
+        keys(&mut app, "+");
+        assert_eq!(view(&app).marked, Some((113, 131)));
     }
 }

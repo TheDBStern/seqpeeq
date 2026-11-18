@@ -363,6 +363,8 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    highlight_stretch(buf, layout.reference, view);
+
     if layout.coverage.height > 0 {
         let depths = column_depths(view, length, pass, source);
         let most = depths.iter().copied().fold(0.0, f32::max);
@@ -449,12 +451,32 @@ fn draw_ruler(buf: &mut Buffer, area: Rect, view: &BamView, length: u64) {
         buf.set_string(area.x + col, area.y, &text, Style::new());
         free = col + text.len() as u16 + 1;
     }
+    highlight_stretch(buf, area, view);
     if let Some(col) = view
         .col_of(view.cursor)
         .filter(|&c| (c as u16) < area.width)
         && let Some(cell) = buf.cell_mut(Position::new(area.x + col as u16, area.y))
     {
         cell.set_style(palette::SELECTED);
+    }
+}
+
+/// Patch the stretch's style onto the columns of `area` it meets.
+fn highlight_stretch(buf: &mut Buffer, area: Rect, view: &BamView) {
+    let Some((a, b)) = view.stretch() else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+    for col in 0..area.width {
+        let (start, end) = view.span_of(col as usize);
+        if start <= b
+            && end >= a
+            && let Some(cell) = buf.cell_mut(Position::new(area.x + col, area.y))
+        {
+            cell.set_style(palette::STRETCH);
+        }
     }
 }
 
@@ -869,5 +891,41 @@ mod tests {
         let sketched = column_depths(&view, 1000, None, source);
         assert!(sketched.iter().any(|&d| d > 0.0));
         assert_eq!(column_depths(&view, 1000, Some(&partial), source), sketched);
+    }
+
+    #[test]
+    fn a_stretch_is_highlighted_and_named_on_the_bottom_row() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.cursor = 120;
+        v.marked = Some((113, 131));
+        let terminal = render(&app, 80, 14);
+        let buf = terminal.backend().buffer();
+        for y in [2u16, 3] {
+            for x in 0..40u16 {
+                let bg = buf[(x, y)].bg;
+                if x == 19 && y == 2 {
+                    assert_eq!(bg, palette::SELECTED.bg.unwrap(), "the cursor wins");
+                } else if (12..=30).contains(&x) {
+                    assert_eq!(bg, palette::STRETCH.bg.unwrap(), "{x},{y}");
+                } else {
+                    assert_ne!(bg, palette::STRETCH.bg.unwrap(), "{x},{y}");
+                }
+            }
+        }
+        let screen = rows(&terminal);
+        assert_eq!(
+            screen[12].trim_end(),
+            "c1:113-131  19 bp  E reference  e reads over it  Esc clear"
+        );
+        let v = app.bams.get_mut(&id).unwrap();
+        v.marked = None;
+        v.marking = Some(113);
+        let screen = rows(&render(&app, 80, 14));
+        assert_eq!(
+            screen[12].trim_end(),
+            "c1:113-120  8 bp  v ends the stretch  Esc clear"
+        );
     }
 }
