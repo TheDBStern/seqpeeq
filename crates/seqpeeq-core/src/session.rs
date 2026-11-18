@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
+use crate::bam::BamDoc;
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
@@ -22,6 +23,7 @@ pub enum Content {
     // Boxed so that a list of datasets stays small whatever they hold.
     Msa(Box<Alignment>),
     Tree(Box<TreeDoc>),
+    Bam(Box<BamDoc>),
     /// A kind of file that has no viewer yet; only its path and size are known.
     Unloaded,
 }
@@ -45,7 +47,7 @@ impl Dataset {
     pub fn msa(&self) -> Option<&Alignment> {
         match &self.content {
             Content::Msa(alignment) => Some(alignment),
-            Content::Tree(_) | Content::Unloaded => None,
+            Content::Tree(_) | Content::Bam(_) | Content::Unloaded => None,
         }
     }
 
@@ -53,7 +55,15 @@ impl Dataset {
     pub fn tree(&self) -> Option<&TreeDoc> {
         match &self.content {
             Content::Tree(tree) => Some(tree),
-            Content::Msa(_) | Content::Unloaded => None,
+            Content::Msa(_) | Content::Bam(_) | Content::Unloaded => None,
+        }
+    }
+
+    /// The BAM, if this file is one.
+    pub fn bam(&self) -> Option<&BamDoc> {
+        match &self.content {
+            Content::Bam(bam) => Some(bam),
+            Content::Msa(_) | Content::Tree(_) | Content::Unloaded => None,
         }
     }
 
@@ -62,7 +72,7 @@ impl Dataset {
         match &self.content {
             Content::Msa(alignment) => alignment.is_modified(),
             Content::Tree(tree) => tree.is_modified(),
-            Content::Unloaded => false,
+            Content::Bam(_) | Content::Unloaded => false,
         }
     }
 
@@ -100,6 +110,8 @@ struct Input {
     size: u64,
     /// The comment written to the log after the `open`.
     note: String,
+    /// Where an index goes when the file's own folder cannot take it.
+    cache: PathBuf,
 }
 
 impl Input {
@@ -123,6 +135,7 @@ impl Input {
             kind,
             size,
             note: format!("input {} size={size} mtime={modified}", absolute.display()),
+            cache: PathBuf::new(),
         })
     }
 
@@ -266,7 +279,12 @@ fn open_content(input: &Input, progress: &Progress) -> Result<(Content, Vec<Stri
             holds.extend(tree.notes().iter().cloned());
             Ok((Content::Tree(Box::new(tree)), holds))
         }
-        Kind::Bam => unreachable!("BAM files are not read yet"),
+        Kind::Bam => {
+            let bam = BamDoc::open(&input.path, &input.cache, progress)?;
+            let mut holds = vec![bam.shape()];
+            holds.extend(bam.notes().iter().cloned());
+            Ok((Content::Bam(Box::new(bam)), holds))
+        }
     }
 }
 
@@ -299,6 +317,23 @@ pub struct Session {
     links: HashMap<u64, u64>,
     /// The id the next edit to two files will tag both its steps with.
     next_pair: u64,
+    /// Where a BAM's index goes when the BAM's own folder cannot take it.
+    cache_dir: PathBuf,
+}
+
+/// `$XDG_CACHE_HOME/seqpeeq`, else `~/.cache/seqpeeq`, else a folder in
+/// the system's temporary folder.
+fn default_cache_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|home| PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("seqpeeq")
 }
 
 /// Enough of the state before a command to put it back if the command
@@ -335,7 +370,14 @@ impl Session {
             clock,
             links: HashMap::new(),
             next_pair: 1,
+            cache_dir: default_cache_dir(),
         }
+    }
+
+    /// Keep BAM indexes that cannot go beside their BAM in `dir` instead of
+    /// the default cache folder.
+    pub fn set_cache_dir(&mut self, dir: PathBuf) {
+        self.cache_dir = dir;
     }
 
     /// Run a command to its end and, if it succeeds, record it.
@@ -373,16 +415,10 @@ impl Session {
 
         let cmd = match cmd {
             Command::Open { path, kind } => {
-                let input = Input::check(&path, kind, &now)?;
-                if matches!(input.kind, Kind::Msa | Kind::Tree) {
-                    let label = format!("opening {}", file_name(&input.path));
-                    return Ok(self.hand_out(label, line, Work::Open(input)));
-                }
-                // No viewer yet, so there is nothing slow to read.
-                let message = input.opened(&format!("{} bytes", input.size));
-                return self
-                    .record_open(&line, input, Content::Unloaded, message, &now)
-                    .map(Started::Done);
+                let mut input = Input::check(&path, kind, &now)?;
+                input.cache = self.cache_dir.clone();
+                let label = format!("opening {}", file_name(&input.path));
+                return Ok(self.hand_out(label, line, Work::Open(input)));
             }
             Command::Msa(MsaCmd::Extract {
                 rows,
@@ -629,7 +665,7 @@ impl Session {
                 let snapshot = match &self.datasets[index].content {
                     Content::Msa(alignment) => Snapshot::Msa(alignment.snapshot()),
                     Content::Tree(tree) => Snapshot::Tree(tree.snapshot()),
-                    Content::Unloaded => continue,
+                    Content::Bam(_) | Content::Unloaded => continue,
                 };
                 snapshots.push((index, snapshot));
             }
@@ -695,7 +731,7 @@ impl Session {
             (Content::Msa(alignment), false) => alignment.redo_pair(),
             (Content::Tree(tree), true) => tree.undo_pair(),
             (Content::Tree(tree), false) => tree.redo_pair(),
-            (Content::Unloaded, _) => None,
+            (Content::Bam(_) | Content::Unloaded, _) => None,
         }
     }
 
@@ -859,6 +895,10 @@ impl Session {
         let Some(index) = self.current else {
             return Err(Error::Invalid("no file is open".to_string()));
         };
+        if matches!(self.datasets[index].content, Content::Bam(_)) {
+            let what = if undo { "undo" } else { "redo" };
+            return Err(Error::Invalid(format!("a BAM has no edits to {what}")));
+        }
         let Some(pair) = self.step_pair(index, undo) else {
             return self.step(undo);
         };
@@ -876,7 +916,7 @@ impl Session {
                 (Content::Msa(alignment), false) => alignment.redo_keeps(pair.id),
                 (Content::Tree(tree), true) => tree.keeps(pair.id),
                 (Content::Tree(tree), false) => tree.redo_keeps(pair.id),
-                (Content::Unloaded, _) => false,
+                (Content::Bam(_) | Content::Unloaded, _) => false,
             };
             return Err(Error::Invalid(match (undo, keeps) {
                 (true, true) => format!("undo the later edit in {name} first"),
@@ -895,7 +935,9 @@ impl Session {
             Content::Msa(alignment) => alignment.redo(),
             Content::Tree(tree) if undo => tree.undo(),
             Content::Tree(tree) => tree.redo(),
-            Content::Unloaded => unreachable!("a file with an undo step is loaded"),
+            Content::Bam(_) | Content::Unloaded => {
+                unreachable!("a file with an undo step has edits")
+            }
         }?;
         applied.message = format!("{}; and in {name}: {}", applied.message, theirs.message);
         Ok(applied)
@@ -923,7 +965,7 @@ impl Session {
             match &mut self.datasets[index].content {
                 Content::Msa(alignment) => alignment.pair_last(pair),
                 Content::Tree(tree) => tree.pair_last(pair),
-                Content::Unloaded => {}
+                Content::Bam(_) | Content::Unloaded => {}
             }
         }
     }
@@ -1024,7 +1066,7 @@ impl Session {
         let name = dataset.file_name();
         match &mut dataset.content {
             Content::Msa(alignment) => Ok(alignment),
-            Content::Tree(_) | Content::Unloaded => Err(Error::Invalid(format!(
+            Content::Tree(_) | Content::Bam(_) | Content::Unloaded => Err(Error::Invalid(format!(
                 "{name} is not an alignment; switch with use N"
             ))),
         }
@@ -1178,7 +1220,7 @@ impl Session {
         let name = dataset.file_name();
         match &mut dataset.content {
             Content::Tree(tree) => Ok(tree),
-            Content::Msa(_) | Content::Unloaded => Err(Error::Invalid(format!(
+            Content::Msa(_) | Content::Bam(_) | Content::Unloaded => Err(Error::Invalid(format!(
                 "{name} is not a tree; switch with use N"
             ))),
         }

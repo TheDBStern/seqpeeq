@@ -1,8 +1,21 @@
 //! Mapped reads: sorted BAM files, read by region through their index.
 
+mod index;
 mod region;
 #[cfg(test)]
 pub(crate) mod testing;
+#[cfg(test)]
+mod tests;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use noodles::bam;
+use noodles::csi::BinningIndex as _;
+use noodles::sam;
+
+use crate::progress::Progress;
+use crate::{Error, Result};
 
 pub use region::{Region, parse_region};
 
@@ -27,4 +40,129 @@ pub(crate) fn grouped(n: u64) -> String {
         out.push(d);
     }
     out
+}
+
+/// An open BAM: what reading it needs, and what the open said about it.
+#[derive(Debug)]
+pub struct BamDoc {
+    source: BamSource,
+    notes: Vec<String>,
+}
+
+/// What reading a BAM needs, cheap to clone and safe to share with other
+/// threads, so a view can read regions while the session goes on.
+#[derive(Debug, Clone)]
+pub struct BamSource {
+    path: PathBuf,
+    #[allow(dead_code)] // TEMP phase 4a: read from Task 3
+    header: Arc<sam::Header>,
+    #[allow(dead_code)] // TEMP phase 4a: read from Task 3
+    index: Arc<bam::Index>,
+    contigs: Arc<[Contig]>,
+    /// Reads placed nowhere, from the index; `None` when it keeps no count.
+    unplaced: Option<u64>,
+}
+
+impl BamDoc {
+    /// Read the header and the index, building the index if there is none
+    /// (or only one older than the BAM). `cache` is where an index goes
+    /// when the BAM's folder cannot take it.
+    pub(crate) fn open(path: &Path, cache: &Path, progress: &Progress) -> Result<BamDoc> {
+        let header = bam::io::reader::Builder
+            .build_from_path(path)
+            .and_then(|mut reader| reader.read_header())
+            .map_err(|e| Error::Format {
+                path: path.to_path_buf(),
+                message: format!("not a readable BAM: {e}"),
+            })?;
+        if index::says_unsorted(&header) {
+            return Err(index::unsorted(path));
+        }
+        let (index, note) = index::load_or_build(path, cache, progress)?;
+        let counts: Vec<Option<(u64, u64)>> = index
+            .reference_sequences()
+            .map(|r| {
+                r.metadata()
+                    .map(|m| (m.mapped_record_count(), m.unmapped_record_count()))
+            })
+            .collect();
+        // A contig with no reads has no counts either; only an index with
+        // no counts anywhere keeps none.
+        let known = counts.iter().any(Option::is_some);
+        let contigs: Arc<[Contig]> = header
+            .reference_sequences()
+            .iter()
+            .enumerate()
+            .map(|(i, (name, map))| {
+                let (mapped, unmapped) = match counts.get(i).copied().flatten() {
+                    Some((m, u)) => (Some(m), Some(u)),
+                    None if known => (Some(0), Some(0)),
+                    None => (None, None),
+                };
+                Contig {
+                    name: name.to_string(),
+                    length: map.length().get() as u64,
+                    mapped,
+                    unmapped,
+                }
+            })
+            .collect();
+        let unplaced = known.then(|| index.unplaced_unmapped_record_count().unwrap_or(0));
+        Ok(BamDoc {
+            source: BamSource {
+                path: path.to_path_buf(),
+                header: Arc::new(header),
+                index: Arc::new(index),
+                contigs,
+                unplaced,
+            },
+            notes: note.into_iter().collect(),
+        })
+    }
+
+    pub fn source(&self) -> &BamSource {
+        &self.source
+    }
+
+    /// What the open message says it holds:
+    /// `3 contigs, 10 mapped reads, 2 unmapped`.
+    pub fn shape(&self) -> String {
+        let contigs = self.source.contigs();
+        let n = format!(
+            "{} contig{}",
+            grouped(contigs.len() as u64),
+            if contigs.len() == 1 { "" } else { "s" }
+        );
+        let mapped: Option<u64> = contigs.iter().map(|c| c.mapped).sum();
+        let unmapped: Option<u64> = contigs.iter().map(|c| c.unmapped).sum();
+        match (mapped, unmapped, self.source.unplaced) {
+            (Some(m), Some(u), Some(p)) => format!(
+                "{n}, {} mapped read{}, {} unmapped",
+                grouped(m),
+                if m == 1 { "" } else { "s" },
+                grouped(u + p)
+            ),
+            _ => format!("{n}; the index has no read counts"),
+        }
+    }
+
+    /// Notes from the open, such as where a built index went.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+}
+
+impl BamSource {
+    pub fn contigs(&self) -> &[Contig] {
+        &self.contigs
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The BAM's name without its folder, for messages.
+    pub fn file_name(&self) -> String {
+        index::file_name(&self.path)
+    }
 }
