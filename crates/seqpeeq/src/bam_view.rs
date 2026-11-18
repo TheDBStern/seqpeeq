@@ -159,8 +159,12 @@ pub fn cigar_text(cigar: &[(char, u32)]) -> String {
     format!("{head} … {tail}")
 }
 
-/// The details line for one read.
-pub fn details(read: &Read, contigs: &[Contig]) -> String {
+/// Inserted bases shown in the details line; more are cut with `…`.
+const INSERTED_SHOWN: usize = 20;
+
+/// The details line for one read, with the bases inserted just before
+/// `cursor` when there are some.
+pub fn details(read: &Read, contigs: &[Contig], cursor: u64) -> String {
     let name = contigs.get(read.contig).map_or("?", |c| c.name.as_str());
     let mut parts = vec![
         read.name.clone(),
@@ -170,10 +174,24 @@ pub fn details(read: &Read, contigs: &[Contig]) -> String {
             read.end,
             strand(read.reverse())
         ),
+    ];
+    let inserted = read.pieces().into_iter().find_map(|piece| match piece {
+        seqpeeq_core::bam::Piece::Inserted { before, bases } if before == cursor => Some(bases),
+        _ => None,
+    });
+    if let Some(bases) = inserted {
+        let mut shown =
+            String::from_utf8_lossy(&bases[..bases.len().min(INSERTED_SHOWN)]).into_owned();
+        if bases.len() > INSERTED_SHOWN {
+            shown.push('…');
+        }
+        parts.push(format!("ins {} bp {shown} before {cursor}", bases.len()));
+    }
+    parts.extend([
         format!("MAPQ {}", read.mapq),
         format!("{} bp", read.length()),
         cigar_text(&read.cigar),
-    ];
+    ]);
     if let Some(mate) = &read.mate {
         parts.push(format!("mate {}", place_text(mate, contigs)));
     }
@@ -199,6 +217,8 @@ pub enum ContigSort {
 /// `c`: the contigs of a BAM to pick one from.
 #[derive(Debug, Clone)]
 pub struct ContigList {
+    /// The id of the dataset whose contigs these are.
+    pub dataset: u64,
     pub filter: LineEdit,
     pub sort: ContigSort,
     /// Show contigs with no reads too.
@@ -255,14 +275,15 @@ fn holds(name: &str, needle: &str) -> bool {
 }
 
 impl ContigList {
-    /// A list of `contigs`, sorted both ways once.
-    pub fn new(contigs: &[Contig]) -> ContigList {
+    /// A list of `contigs` of dataset `dataset`, sorted both ways once.
+    pub fn new(dataset: u64, contigs: &[Contig]) -> ContigList {
         let mut by_name: Vec<usize> = (0..contigs.len()).collect();
         by_name.sort_by(|&a, &b| natural(&contigs[a].name, &contigs[b].name));
         let mut by_reads = by_name.clone();
         // Stable, so ties stay in name order; unknown counts go last.
         by_reads.sort_by_key(|&i| Reverse(contigs[i].mapped.map_or(0, |m| m + 1)));
         ContigList {
+            dataset,
             filter: LineEdit::default(),
             sort: ContigSort::Name,
             all: false,
@@ -297,8 +318,10 @@ pub struct Loaded {
     /// Whether reads were asked for (they are `None` past the limit).
     pub asked_reads: bool,
     /// The reference across the window's region, when one is attached and
-    /// reads were read.
+    /// reads were read. `None` too when the reference lacks the contig.
     pub reference: Option<Vec<u8>>,
+    /// Whether a reference was attached when it was read, found or not.
+    pub with_reference: bool,
 }
 
 /// Where the user is in one BAM.
@@ -573,14 +596,22 @@ impl BamView {
     }
 
     /// Put the cursor's row on the read [`focus`](Self::focus) names, once
-    /// the window around it has been read.
-    pub fn apply_focus(&mut self) {
+    /// a window serving the view (`length` the contig's) has been read: a
+    /// window read before the view moved would be packed again.
+    pub fn apply_focus(&mut self, length: u64) {
         let Some((name, start)) = &self.focus else {
             return;
         };
         let Some(loaded) = &self.loaded else {
             return;
         };
+        let Some(want) = self.wanted(length, pass_bin(length)) else {
+            return;
+        };
+        let have = (loaded.window.region, loaded.window.bin, loaded.asked_reads);
+        if !serves(&have, &self.view_region(length), &want) {
+            return;
+        }
         let region = loaded.window.region;
         if region.contig != self.contig || *start < region.start || *start > region.end {
             return;
@@ -819,21 +850,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_details_line_gives_an_insertion_at_the_cursor() {
+        let (mut r, contigs) = fixture_read("r1", 99);
+        r.cigar = vec![('M', 10), ('I', 2), ('M', 38)];
+        r.end = 148;
+        r.mate = None;
+        let bases = String::from_utf8(r.seq[10..12].to_vec()).unwrap();
+        assert_eq!(
+            details(&r, &contigs, 111),
+            format!(
+                "r1 · c1:101-148 (+) · ins 2 bp {bases} before 111 · MAPQ 60 · 50 bp · 10M2I38M"
+            )
+        );
+        assert!(!details(&r, &contigs, 112).contains("ins"));
+        r.cigar = vec![('M', 10), ('I', 30), ('M', 10)];
+        let long = details(&r, &contigs, 111);
+        assert!(long.contains("ins 30 bp "), "{long}");
+        assert!(long.contains("… before 111"), "{long}");
+    }
+
+    #[test]
     fn the_details_line_says_where_everything_is() {
         let (r1, contigs) = fixture_read("r1", 99);
         assert_eq!(
-            details(&r1, &contigs),
+            details(&r1, &contigs, 0),
             "r1 · c1:101-150 (+) · MAPQ 60 · 50 bp · 50M · mate c1:301 (−)"
         );
         let (r2, _) = fixture_read("r2", 0);
         assert_eq!(
-            details(&r2, &contigs),
+            details(&r2, &contigs, 0),
             "r2 · c1:121-165 (+) · MAPQ 60 · 50 bp · 10S30M5D10M · part c2:51 (+) 10M40H"
         );
         assert!(
-            details(&long_cigar_read(), &contigs).ends_with(" · 105 bp · 10M1I10M1D … 10M1I10M1D"),
+            details(&long_cigar_read(), &contigs, 0)
+                .ends_with(" · 105 bp · 10M1I10M1D … 10M1I10M1D"),
             "{}",
-            details(&long_cigar_read(), &contigs)
+            details(&long_cigar_read(), &contigs, 0)
         );
     }
 
@@ -911,6 +963,7 @@ pub(crate) mod tests {
             },
             asked_reads: true,
             reference: None,
+            with_reference: false,
         });
     }
 
@@ -950,7 +1003,7 @@ pub(crate) mod tests {
             contig("c3", 300, 0),
             contig("x12", 50, 9),
         ];
-        let mut list = ContigList::new(&contigs);
+        let mut list = ContigList::new(0, &contigs);
         assert_eq!(list.rows(&contigs), [0, 1, 3], "c3 has no reads");
         assert_eq!(list.hidden, 1);
         list.all = true;
@@ -971,7 +1024,7 @@ pub(crate) mod tests {
             contig("chr1", 1, 1),
             contig("chrX", 1, 1),
         ];
-        assert_eq!(ContigList::new(&contigs).rows(&contigs), [2, 1, 0, 3]);
+        assert_eq!(ContigList::new(0, &contigs).rows(&contigs), [2, 1, 0, 3]);
     }
 
     #[test]
@@ -980,7 +1033,7 @@ pub(crate) mod tests {
             .map(|i| contig(&format!("contig_{i}"), 1000, i % 3))
             .collect();
         let start = std::time::Instant::now();
-        let mut list = ContigList::new(&contigs);
+        let mut list = ContigList::new(0, &contigs);
         assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
         list.filter.set("7");
         let start = std::time::Instant::now();

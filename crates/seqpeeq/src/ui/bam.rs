@@ -207,7 +207,7 @@ pub fn contig_list_rows(app: &App) -> usize {
 /// `c`: the contig list over the body.
 pub fn draw_contigs(frame: &mut Frame, app: &App, list: &ContigList, area: Rect) {
     use ratatui::widgets::{Block, Clear};
-    let Some((_, doc, _)) = app.bam() else {
+    let Some((_, doc, _)) = app.bam().filter(|(d, _, _)| d.id == list.dataset) else {
         return;
     };
     let contigs = doc.source().contigs();
@@ -385,7 +385,7 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
         buf.set_stringn(
             layout.details.x,
             layout.details.y,
-            details(read, source.contigs()),
+            details(read, source.contigs(), view.cursor),
             layout.details.width as usize,
             Style::new(),
         );
@@ -488,7 +488,9 @@ fn column_depths(
                 .collect();
         }
     }
-    let values = match pass {
+    // A pass still running has zeros past its front; the sketch stands
+    // in until it is done.
+    let values = match pass.filter(|p| p.done_to >= length) {
         Some(pass) => pass.bins.clone(),
         None => source.sketch(view.contig, crate::bam_view::PASS_BINS as usize),
     };
@@ -852,5 +854,20 @@ mod tests {
                 .any(|r| r.contains("2 contigs (1 with no reads hidden; Ctrl-A shows them)")),
             "{screen:#?}"
         );
+    }
+
+    #[test]
+    fn the_coverage_row_uses_the_sketch_until_the_pass_is_done() {
+        let (app, _dir) = with_bam();
+        let (dataset, doc, view) = app.bam().unwrap();
+        let source = doc.source();
+        let mut partial = app.passes[&(dataset.id, 0)].clone();
+        partial.done_to = 100;
+        partial.bins.iter_mut().for_each(|b| *b = 0.0);
+        let mut view = view.clone();
+        view.loaded = None;
+        let sketched = column_depths(&view, 1000, None, source);
+        assert!(sketched.iter().any(|&d| d > 0.0));
+        assert_eq!(column_depths(&view, 1000, Some(&partial), source), sketched);
     }
 }

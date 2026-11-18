@@ -56,6 +56,7 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
                     window,
                     asked_reads: reads,
                     reference,
+                    with_reference: source.reference().is_some(),
                 }
             });
             send(Done::Window {
@@ -104,6 +105,7 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
             dir,
             want,
             result: source.jump(contig, from, dir, want, &progress),
+            progress,
         }),
     }
 }

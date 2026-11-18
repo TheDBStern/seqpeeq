@@ -179,6 +179,9 @@ pub enum Done {
         dir: Direction,
         want: Stretch,
         result: seqpeeq_core::Result<Option<u64>>,
+        /// The jump's own progress, which tells it from an identical one
+        /// asked again.
+        progress: Arc<Progress>,
     },
 }
 
@@ -604,7 +607,8 @@ impl App {
                 dir,
                 want,
                 result,
-            } => self.jump_done(dataset, (contig, from, dir, want), result),
+                progress,
+            } => self.jump_done(dataset, (contig, from, dir, want), result, &progress),
             Done::Summary { dataset, result } => {
                 let Some(summary) = result else {
                     return;

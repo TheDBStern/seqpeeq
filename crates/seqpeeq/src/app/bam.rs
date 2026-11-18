@@ -61,7 +61,18 @@ impl App {
     /// Keep one view per open BAM, sized to the screen, and ask for what
     /// the visible one needs: its contig's coverage pass, and the window
     /// around it.
+    /// Close the contig list once its file is no longer on the tab shown.
+    fn close_stale_contig_list(&mut self) {
+        let active = self.session.datasets().get(self.active).map(|d| d.id);
+        if let Mode::Contigs(list) = &self.mode
+            && Some(list.dataset) != active
+        {
+            self.mode = Mode::Normal;
+        }
+    }
+
     pub(super) fn sync_bams(&mut self) {
+        self.close_stale_contig_list();
         let open: Vec<u64> = self
             .session
             .datasets()
@@ -157,7 +168,7 @@ impl App {
         let complete = |reads: bool, had: bool| !reads || !with_reference || had;
         let loaded = view.loaded.as_ref().is_some_and(|l| {
             let have = (l.window.region, l.window.bin, l.asked_reads);
-            serves(&have, &shown, &want) && complete(l.asked_reads, l.reference.is_some())
+            serves(&have, &shown, &want) && complete(l.asked_reads, l.with_reference)
         });
         let asked = self.reading.as_ref().is_some_and(|r| {
             r.dataset == id
@@ -209,7 +220,17 @@ impl App {
             Ok(loaded) => {
                 view.loaded = Some(loaded);
                 view.repack();
-                view.apply_focus();
+                let contig = view.contig;
+                if let Some(length) = self
+                    .session
+                    .datasets()
+                    .iter()
+                    .find(|d| d.id == dataset)
+                    .and_then(Dataset::bam)
+                    .map(|b| b.source().contigs()[contig].length)
+                {
+                    view.apply_focus(length);
+                }
             }
             Err(Error::Cancelled) => {}
             Err(e) => {
@@ -244,8 +265,8 @@ impl App {
             KeyCode::Char('e') => return self.bam_export_reads(),
             KeyCode::Char('E') => return self.bam_export_ref(),
             KeyCode::Char('c') => {
-                if let Some((_, doc, _)) = self.bam() {
-                    let list = ContigList::new(doc.source().contigs());
+                if let Some((dataset, doc, _)) = self.bam() {
+                    let list = ContigList::new(dataset.id, doc.source().contigs());
                     self.mode = Mode::Contigs(Box::new(list));
                 }
                 return;
@@ -384,10 +405,13 @@ impl App {
         dataset: u64,
         asked: (usize, u64, Direction, Stretch),
         result: seqpeeq_core::Result<Option<u64>>,
+        progress: &Arc<Progress>,
     ) {
         if self
             .jumping
-            .take_if(|j| (j.dataset, j.asked) == (dataset, asked))
+            .take_if(|j| {
+                (j.dataset, j.asked) == (dataset, asked) && Arc::ptr_eq(&j.progress, progress)
+            })
             .is_none()
         {
             return;
@@ -521,10 +545,14 @@ impl App {
 
     /// A key while the contig list is open.
     pub(super) fn contigs_key(&mut self, key: &KeyEvent) {
+        self.close_stale_contig_list();
         let Some(source) = self.bam().map(|(_, doc, _)| doc.source().clone()) else {
             self.mode = Mode::Normal;
             return;
         };
+        if !matches!(self.mode, Mode::Contigs(_)) {
+            return;
+        }
         let contigs = source.contigs();
         let visible = ui::bam::contig_list_rows(self).max(1);
         let Mode::Contigs(list) = &mut self.mode else {
@@ -670,9 +698,10 @@ impl App {
             return;
         };
         let name = read.name.clone();
-        view.go(mate.contig, mate.pos, source.contigs()[mate.contig].length);
+        let length = source.contigs()[mate.contig].length;
+        view.go(mate.contig, mate.pos, length);
         view.focus = Some((name, mate.pos));
-        view.apply_focus();
+        view.apply_focus(length);
     }
 
     /// `s`: to the next part of the read under the cursor, in order along
@@ -701,9 +730,10 @@ impl App {
         let at = places.iter().position(|&p| p == here).unwrap_or(0);
         let (contig, pos) = places[(at + 1) % places.len()];
         let name = read.name.clone();
-        view.go(contig, pos, source.contigs()[contig].length);
+        let length = source.contigs()[contig].length;
+        view.go(contig, pos, length);
         view.focus = Some((name, pos));
-        view.apply_focus();
+        view.apply_focus(length);
     }
 
     /// `'`: back to where the last jump started.
@@ -1529,6 +1559,120 @@ pub(crate) mod tests {
             "{}",
             app.status
         );
+    }
+
+    /// Pump and perform up to `turns` times; how many windows were asked.
+    fn windows_in(app: &mut App, turns: usize) -> usize {
+        let mut windows = 0;
+        for _ in 0..turns {
+            app.pump();
+            while let Some(request) = app.outbox.pop() {
+                windows += usize::from(matches!(request, Request::Window { .. }));
+                perform(request, &mut |done| app.handle_done(done));
+            }
+        }
+        windows
+    }
+
+    #[test]
+    fn a_contig_the_reference_lacks_is_read_once() {
+        let (mut app, dir) = with_bam();
+        let only_c1 = dir.path().join("only_c1.fa");
+        let c1 = seqpeeq_core::bam::testing::ref_bases("c1", 1, 1000);
+        std::fs::write(&only_c1, format!(">c1\n{c1}\n")).unwrap();
+        app.run_line(&format!("bam ref {}", only_c1.display()));
+        settle(&mut app);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 1;
+        v.place(1, 51, 500);
+        let windows = windows_in(&mut app, 20);
+        assert_eq!(windows, 1, "read again and again");
+        assert!(app.reading.is_none());
+        assert!(!view(&app).packed.rows.is_empty(), "its reads are drawn");
+    }
+
+    #[test]
+    fn the_contig_list_closes_when_another_file_takes_the_tab() {
+        let (mut app, dir) = with_bam();
+        let one = bam_from_sam(
+            dir.path(),
+            "one.bam",
+            "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:x\tLN:100\nq\t0\tx\t1\t60\t5M\t*\t0\t0\t*\t*\n",
+        );
+        keys(&mut app, "c");
+        press(&mut app, KeyCode::Down);
+        app.run_line(&format!("open {}", one.display()));
+        settle(&mut app);
+        assert_eq!(
+            app.bam().unwrap().1.source().contigs().len(),
+            1,
+            "one.bam shows"
+        );
+        let backend = ratatui::backend::TestBackend::new(80, 14);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| crate::ui::draw(frame, &app)).unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(view(&app).contig, 0);
+    }
+
+    #[test]
+    fn the_same_jump_pressed_twice_lands() {
+        let (mut app, _dir) = with_bam();
+        let id = id(&app);
+        app.passes.clear();
+        app.pass_failed.insert((id, 0));
+        go(&mut app, "c1:50");
+        press(&mut app, KeyCode::Char(']'));
+        press(&mut app, KeyCode::Char(']'));
+        let jumps: Vec<Request> = std::mem::take(&mut app.outbox)
+            .into_iter()
+            .filter(|r| matches!(r, Request::Jump { .. }))
+            .collect();
+        assert_eq!(jumps.len(), 2);
+        for request in jumps {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        assert_eq!(view(&app).cursor, 101, "{}", app.status);
+        assert!(app.jumping.is_none());
+        assert!(!app.status.contains("cancelled"), "{}", app.status);
+    }
+
+    #[test]
+    fn m_puts_the_row_on_the_mate_after_the_window_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:5000\n\
+                   a\t0\tc\t920\t60\t50M\t*\t0\t0\t*\t*\n\
+                   b\t0\tc\t950\t60\t450M\t*\t0\t0\t*\t*\n\
+                   p\t99\tc\t1000\t60\t50M\t=\t1100\t150\t*\t*\n\
+                   p\t147\tc\t1100\t60\t50M\t=\t1000\t-150\t*\t*\n";
+        let bam = bam_from_sam(dir.path(), "t.bam", sam);
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        layout_of(&mut app);
+        at_base_level(&mut app, 0, 1000, 0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().left = 1000;
+        settle(&mut app);
+        let v = app.bams.get_mut(&id).unwrap();
+        let reads = v.reads();
+        let row = v
+            .packed
+            .rows
+            .iter()
+            .position(|row| {
+                row.iter()
+                    .any(|&i| reads[i].name == "p" && reads[i].start == 1000)
+            })
+            .unwrap();
+        v.row = row;
+        v.cursor = 1000;
+        keys(&mut app, "m");
+        settle(&mut app);
+        let read = view(&app).cursor_read().map(|r| (r.name.clone(), r.start));
+        assert_eq!(read, Some(("p".to_string(), 1100)));
     }
 
     #[test]
