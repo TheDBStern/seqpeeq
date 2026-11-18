@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
-use crate::bam::{BamDoc, Reference};
+use crate::bam::{BamDoc, BamExport, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
@@ -207,6 +207,11 @@ enum Work {
         dataset: u64,
         file: PathBuf,
     },
+    /// Write a BAM region or a stretch of the reference.
+    BamExport {
+        dataset: u64,
+        export: Box<BamExport>,
+    },
 }
 
 impl Job {
@@ -255,6 +260,13 @@ impl Job {
                     applied,
                     whole: extraction.is_whole(),
                 }),
+            Work::BamExport { dataset, export } => {
+                export.run(&self.progress).map(|applied| Product::Wrote {
+                    dataset,
+                    applied,
+                    whole: false,
+                })
+            }
             Work::BamRef { dataset, file } => {
                 Reference::open(&file, &self.progress).map(|reference| Product::Attached {
                     dataset,
@@ -494,6 +506,12 @@ impl Session {
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
                 let label = format!("reading {}", file_name(&file));
                 return Ok(self.hand_out(label, line, Work::BamRef { dataset, file }));
+            }
+            Command::Bam(cmd) => {
+                let export = Box::new(BamExport::plan(self.current_bam()?, &cmd)?);
+                let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let label = format!("writing {}", file_name(export.out()));
+                return Ok(self.hand_out(label, line, Work::BamExport { dataset, export }));
             }
             quick => quick,
         };

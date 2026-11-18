@@ -1,6 +1,7 @@
 //! Mapped reads: sorted BAM files, read by region through their index.
 
 mod coverage;
+mod export;
 mod index;
 mod read;
 mod reference;
@@ -22,6 +23,7 @@ use crate::progress::Progress;
 use crate::{Error, Result};
 
 pub use coverage::Coverage;
+pub(crate) use export::BamExport;
 pub use read::{Part, Place, Read};
 pub use reference::Reference;
 pub use region::{Region, parse_region};

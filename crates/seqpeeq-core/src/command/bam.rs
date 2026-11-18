@@ -12,6 +12,20 @@ pub enum BamCmd {
     /// Attach a reference FASTA to the current BAM, for reference bases,
     /// mismatches and export-ref.
     Ref { file: PathBuf },
+    /// Write every record overlapping a region to a new BAM, with its index.
+    ExportRegion {
+        /// contig:start-end, or a contig's name for all of it
+        region: String,
+        #[arg(long, short)]
+        out: PathBuf,
+    },
+    /// Write a stretch of the reference to a new FASTA.
+    ExportRef {
+        /// contig:start-end, or a contig's name for all of it
+        region: String,
+        #[arg(long, short)]
+        out: PathBuf,
+    },
 }
 
 impl BamCmd {
@@ -19,6 +33,8 @@ impl BamCmd {
     pub fn name(&self) -> &'static str {
         match self {
             BamCmd::Ref { .. } => "ref",
+            BamCmd::ExportRegion { .. } => "export-region",
+            BamCmd::ExportRef { .. } => "export-ref",
         }
     }
 
@@ -26,6 +42,10 @@ impl BamCmd {
         words.word(self.name());
         match self {
             BamCmd::Ref { file } => words.positional(path_word(file)?),
+            BamCmd::ExportRegion { region, out } | BamCmd::ExportRef { region, out } => {
+                words.flag("--out", path_word(out)?);
+                words.positional(region);
+            }
         }
         Ok(())
     }

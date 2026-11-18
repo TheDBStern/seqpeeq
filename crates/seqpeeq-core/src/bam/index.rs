@@ -106,8 +106,8 @@ fn read_index(path: &Path) -> Result<bam::Index> {
     })
 }
 
-/// Write `index` as the new file `path`.
-fn write_index(path: &Path, index: &bam::Index) -> Result<()> {
+/// Write `index` as the new file `path`; returns its size.
+pub(crate) fn write_index(path: &Path, index: &bam::Index) -> Result<u64> {
     create_then(path, |file| match index {
         bam::Index::Bai(bai) => {
             let mut writer = bam::bai::io::Writer::new(BufWriter::new(file));
@@ -120,7 +120,6 @@ fn write_index(path: &Path, index: &bam::Index) -> Result<()> {
             writer.into_inner().finish().map(drop)
         }
     })
-    .map(drop)
 }
 
 /// The BAM's index, read from beside it or from the cache, or built; with
@@ -173,7 +172,7 @@ pub(crate) fn load_or_build(
             });
             let next_to = PathBuf::from(name);
             match write_index(&next_to, &index) {
-                Ok(()) => format!("built the index {}", file_name(&next_to)),
+                Ok(_) => format!("built the index {}", file_name(&next_to)),
                 Err(_) => {
                     let cached = to_cache(&index)?;
                     format!(

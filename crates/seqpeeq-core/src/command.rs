@@ -560,7 +560,12 @@ mod tests {
     }
 
     fn bam_cmd() -> impl Strategy<Value = BamCmd> {
-        prop_oneof![path().prop_map(|file| BamCmd::Ref { file })]
+        let region = || "[^\\x00\\r\\n]{1,20}";
+        prop_oneof![
+            path().prop_map(|file| BamCmd::Ref { file }),
+            (region(), path()).prop_map(|(region, out)| BamCmd::ExportRegion { region, out }),
+            (region(), path()).prop_map(|(region, out)| BamCmd::ExportRef { region, out }),
+        ]
     }
 
     fn node_sel() -> impl Strategy<Value = NodeSel> {

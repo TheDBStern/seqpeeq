@@ -619,3 +619,108 @@ fn gzip_references_need_bgzip_and_its_indexes() {
         "ref2.fa.gz needs ref2.fa.gz.fai and ref2.fa.gz.gzi (samtools faidx makes both)"
     );
 }
+
+/// The names and flags of a BAM's records, and its header.
+fn bam_records(path: &Path) -> (noodles::sam::Header, Vec<(String, u16)>) {
+    let mut reader = bam::io::Reader::new(File::open(path).unwrap());
+    let header = reader.read_header().unwrap();
+    let records = reader
+        .records()
+        .map(|r| {
+            let r = r.unwrap();
+            (
+                r.name().map(|n| n.to_string()).unwrap_or_default(),
+                r.flags().bits(),
+            )
+        })
+        .collect();
+    (header, records)
+}
+
+#[test]
+fn export_region_writes_every_overlapping_record_with_an_index() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+
+    let sub = out.path().join("sub.bam");
+    let line = format!("bam export-region --out {} c1:100-160", sub.display());
+    let done = ex(&mut s, &line).unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 2 records to sub.bam and its index sub.bam.bai"
+    );
+    let (header, records) = bam_records(&sub);
+    assert_eq!(records, [("r1".to_string(), 99), ("r2".to_string(), 0)]);
+    assert_eq!(header, bam_records(&f.bam).0);
+    assert!(out.path().join("sub.bam.bai").exists());
+    assert_eq!(s.history().last().unwrap(), &line);
+
+    let u = out.path().join("u.bam");
+    ex(
+        &mut s,
+        &format!("bam export-region c2:301-350 --out {}", u.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        bam_records(&u).1,
+        [("r7".to_string(), 73), ("r7".to_string(), 133)]
+    );
+
+    let cut = out.path().join("cut.bam");
+    let done = ex(
+        &mut s,
+        &format!("bam export-region c1:901-5000 --out {}", cut.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        done.message,
+        "wrote 1 record to cut.bam and its index cut.bam.bai; \
+         c1 ends at 1,000, so the region was cut to c1:901-1000"
+    );
+
+    let again = s.start(Command::parse_line(&line).unwrap());
+    assert!(
+        matches!(again, Err(Error::Exists(_))),
+        "refused before the job starts"
+    );
+}
+
+#[test]
+fn export_ref_writes_the_stretch() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let fa = out.path().join("s.fa");
+    let line = format!("bam export-ref c1:101-110 --out {}", fa.display());
+    assert_eq!(
+        ex(&mut s, &line).unwrap_err().to_string(),
+        "export-ref needs the reference: bam ref FILE"
+    );
+
+    ex(&mut s, &format!("bam ref {}", f.reference.display())).unwrap();
+    let done = ex(&mut s, &line).unwrap();
+    assert_eq!(done.message, "wrote c1:101-110 (10 bp) to s.fa");
+    assert_eq!(
+        fs::read_to_string(&fa).unwrap(),
+        ">c1:101-110\nACGTACGTAC\n"
+    );
+
+    let long = out.path().join("long.fa");
+    ex(
+        &mut s,
+        &format!("bam export-ref c1:1-130 --out {}", long.display()),
+    )
+    .unwrap();
+    let text = fs::read_to_string(&long).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], ">c1:1-130");
+    assert_eq!(
+        lines[1..].iter().map(|l| l.len()).collect::<Vec<_>>(),
+        [60, 60, 10]
+    );
+}
