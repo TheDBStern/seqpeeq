@@ -1008,3 +1008,70 @@ fn clipping_keeps_insertions_and_counts_what_could_not_be_written() {
         ">s\nACGTACGTAC\n>p/1\nACGTACGTAC\n"
     );
 }
+
+#[test]
+fn a_bam_session_replays_to_the_same_files() {
+    let (data, cache) = dirs();
+    let logs = tempfile::tempdir().unwrap();
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let log = logs.path().join("s.log");
+    let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+    s.set_cache_dir(cache.path().to_path_buf());
+    open(&mut s, &f.bam).unwrap();
+    let names = s
+        .names_file(&["r2".to_string(), "r6".to_string()])
+        .unwrap()
+        .unwrap();
+    let to = |name: &str| a.path().join(name).display().to_string();
+    for line in [
+        format!("bam ref {}", f.reference.display()),
+        format!("bam export-region --out {} c1:100-960", to("sub.bam")),
+        format!("bam export-ref --out {} c2", to("c2.fa")),
+        format!(
+            "bam export-reads --region c1:101-150 --with-mates --out {}",
+            to("mates.fa.gz")
+        ),
+        format!(
+            "bam export-reads --region c1 --names-file {} --out {}",
+            names.display(),
+            to("named.bam")
+        ),
+    ] {
+        ex(&mut s, &line).unwrap();
+    }
+    drop(s);
+
+    let text = fs::read_to_string(&log).unwrap().replace(
+        &a.path().display().to_string(),
+        &b.path().display().to_string(),
+    );
+    let mut again = session(cache.path());
+    let report = crate::replay(&text, &mut again).unwrap();
+    assert_eq!(report.commands, 6);
+
+    let mut written: Vec<_> = fs::read_dir(a.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "c2.fa",
+            "mates.fa.gz",
+            "named.bam",
+            "named.bam.bai",
+            "sub.bam",
+            "sub.bam.bai"
+        ]
+    );
+    for name in written {
+        assert_eq!(
+            fs::read(a.path().join(&name)).unwrap(),
+            fs::read(b.path().join(&name)).unwrap(),
+            "{name:?} differs"
+        );
+    }
+}
