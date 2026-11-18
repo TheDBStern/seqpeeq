@@ -9,7 +9,7 @@ use noodles::sam::alignment::io::Write as _;
 
 /// Write `sam_text` (a SAM header and records) as `dir/name`, a BAM file
 /// with no index.
-pub(crate) fn bam_from_sam(dir: &Path, name: &str, sam_text: &str) -> PathBuf {
+pub fn bam_from_sam(dir: &Path, name: &str, sam_text: &str) -> PathBuf {
     let mut reader = sam::io::Reader::new(sam_text.as_bytes());
     let header = reader.read_header().expect("a SAM header");
     let path = dir.join(name);
@@ -26,14 +26,14 @@ pub(crate) fn bam_from_sam(dir: &Path, name: &str, sam_text: &str) -> PathBuf {
 }
 
 /// The files [`fixture`] writes.
-pub(crate) struct Fixture {
+pub struct Fixture {
     pub bam: PathBuf,
     pub reference: PathBuf,
 }
 
 /// The reference bases of the fixture's contig `c` (`c1`, `c2` or `c3`)
 /// from `a` to `b`, 1-based and inclusive.
-pub(crate) fn ref_bases(c: &str, a: u64, b: u64) -> String {
+pub fn ref_bases(c: &str, a: u64, b: u64) -> String {
     let seq = reference_seq(c);
     seq[a as usize - 1..b as usize].to_string()
 }
@@ -48,7 +48,7 @@ fn reference_seq(c: &str) -> String {
 }
 
 /// The reverse complement of `bases`.
-pub(crate) fn revcomp(bases: &str) -> String {
+pub fn revcomp(bases: &str) -> String {
     bases
         .bytes()
         .rev()
@@ -63,7 +63,7 @@ pub(crate) fn revcomp(bases: &str) -> String {
 }
 
 /// The fixture's reads, as the plan's table gives them.
-pub(crate) fn fixture_sam() -> String {
+pub fn fixture_sam() -> String {
     let r = ref_bases;
     let mut r1 = r("c1", 101, 150).into_bytes();
     r1[9] = b'G'; // position 110 reads G where the reference has C
@@ -120,7 +120,7 @@ pub(crate) fn fixture_sam() -> String {
 }
 
 /// Write the fixture's `reads.bam` (no index) and `ref.fa` (no `.fai`).
-pub(crate) fn fixture(dir: &Path) -> Fixture {
+pub fn fixture(dir: &Path) -> Fixture {
     let bam = bam_from_sam(dir, "reads.bam", &fixture_sam());
     let reference = dir.join("ref.fa");
     let mut fasta = String::new();

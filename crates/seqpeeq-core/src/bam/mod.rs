@@ -4,12 +4,14 @@ mod coverage;
 mod export;
 mod export_reads;
 mod index;
+mod pieces;
 mod read;
 mod reference;
 mod region;
 mod stretch;
-#[cfg(test)]
-pub(crate) mod testing;
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testing;
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +27,7 @@ use crate::{Error, Result};
 
 pub use coverage::Coverage;
 pub(crate) use export::BamExport;
+pub use pieces::Piece;
 pub use read::{Part, Place, Read};
 pub use reference::Reference;
 pub use region::{Region, parse_region};
@@ -41,7 +44,7 @@ pub struct Contig {
 }
 
 /// `n` with commas between groups of three digits: `1,204,551`.
-pub(crate) fn grouped(n: u64) -> String {
+pub fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, d) in digits.chars().enumerate() {
