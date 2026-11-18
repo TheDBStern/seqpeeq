@@ -402,7 +402,7 @@ fn jumps_read_the_bam_and_agree_with_next_start() {
         (
             0,
             1000,
-            vec![(101, 150), (156, 165), (301, 350), (701, 740), (901, 950)],
+            vec![(101, 165), (301, 350), (701, 740), (901, 950)],
         ),
         (1, 500, vec![(51, 60), (201, 250), (301, 350)]),
         (2, 300, vec![]),
@@ -446,10 +446,7 @@ fn the_pass_gives_mean_depth_and_exact_stretches() {
         .coverage(0, 10, &progress, |partial| seen.push(partial.clone()))
         .unwrap();
     assert_eq!(c1.bins, [0.0, 0.9, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4, 0.0, 0.5]);
-    assert_eq!(
-        c1.covered,
-        [(101, 150), (156, 165), (301, 350), (701, 740), (901, 950)]
-    );
+    assert_eq!(c1.covered, [(101, 165), (301, 350), (701, 740), (901, 950)]);
     assert_eq!((c1.contig, c1.done_to), (0, 1000));
     assert_eq!(seen.last(), Some(&c1));
 
@@ -1074,4 +1071,262 @@ fn a_bam_session_replays_to_the_same_files() {
             "{name:?} differs"
         );
     }
+}
+
+// ---- Final review fixes ----
+
+const MANY: usize = 30_000;
+
+/// A BAM over `MANY` contigs named `k0`… (100 bp each), with `rows` as its
+/// records, and a FASTA of all of them.
+fn many_contigs(dir: &Path, rows: &[String]) -> (PathBuf, PathBuf) {
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n");
+    let mut fa = String::new();
+    for i in 0..MANY {
+        sam.push_str(&format!("@SQ\tSN:k{i}\tLN:100\n"));
+        fa.push_str(&format!(">k{i}\n{}\n", "ACGT".repeat(25)));
+    }
+    for row in rows {
+        sam.push_str(row);
+        sam.push('\n');
+    }
+    let reference = dir.join("many.fa");
+    fs::write(&reference, fa).unwrap();
+    (bam_from_sam(dir, "many.bam", &sam), reference)
+}
+
+fn timed<T>(limit: f64, what: &str, f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let out = f();
+    let took = start.elapsed().as_secs_f64();
+    assert!(took < limit, "{what} took {took:.2} s (limit {limit} s)");
+    out
+}
+
+#[test]
+fn a_reference_attaches_quickly_to_many_contigs() {
+    let (data, cache) = dirs();
+    let (bam, reference) = many_contigs(data.path(), &[]);
+    let mut s = session(cache.path());
+    open(&mut s, &bam).unwrap();
+    let line = format!("bam ref {}", reference.display());
+    let done = timed(3.0, "bam ref", || ex(&mut s, &line).unwrap());
+    assert_eq!(
+        done.message,
+        "attached many.fa to many.bam (30,000 of 30,000 contigs)"
+    );
+}
+
+#[test]
+fn mates_and_parts_on_other_contigs_are_found_quickly() {
+    let (data, cache) = dirs();
+    let seq = "ACGT".repeat(5);
+    let mut rows = Vec::new();
+    for i in 1..=300 {
+        rows.push(format!(
+            "m{i}\t65\tk0\t1\t60\t20M\tk{}\t1\t0\t{seq}\t*\tSA:Z:k{},50,+,20M,60,0;",
+            MANY - i,
+            MANY - i
+        ));
+    }
+    for i in (1..=300).rev() {
+        let c = MANY - i;
+        rows.push(format!("m{i}\t129\tk{c}\t1\t60\t20M\tk0\t1\t0\t{seq}\t*"));
+        rows.push(format!("m{i}\t2113\tk{c}\t50\t60\t20M\tk0\t1\t0\t{seq}\t*"));
+    }
+    let (bam, _) = many_contigs(data.path(), &rows);
+    let mut s = session(cache.path());
+    open(&mut s, &bam).unwrap();
+    let out = data.path().join("m.bam");
+    let line = format!(
+        "bam export-reads --region k0 --with-mates --out {}",
+        out.display()
+    );
+    let done = timed(5.0, "export-reads --with-mates", || {
+        ex(&mut s, &line).unwrap()
+    });
+    assert_eq!(
+        done.message,
+        "wrote 900 records to m.bam and its index m.bam.bai"
+    );
+}
+
+#[test]
+fn split_parts_resolve_quickly_with_many_contigs() {
+    let (data, cache) = dirs();
+    let seq = "ACGT".repeat(5);
+    let rows: Vec<String> = (0..3_000)
+        .map(|i| {
+            format!(
+                "s{i}\t0\tk0\t1\t60\t20M\t*\t0\t0\t{seq}\t*\tSA:Z:k{},1,+,20M,60,0;",
+                MANY - 1
+            )
+        })
+        .collect();
+    let (bam, _) = many_contigs(data.path(), &rows);
+    let doc = super::BamDoc::open(&bam, cache.path(), &crate::Progress::new()).unwrap();
+    let source = doc.source();
+    let all = region(source, "k0");
+    let reads = timed(1.0, "reads", || {
+        source.reads(&all, &crate::Progress::new()).unwrap()
+    });
+    assert_eq!(reads.len(), 3_000);
+    assert_eq!(reads[0].parts[0].place.contig, MANY - 1);
+}
+
+#[test]
+fn with_mates_stays_quick_when_mates_are_in_the_region() {
+    let (data, cache) = dirs();
+    let seq = "ACGT".repeat(5);
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:w\tLN:100000\n");
+    for i in 0..20_000u64 {
+        let p = 1 + i * 2;
+        sam.push_str(&format!(
+            "q{i}\t65\tw\t{p}\t60\t20M\t=\t{}\t0\t{seq}\t*\n",
+            p + 1
+        ));
+        sam.push_str(&format!(
+            "q{i}\t129\tw\t{}\t60\t20M\t=\t{p}\t0\t{seq}\t*\n",
+            p + 1
+        ));
+    }
+    let bam = bam_from_sam(data.path(), "w.bam", &sam);
+    let mut s = session(cache.path());
+    open(&mut s, &bam).unwrap();
+    let out = data.path().join("w.fa");
+    let line = format!(
+        "bam export-reads --region w --with-mates --out {}",
+        out.display()
+    );
+    let done = timed(5.0, "export-reads --with-mates", || {
+        ex(&mut s, &line).unwrap()
+    });
+    assert_eq!(done.message, "wrote 40000 reads to w.fa");
+}
+
+#[test]
+fn a_bgzipped_reference_reads_whatever_its_name() {
+    use std::io::Write as _;
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let text = fs::read(&f.reference).unwrap();
+    // One BGZF block, so the .gzi lists no further blocks.
+    let fai = noodles::fasta::fs::index(&f.reference).unwrap();
+    for name in ["ref.fa.gz", "ref.fa.bgzf"] {
+        let path = data.path().join(name);
+        let mut writer = noodles::bgzf::io::Writer::new(File::create(&path).unwrap());
+        writer.write_all(&text).unwrap();
+        writer.finish().unwrap();
+        let mut fai_out = noodles::fasta::fai::io::Writer::new(
+            File::create(data.path().join(format!("{name}.fai"))).unwrap(),
+        );
+        fai_out.write_index(&fai).unwrap();
+        fs::write(data.path().join(format!("{name}.gzi")), 0u64.to_le_bytes()).unwrap();
+    }
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    for name in ["ref.fa.gz", "ref.fa.bgzf"] {
+        ex(
+            &mut s,
+            &format!("bam ref {}", data.path().join(name).display()),
+        )
+        .unwrap();
+        let reference = s.datasets()[0].bam().unwrap().source().reference().unwrap();
+        assert_eq!(
+            reference.fetch("c2", 1, 12).unwrap(),
+            b"TTGCATTGCATT",
+            "{name}"
+        );
+        assert_eq!(
+            reference.fetch("c1", 999, 1200).unwrap(),
+            b"GT",
+            "{name}: cut to the end"
+        );
+    }
+}
+
+#[test]
+fn a_jump_from_position_0_does_not_panic() {
+    use super::{Direction, Stretch};
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    assert_eq!(
+        source
+            .jump(0, 0, Direction::Forward, Stretch::Covered, &progress)
+            .unwrap(),
+        Some(101)
+    );
+    assert_eq!(
+        source
+            .jump(0, 0, Direction::Back, Stretch::Covered, &progress)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        source
+            .jump(2, 0, Direction::Forward, Stretch::Empty, &progress)
+            .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
+fn a_deletion_does_not_end_a_covered_stretch() {
+    // Long reads carry a small deletion every few dozen bases; a jump to the
+    // next empty stretch must not stop inside a read. An N (intron) still
+    // splits.
+    use super::{Direction, Stretch};
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n\
+        d\t0\tc\t1\t60\t10M3D10M\t*\t0\t0\tACGTACGTACACGTACGTAC\t*\n\
+        n\t0\tc\t101\t60\t10M50N10M\t*\t0\t0\tACGTACGTACACGTACGTAC\t*\n";
+    let bam = bam_from_sam(data.path(), "d.bam", sam);
+    let doc = super::BamDoc::open(&bam, cache.path(), &crate::Progress::new()).unwrap();
+    let progress = crate::Progress::new();
+    let pass = doc.source().coverage(0, 10, &progress, |_| {}).unwrap();
+    assert_eq!(pass.covered, [(1, 23), (101, 110), (161, 170)]);
+    assert_eq!(
+        doc.source()
+            .jump(0, 1, Direction::Forward, Stretch::Empty, &progress)
+            .unwrap(),
+        Some(24)
+    );
+    // Depth still counts only aligned bases: bin 1 (1-100) holds 20 bases.
+    assert_eq!(pass.bins[0], 0.2);
+}
+
+#[test]
+fn a_moved_log_finds_its_names_file_beside_it() {
+    let (data, cache) = dirs();
+    let first = tempfile::tempdir().unwrap();
+    let moved = tempfile::tempdir().unwrap();
+    let f = fixture(data.path());
+    let log = first.path().join("s.log");
+    let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+    s.set_cache_dir(cache.path().to_path_buf());
+    open(&mut s, &f.bam).unwrap();
+    let names = s.names_file(&["r2".to_string()]).unwrap().unwrap();
+    let a = data.path().join("a.fa");
+    let line = format!(
+        "bam export-reads --region c1 --names-file {} --out {}",
+        names.display(),
+        a.display()
+    );
+    ex(&mut s, &line).unwrap();
+    drop(s);
+
+    // The log and its names file move together; the old folder is gone.
+    let text = fs::read_to_string(&log).unwrap().replace("a.fa", "b.fa");
+    fs::write(moved.path().join("s.log"), &text).unwrap();
+    fs::rename(&names, moved.path().join(names.file_name().unwrap())).unwrap();
+    drop(first);
+
+    let mut again = session(cache.path());
+    again.set_replay_dir(Some(moved.path().to_path_buf()));
+    crate::replay(&text, &mut again).unwrap();
+    assert_eq!(
+        fs::read(&a).unwrap(),
+        fs::read(data.path().join("b.fa")).unwrap()
+    );
 }

@@ -1,11 +1,12 @@
 //! A reference FASTA attached to a BAM, read a stretch at a time.
 
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read as _};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use noodles::core::{Position, Region as CoreRegion};
-use noodles::fasta;
+use noodles::{bgzf, fasta};
 
 use crate::bam::index::file_name;
 use crate::progress::Progress;
@@ -13,10 +14,26 @@ use crate::{Error, Result};
 
 /// A reference FASTA and its index: plain (its `.fai` read, or built in
 /// memory) or bgzipped (with its `.fai` and `.gzi`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Reference {
     path: PathBuf,
-    index: fasta::fai::Index,
+    index: Arc<fasta::fai::Index>,
+    /// Each sequence's place in `index`, by name.
+    names: Arc<HashMap<String, usize>>,
+    /// One open reader, kept between fetches.
+    reader: Arc<Mutex<Box<dyn ReadSeek>>>,
+}
+
+trait ReadSeek: Read + Seek + Send {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
+
+impl std::fmt::Debug for Reference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reference")
+            .field("path", &self.path)
+            .field("sequences", &self.names.len())
+            .finish()
+    }
 }
 
 /// How a file is compressed, from its first bytes.
@@ -61,7 +78,8 @@ impl Reference {
         };
         let name = file_name(path);
         let fai = with_suffix(path, ".fai");
-        let index = match packing(path).map_err(failed)? {
+        let packed = packing(path).map_err(failed)?;
+        let index = match packed {
             Packing::Gzip => {
                 return Err(Error::Invalid(format!(
                     "{name} is gzip, not bgzip: reading a stretch needs bgzip -i"
@@ -94,9 +112,27 @@ impl Reference {
                 fasta::fai::Index::from(records)
             }
         };
+        let file = File::open(path).map_err(failed)?;
+        let reader: Box<dyn ReadSeek> = match packed {
+            Packing::Bgzip => {
+                let gzi = with_suffix(path, ".gzi");
+                let gzi =
+                    bgzf::gzi::fs::read(&gzi).map_err(|cause| Error::Io { path: gzi, cause })?;
+                Box::new(bgzf::io::IndexedReader::new(file, gzi))
+            }
+            _ => Box::new(BufReader::new(file)),
+        };
+        let names = index
+            .as_ref()
+            .iter()
+            .enumerate()
+            .map(|(i, record)| (record.name().to_string(), i))
+            .collect();
         Ok(Reference {
             path: path.to_path_buf(),
-            index,
+            index: Arc::new(index),
+            names: Arc::new(names),
+            reader: Arc::new(Mutex::new(reader)),
         })
     }
 
@@ -106,25 +142,50 @@ impl Reference {
 
     /// Whether the FASTA has a sequence called `name`.
     pub fn has(&self, name: &str) -> bool {
-        self.index.as_ref().iter().any(|r| r.name() == name)
+        self.names.contains_key(name)
     }
 
-    /// The bases of `name` from `start` to `end`, 1-based and inclusive.
+    /// The bases of `name` from `start` to `end`, 1-based and inclusive
+    /// (cut to the sequence's end).
     pub fn fetch(&self, name: &str, start: u64, end: u64) -> Result<Vec<u8>> {
         let failed = |cause: io::Error| Error::Io {
             path: self.path.clone(),
             cause,
         };
-        let mut reader = fasta::io::indexed_reader::Builder::default()
-            .set_index(self.index.clone())
-            .build_from_path(&self.path)
-            .map_err(failed)?;
-        let position = |p: u64| {
-            Position::try_from(p as usize)
-                .map_err(|_| Error::Invalid("positions count from 1".to_string()))
+        let Some(&i) = self.names.get(name) else {
+            return Err(Error::Invalid(format!(
+                "{name} is not in {}",
+                file_name(&self.path)
+            )));
         };
-        let region = CoreRegion::new(name, position(start)?..=position(end)?);
-        let record = reader.query(&region).map_err(failed)?;
-        Ok(record.sequence().as_ref().to_vec())
+        let records: &[fasta::fai::Record] = (*self.index).as_ref();
+        let record = &records[i];
+        let end = end.min(record.length());
+        if start == 0 || start > end {
+            return Ok(Vec::new());
+        }
+        let (line_bases, line_width) = (record.line_base_count().get(), record.line_width().get());
+        let skip = start - 1;
+        let at = record.position() + skip / line_bases * line_width + skip % line_bases;
+        let want = (end - start + 1) as usize;
+        let mut bases = Vec::with_capacity(want);
+        let mut reader = self.reader.lock().unwrap_or_else(|e| e.into_inner());
+        reader.seek(SeekFrom::Start(at)).map_err(failed)?;
+        let mut chunk = vec![0u8; (want + want / 50 + 64).min(1 << 20)];
+        while bases.len() < want {
+            let n = reader.read(&mut chunk).map_err(failed)?;
+            if n == 0 {
+                break;
+            }
+            for &b in &chunk[..n] {
+                if b != b'\n' && b != b'\r' {
+                    bases.push(b);
+                    if bases.len() == want {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(bases)
     }
 }

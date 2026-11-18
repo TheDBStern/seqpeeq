@@ -11,7 +11,7 @@ mod worker;
 mod zoom;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
@@ -77,6 +77,12 @@ fn run(cli: Cli) -> Result<()> {
             let text = std::fs::read_to_string(&log_file)
                 .with_context(|| format!("cannot read {}", log_file.display()))?;
             let mut session = Session::new(cli.log.map(SessionLog::new));
+            // Names files written beside the log are looked for there.
+            let folder = log_file
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            session.set_replay_dir(Some(folder.to_path_buf()));
             let report = replay(&text, &mut session)?;
             for warning in &report.warnings {
                 eprintln!("seqpeeq: warning: {warning}");

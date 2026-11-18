@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::Result;
-use crate::bam::read::counted_blocks;
+use crate::bam::read::{counted, spans};
 use crate::bam::{BamSource, Region};
 use crate::progress::Progress;
 
@@ -114,6 +114,7 @@ impl BamSource {
         progress: &Progress,
     ) -> Result<Option<u64>> {
         let length = self.contigs[contig].length;
+        // Positions count from 1; "after 0" is "from the start".
         match dir {
             Direction::Forward => self.jump_forward(contig, length, from, want, progress),
             Direction::Back => self.jump_back(contig, length, from, want, progress),
@@ -136,7 +137,7 @@ impl BamSource {
         }
         let region = Region {
             contig,
-            start: from,
+            start: from.max(1),
             end: length,
         };
         let mut union = Union::default();
@@ -145,8 +146,8 @@ impl BamSource {
         // starting after `from` is known once the intervals around it
         // are settled.
         self.scan(&region, progress, |record| {
-            if let Some((start, blocks)) = counted_blocks(record)? {
-                union.push(start, &blocks);
+            if let Some((start, cigar)) = counted(record)? {
+                union.push(start, &spans(start, &cigar));
                 found = settled_answer(&union.done, from, want);
             }
             Ok(found.is_none())
@@ -188,8 +189,8 @@ impl BamSource {
             };
             let mut union = Union::default();
             self.scan(&region, progress, |record| {
-                if let Some((read_start, blocks)) = counted_blocks(record)? {
-                    let clipped: Vec<(u64, u64)> = blocks
+                if let Some((read_start, cigar)) = counted(record)? {
+                    let clipped: Vec<(u64, u64)> = spans(read_start, &cigar)
                         .iter()
                         .filter(|&&(a, b)| b >= start && a <= from)
                         .map(|&(a, b)| (a.max(start), b.min(from)))

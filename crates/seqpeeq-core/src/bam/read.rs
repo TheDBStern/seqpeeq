@@ -139,13 +139,15 @@ impl BamSource {
         if progress.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        // The query seeks straight to its chunks, so the header (parsed once
+        // at open) is not read again: with 100,000 contigs that costs tens
+        // of milliseconds per query.
         let mut reader = File::open(&self.path)
             .map(bam::io::Reader::new)
             .map_err(failed)?;
-        reader.read_header().map_err(failed)?;
         let name = self.contigs[region.contig].name.as_bytes();
         let position = |p: u64| Position::try_from(p as usize).expect("positions count from 1");
-        let core = CoreRegion::new(name, position(region.start)..=position(region.end));
+        let core = CoreRegion::new(name, position(region.start.max(1))..=position(region.end));
         let query = reader
             .query(&self.header, &*self.index, &core)
             .map_err(failed)?;
@@ -244,7 +246,10 @@ impl BamSource {
                 let [name, pos, strand, cigar, mapq, ..] = fields.as_slice() else {
                     return None;
                 };
-                let contig = self.contigs.iter().position(|c| c.name == *name)?;
+                let contig = self
+                    .header
+                    .reference_sequences()
+                    .get_index_of(name.as_bytes())?;
                 Some(Part {
                     place: Place {
                         contig,
@@ -259,12 +264,43 @@ impl BamSource {
     }
 }
 
-/// Inclusive reference stretches, in order.
-pub(crate) type Blocks = Vec<(u64, u64)>;
+/// The inclusive reference stretches a read spans, for covered and empty
+/// stretches: its M, = and X operations and the deletions between them,
+/// which do not end a stretch (long reads have one every few dozen bases).
+/// An N (an intron) still does.
+pub(crate) fn spans(start: u64, cigar: &[(char, u32)]) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    let mut pos = start;
+    // Whether the next aligned base continues the last stretch.
+    let mut open = false;
+    for &(op, len) in cigar {
+        let len = u64::from(len);
+        match op {
+            'M' | '=' | 'X' if len > 0 => {
+                match out.last_mut() {
+                    Some(last) if open => last.1 = pos + len - 1,
+                    _ => out.push((pos, pos + len - 1)),
+                }
+                pos += len;
+                open = true;
+            }
+            'D' => pos += len,
+            'N' => {
+                pos += len;
+                open = false;
+            }
+            _ => {}
+        }
+    }
+    out
+}
 
-/// The start and covered stretches of a record that counts towards
-/// coverage; `None` for one that does not.
-pub(crate) fn counted_blocks(record: &bam::Record) -> io::Result<Option<(u64, Blocks)>> {
+/// A CIGAR as (operation, length) pairs.
+pub(crate) type Cigar = Vec<(char, u32)>;
+
+/// A record that counts towards coverage: its start and CIGAR; `None` for
+/// one that does not.
+pub(crate) fn counted(record: &bam::Record) -> io::Result<Option<(u64, Cigar)>> {
     let flags = record.flags().bits();
     if flags & (UNMAPPED | SECONDARY | QC_FAIL | DUPLICATE) != 0 {
         return Ok(None);
@@ -272,8 +308,7 @@ pub(crate) fn counted_blocks(record: &bam::Record) -> io::Result<Option<(u64, Bl
     let Some(start) = record.alignment_start().transpose()? else {
         return Ok(None);
     };
-    let start = start.get() as u64;
-    Ok(Some((start, blocks(start, &cigar_of(record)?))))
+    Ok(Some((start.get() as u64, cigar_of(record)?)))
 }
 
 /// A record's CIGAR as (operation, length) pairs.

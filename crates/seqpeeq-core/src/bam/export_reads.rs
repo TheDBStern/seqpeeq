@@ -1,7 +1,7 @@
 //! `bam export-reads`: a region's reads (or some of them, by name) to a new
 //! BAM, FASTA or FASTQ, with their mates and split parts if asked.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -474,17 +474,35 @@ impl ReadsExport {
             Some((contig, start_of(record).ok()??))
         };
         let mut added: Vec<bam::Record> = Vec::new();
+        // Where each record already in hand is placed: the selected ones by
+        // their index, then the added ones by `selected.len()` plus theirs.
+        let mut at: HashMap<(usize, u64), Vec<usize>> = HashMap::new();
+        for (i, record) in selected.iter().enumerate() {
+            if let Some(place) = placed(record) {
+                at.entry(place).or_default().push(i);
+            }
+        }
         let mut look = |contig: usize,
                         pos: u64,
                         tally: &mut Tally,
                         want: &dyn Fn(&bam::Record) -> bool|
          -> Result<()> {
-            let here = |record: &bam::Record| placed(record) == Some((contig, pos)) && want(record);
-            if selected.iter().chain(added.iter()).any(here) {
+            let in_hand = at.get(&(contig, pos)).is_some_and(|found| {
+                found.iter().any(|&i| match selected.get(i) {
+                    Some(record) => want(record),
+                    None => want(&added[i - selected.len()]),
+                })
+            });
+            if in_hand {
                 return Ok(());
             }
             match self.find_at(contig, pos, progress, want)? {
-                Some(record) => added.push(record),
+                Some(record) => {
+                    at.entry((contig, pos))
+                        .or_default()
+                        .push(selected.len() + added.len());
+                    added.push(record);
+                }
                 None => tally.not_found += 1,
             }
             Ok(())

@@ -347,6 +347,8 @@ pub struct Session {
     next_pair: u64,
     /// Where a BAM's index goes when the BAM's own folder cannot take it.
     cache_dir: PathBuf,
+    /// The folder of a log being replayed, where its names files are.
+    replay_dir: Option<PathBuf>,
 }
 
 /// `$XDG_CACHE_HOME/seqpeeq`, else `~/.cache/seqpeeq`, else a folder in
@@ -399,6 +401,7 @@ impl Session {
             links: HashMap::new(),
             next_pair: 1,
             cache_dir: default_cache_dir(),
+            replay_dir: None,
         }
     }
 
@@ -406,6 +409,13 @@ impl Session {
     /// the default cache folder.
     pub fn set_cache_dir(&mut self, dir: PathBuf) {
         self.cache_dir = dir;
+    }
+
+    /// The folder of the log being replayed: a `--names-file` missing from
+    /// where it was written is looked for there, by its file name, so a log
+    /// moved with its names files still replays.
+    pub fn set_replay_dir(&mut self, dir: Option<PathBuf>) {
+        self.replay_dir = dir;
     }
 
     /// Run a command to its end and, if it succeeds, record it.
@@ -507,7 +517,21 @@ impl Session {
                 let label = format!("reading {}", file_name(&file));
                 return Ok(self.hand_out(label, line, Work::BamRef { dataset, file }));
             }
-            Command::Bam(cmd) => {
+            Command::Bam(mut cmd) => {
+                if let BamCmd::ExportReads {
+                    names_file: Some(file),
+                    ..
+                } = &mut cmd
+                    && !file.exists()
+                    && let Some(beside) = self
+                        .replay_dir
+                        .as_ref()
+                        .zip(file.file_name())
+                        .map(|(dir, name)| dir.join(name))
+                        .filter(|beside| beside.exists())
+                {
+                    *file = beside;
+                }
                 let export = Box::new(BamExport::plan(self.current_bam()?, &cmd)?);
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
                 let label = format!("writing {}", file_name(export.out()));

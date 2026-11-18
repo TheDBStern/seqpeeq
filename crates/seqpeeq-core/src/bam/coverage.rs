@@ -6,7 +6,7 @@ use noodles::csi::BinningIndex as _;
 use noodles::csi::binning_index::index::reference_sequence::Bin;
 
 use crate::Result;
-use crate::bam::read::counted_blocks;
+use crate::bam::read::{blocks, counted, spans};
 use crate::bam::stretch::{Union, next_start};
 use crate::bam::{BamSource, Direction, Region, Stretch};
 use crate::progress::Progress;
@@ -92,7 +92,7 @@ impl BamSource {
         progress.set_total(len);
         let mut sums = vec![0.0f64; bins];
         let mut union = Union::default();
-        let mut counted = 0;
+        let mut seen = 0;
         let mut reached = 0;
         let snapshot = |sums: &[f64], union: &Union, done_to: u64| Coverage {
             contig,
@@ -106,17 +106,18 @@ impl BamSource {
             done_to,
         };
         self.scan(&region, progress, |record| {
-            if let Some((start, blocks)) = counted_blocks(record)? {
-                union.push(start, &blocks);
-                for &(a, b) in &blocks {
+            if let Some((start, cigar)) = counted(record)? {
+                union.push(start, &spans(start, &cigar));
+                // Depth counts aligned bases only, as samtools depth does.
+                for (a, b) in blocks(start, &cigar) {
                     spread(&mut sums, len, a, b, 1.0, false);
                 }
                 if start > reached {
                     progress.add(start - reached);
                     reached = start;
                 }
-                counted += 1;
-                if counted % EVERY == 0 {
+                seen += 1;
+                if seen % EVERY == 0 {
                     each(&snapshot(&sums, &union, start - 1));
                 }
             }
