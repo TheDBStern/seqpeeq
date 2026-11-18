@@ -1,8 +1,9 @@
 ---
 source: crates/seqpeeq/src/ui.rs
+assertion_line: 881
 expression: "render(&app, 60, 12).backend()"
 ---
-"┌help──────────────────────────────────────────────────────┐"
+"┌help: alignment───────────────────────────────────────────┐"
 "│ Move      arrows hjkl   Shift+arrows a screen            │"
 "│           PgUp PgDn   Home End   g go to                 │"
 "│           / search names   n N next, previous            │"
@@ -11,6 +12,6 @@ expression: "render(&app, 60, 12).backend()"
 "│           i insert (shifts)   R type over   Esc stop     │"
 "│ Zoom      - out   + in   z whole alignment and back      │"
 "│           u U undo redo   e extract to a file            │"
-"│ View      c colours   [ ] name width   Tab next file     │"
-"│           L log   ? help   q quit                        │"
+"│           c colours   [ ] name width                     │"
+"│           msa delete-rows  delete-cols  fill  overwrite  │"
 "└──────────────────────────────────────────────────────────┘"
