@@ -7,7 +7,7 @@ pub(crate) mod shift;
 pub(crate) mod source;
 pub(crate) mod write;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +19,7 @@ pub use overview::{SUMMARY_BYTES, Summary, Tally, summary_block};
 pub use shift::Shift;
 
 use crate::command::msa::{MsaCmd, RowSel};
+use crate::pair::{Pair, Step, holds, last_pair};
 use crate::progress::Progress;
 use crate::ranges::Ranges;
 use crate::{Error, Result};
@@ -39,9 +40,9 @@ pub struct Alignment {
     view: View,
     alphabet: Alphabet,
     /// Earlier states and the command that replaced each, oldest first.
-    undo: Vec<(Layer, &'static str)>,
+    undo: Vec<Step<Layer>>,
     /// States that were undone, most recently undone last.
-    redo: Vec<(Layer, &'static str)>,
+    redo: Vec<Step<Layer>>,
     /// The number the next new state will get.
     next_revision: u64,
     /// The revision that was last written to a file, or opened.
@@ -106,7 +107,7 @@ pub(crate) struct Applied {
 }
 
 impl Applied {
-    fn new(message: String) -> Applied {
+    pub(crate) fn new(message: String) -> Applied {
         Applied {
             message,
             note: None,
@@ -328,21 +329,132 @@ impl Alignment {
     }
 
     pub(crate) fn undo(&mut self) -> Result<Applied> {
-        let Some((layer, name)) = self.undo.pop() else {
+        let Some(step) = self.undo.pop() else {
             return invalid("nothing to undo");
         };
-        let undone = std::mem::replace(&mut self.view.layer, layer);
-        self.redo.push((undone, name));
+        let name = step.name;
+        let undone = std::mem::replace(&mut self.view.layer, step.state);
+        self.redo.push(Step {
+            state: undone,
+            ..step
+        });
         Ok(Applied::new(format!("undid {name}; now {}", self.shape())))
     }
 
     pub(crate) fn redo(&mut self) -> Result<Applied> {
-        let Some((layer, name)) = self.redo.pop() else {
+        let Some(step) = self.redo.pop() else {
             return invalid("nothing to redo");
         };
-        let before = std::mem::replace(&mut self.view.layer, layer);
-        self.undo.push((before, name));
+        let name = step.name;
+        let before = std::mem::replace(&mut self.view.layer, step.state);
+        self.undo.push(Step {
+            state: before,
+            ..step
+        });
         Ok(Applied::new(format!("redid {name}; now {}", self.shape())))
+    }
+
+    /// Tag the newest undo step as half of a two-file edit.
+    pub(crate) fn pair_last(&mut self, pair: Pair) {
+        if let Some(step) = self.undo.last_mut() {
+            step.pair = Some(pair);
+        }
+    }
+
+    /// The pair tag of the step `undo` would reverse next.
+    pub(crate) fn undo_pair(&self) -> Option<Pair> {
+        last_pair(&self.undo)
+    }
+
+    /// The pair tag of the step `redo` would make next.
+    pub(crate) fn redo_pair(&self) -> Option<Pair> {
+        last_pair(&self.redo)
+    }
+
+    /// Whether the undo history still holds the step tagged `id`.
+    pub(crate) fn keeps(&self, id: u64) -> bool {
+        holds(&self.undo, id)
+    }
+
+    /// Whether the redo history still holds the step tagged `id`.
+    pub(crate) fn redo_keeps(&self, id: u64) -> bool {
+        holds(&self.redo, id)
+    }
+
+    /// The name, if any, that `renames` would give to more than one
+    /// sequence: a row left alone already has it, or rows with different
+    /// names would get it. Rows that share a name may go on sharing a new
+    /// one.
+    pub(crate) fn name_clash(&self, renames: &[(usize, String)]) -> Option<String> {
+        let mut was: HashMap<&str, &str> = HashMap::new();
+        for (row, to) in renames {
+            let old = self.name(*row);
+            if *was.entry(to.as_str()).or_insert(old) != old {
+                return Some(to.clone());
+            }
+        }
+        let renamed: HashSet<usize> = renames.iter().map(|(row, _)| *row).collect();
+        (0..self.rows())
+            .filter(|row| !renamed.contains(row))
+            .find(|&row| was.contains_key(self.name(row)))
+            .map(|row| self.name(row).to_string())
+    }
+
+    /// Every row whose name is a key of `map`, with its new name.
+    pub(crate) fn renames_for(&self, map: &HashMap<String, String>) -> Vec<(usize, String)> {
+        (0..self.rows())
+            .filter_map(|row| map.get(self.name(row)).map(|to| (row, to.clone())))
+            .collect()
+    }
+
+    /// `pattern` replaced in every row's name; nothing when no name
+    /// matches. A name left empty is refused.
+    pub(crate) fn regex_renames(
+        &self,
+        pattern: &str,
+        replace: &str,
+    ) -> Result<Vec<(usize, String)>> {
+        let re = regex(pattern)?;
+        check_replacement(&re, replace)?;
+        let mut renames = Vec::new();
+        for row in 0..self.rows() {
+            let name = self.name(row);
+            if !re.is_match(name) {
+                continue;
+            }
+            let renamed = re.replace_all(name, replace);
+            let renamed = renamed.trim();
+            if renamed.is_empty() {
+                return invalid(format!("a name cannot be empty (row {})", row + 1));
+            }
+            if renamed != name {
+                renames.push((row, renamed.to_string()));
+            }
+        }
+        Ok(renames)
+    }
+
+    /// The rows whose names are in `names`, ascending.
+    pub(crate) fn rows_named(&self, names: &HashSet<&str>) -> Vec<usize> {
+        (0..self.rows())
+            .filter(|&row| names.contains(self.name(row)))
+            .collect()
+    }
+
+    /// Give rows new names, as one undo step called `step`.
+    pub(crate) fn commit_renames(&mut self, step: &'static str, renames: Vec<(usize, String)>) {
+        self.edit(step, |layer, _| {
+            for (row, name) in renames {
+                layer.rename(row, name);
+            }
+        });
+    }
+
+    /// Delete the rows listed (counted from 0, ascending), as one undo step
+    /// called `step`.
+    pub(crate) fn delete_listed(&mut self, step: &'static str, rows: &[usize]) {
+        let ranges = to_ranges(rows);
+        self.edit(step, |layer, source| layer.delete_rows(source, &ranges));
     }
 
     /// The edits as they are now, for putting back with [`Alignment::restore`].
@@ -415,7 +527,7 @@ impl Alignment {
         change(&mut self.view.layer, &self.view.source);
         self.view.layer.revision = self.next_revision;
         self.next_revision += 1;
-        self.undo.push((before, name));
+        self.undo.push(Step::new(before, name));
         if self.undo.len() > UNDO_LEVELS {
             self.undo.remove(0);
         }
@@ -605,20 +717,98 @@ impl Alignment {
         )))
     }
 
-    fn rename_one(&mut self, sel: &RowSel, to: &str) -> Result<Applied> {
-        let rows = self.select_rows(sel)?;
-        let &[row] = rows.as_slice() else {
-            return invalid(format!(
-                "--to renames one sequence, but {} are selected",
-                rows.len()
-            ));
-        };
-        let to = to.trim();
-        if to.is_empty() {
-            return invalid(format!("a name cannot be empty (row {})", row + 1));
+    /// The renames `msa rename` would make, checked as it checks them; no
+    /// change is made. `to` renames one row; `regex` is (pattern, replace).
+    pub(crate) fn plan_rename(
+        &self,
+        sel: &RowSel,
+        to: Option<&str>,
+        regex_replace: Option<(&str, &str)>,
+    ) -> Result<Vec<(usize, String)>> {
+        match (to, regex_replace) {
+            (Some(to), _) => {
+                let rows = self.select_rows(sel)?;
+                let &[row] = rows.as_slice() else {
+                    return invalid(format!(
+                        "--to renames one sequence, but {} are selected",
+                        rows.len()
+                    ));
+                };
+                let to = to.trim();
+                if to.is_empty() {
+                    return invalid(format!("a name cannot be empty (row {})", row + 1));
+                }
+                Ok(vec![(row, to.to_string())])
+            }
+            (None, Some((pattern, replace))) => {
+                let re = regex(pattern)?;
+                check_replacement(&re, replace)?;
+                let rows = self.select_rows(sel)?;
+                let mut matched = false;
+                let mut renames: Vec<(usize, String)> = Vec::new();
+                for &row in &rows {
+                    let name = self.name(row);
+                    if !re.is_match(name) {
+                        continue;
+                    }
+                    matched = true;
+                    let renamed = re.replace_all(name, replace);
+                    let renamed = renamed.trim();
+                    if renamed.is_empty() {
+                        return invalid(format!("a name cannot be empty (row {})", row + 1));
+                    }
+                    if renamed != name {
+                        renames.push((row, renamed.to_string()));
+                    }
+                }
+                if !matched {
+                    return invalid(format!("no selected name contains a match for '{pattern}'"));
+                }
+                if renames.is_empty() {
+                    return invalid("that replacement leaves every name as it is");
+                }
+                Ok(renames)
+            }
+            (None, None) => invalid("say the new name with --to, or use --regex with --replace"),
         }
+    }
+
+    /// The names `msa rename --tree` changes, each with its new name: the
+    /// renames of the selected rows, checked as `plan_rename` checks them,
+    /// except that `--to` may select several rows when they share a name.
+    pub(crate) fn plan_renamed_names(
+        &self,
+        sel: &RowSel,
+        to: Option<&str>,
+        regex_replace: Option<(&str, &str)>,
+    ) -> Result<HashMap<String, String>> {
+        if let Some(to) = to {
+            let rows = self.select_rows(sel)?;
+            if let [first, rest @ ..] = rows.as_slice()
+                && rest.iter().all(|&row| self.name(row) == self.name(*first))
+            {
+                let to = to.trim();
+                if to.is_empty() {
+                    return invalid(format!("a name cannot be empty (row {})", first + 1));
+                }
+                return Ok(HashMap::from([(
+                    self.name(*first).to_string(),
+                    to.to_string(),
+                )]));
+            }
+        }
+        Ok(self
+            .plan_rename(sel, to, regex_replace)?
+            .into_iter()
+            .map(|(row, new)| (self.name(row).to_string(), new))
+            .collect())
+    }
+
+    fn rename_one(&mut self, sel: &RowSel, to: &str) -> Result<Applied> {
+        let renames = self.plan_rename(sel, Some(to), None)?;
+        let (row, to) = renames[0].clone();
         let was = self.name(row).to_string();
-        self.edit("rename", |layer, _| layer.rename(row, to.to_string()));
+        self.commit_renames("rename", renames);
         Ok(Applied {
             message: format!("renamed row {} to '{to}'", row + 1),
             note: Some(format!("was: {was}")),
@@ -627,38 +817,10 @@ impl Alignment {
     }
 
     fn rename_matching(&mut self, sel: &RowSel, pattern: &str, replace: &str) -> Result<Applied> {
-        let re = regex(pattern)?;
-        check_replacement(&re, replace)?;
+        let renames = self.plan_rename(sel, None, Some((pattern, replace)))?;
         let rows = self.select_rows(sel)?;
-        let mut matched = false;
-        let mut renames: Vec<(usize, String)> = Vec::new();
-        for &row in &rows {
-            let name = self.name(row);
-            if !re.is_match(name) {
-                continue;
-            }
-            matched = true;
-            let renamed = re.replace_all(name, replace);
-            let renamed = renamed.trim();
-            if renamed.is_empty() {
-                return invalid(format!("a name cannot be empty (row {})", row + 1));
-            }
-            if renamed != name {
-                renames.push((row, renamed.to_string()));
-            }
-        }
-        if !matched {
-            return invalid(format!("no selected name contains a match for '{pattern}'"));
-        }
-        if renames.is_empty() {
-            return invalid("that replacement leaves every name as it is");
-        }
         let renamed_rows: Vec<usize> = renames.iter().map(|(row, _)| *row).collect();
-        self.edit("rename", |layer, _| {
-            for (row, name) in renames {
-                layer.rename(row, name);
-            }
-        });
+        self.commit_renames("rename", renames);
 
         let mut uses: HashMap<&str, usize> = HashMap::new();
         for row in 0..self.rows() {
@@ -1343,5 +1505,45 @@ mod tests {
             aln.find_names("(").unwrap_err().to_string(),
             "bad regular expression '('"
         );
+    }
+
+    #[test]
+    fn a_paired_step_keeps_its_tag_through_undo_and_redo() {
+        let mut a = Alignment::from_text(TRIO);
+        run(&mut a, "delete-rows --rows 1").unwrap();
+        let pair = Pair { id: 7, with: 2 };
+        a.pair_last(pair);
+        run(&mut a, "delete-cols --cols 1").unwrap();
+        assert_eq!(a.undo_pair(), None, "the newer step is not paired");
+        assert!(a.keeps(7));
+        a.undo().unwrap();
+        assert_eq!(a.undo_pair(), Some(pair));
+        a.undo().unwrap();
+        assert_eq!((a.redo_pair(), a.keeps(7)), (Some(pair), false));
+        a.redo().unwrap();
+        assert_eq!(a.undo_pair(), Some(pair));
+    }
+
+    #[test]
+    fn renames_and_deletions_by_name_touch_every_copy() {
+        use std::collections::HashSet;
+        let mut a = Alignment::from_text(">x\nAC\n>y\nAC\n>x\nGG\n");
+        let map = HashMap::from([("x".to_string(), "z".to_string())]);
+        assert_eq!(
+            a.renames_for(&map),
+            [(0, "z".to_string()), (2, "z".to_string())]
+        );
+        assert_eq!(a.rows_named(&HashSet::from(["x"])), [0, 2]);
+        assert_eq!(a.regex_renames("^q", "r").unwrap(), []);
+        assert_eq!(
+            a.regex_renames("^y$", "").unwrap_err().to_string(),
+            "a name cannot be empty (row 2)"
+        );
+        a.delete_listed("prune", &[0, 2]);
+        assert_eq!((a.rows(), a.name(0)), (1, "y"));
+        a.undo().unwrap();
+        assert_eq!(a.rows(), 3);
+        a.commit_renames("rename", a.renames_for(&map));
+        assert_eq!((a.name(0), a.name(2)), ("z", "z"));
     }
 }

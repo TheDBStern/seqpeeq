@@ -503,17 +503,23 @@ mod tests {
                     wrap,
                     out
                 }),
-            (row_sel(), proptest::option::of(text())).prop_map(|(rows, to)| MsaCmd::Rename {
-                rows,
-                to,
-                regex: None,
-                replace: None
-            }),
-            (row_sel(), text(), text()).prop_map(|(rows, regex, replace)| MsaCmd::Rename {
-                rows,
-                to: None,
-                regex: Some(regex),
-                replace: Some(replace)
+            (row_sel(), proptest::option::of(text()), any::<bool>()).prop_map(
+                |(rows, to, tree)| MsaCmd::Rename {
+                    rows,
+                    to,
+                    regex: None,
+                    replace: None,
+                    tree
+                }
+            ),
+            (row_sel(), text(), text(), any::<bool>()).prop_map(|(rows, regex, replace, tree)| {
+                MsaCmd::Rename {
+                    rows,
+                    to: None,
+                    regex: Some(regex),
+                    replace: Some(replace),
+                    tree,
+                }
             }),
             (1..10_000usize, 1..10_000usize, "[!-=?-~]{1,12}")
                 .prop_map(|(row, col, seq)| MsaCmd::Overwrite { row, col, seq }),
@@ -573,7 +579,7 @@ mod tests {
                     seqs,
                     wrap
                 }),
-            node_sel().prop_map(|at| TreeCmd::Prune { at }),
+            (node_sel(), any::<bool>()).prop_map(|(at, seqs)| TreeCmd::Prune { at, seqs }),
             (
                 node_sel(),
                 proptest::collection::vec(text(), 0..3),
@@ -585,17 +591,21 @@ mod tests {
                     midpoint
                 }),
             any::<bool>().prop_map(|reverse| TreeCmd::Ladderize { reverse }),
-            (node_sel(), proptest::option::of(text())).prop_map(|(at, to)| TreeCmd::Rename {
-                at,
-                to,
-                regex: None,
-                replace: None
+            (node_sel(), proptest::option::of(text()), any::<bool>()).prop_map(|(at, to, seqs)| {
+                TreeCmd::Rename {
+                    at,
+                    to,
+                    regex: None,
+                    replace: None,
+                    seqs,
+                }
             }),
-            (text(), text()).prop_map(|(regex, replace)| TreeCmd::Rename {
+            (text(), text(), any::<bool>()).prop_map(|(regex, replace, seqs)| TreeCmd::Rename {
                 at: NodeSel::default(),
                 to: None,
                 regex: Some(regex),
-                replace: Some(replace)
+                replace: Some(replace),
+                seqs
             }),
             path().prop_map(|file| TreeCmd::Link { file }),
             Just(TreeCmd::Unlink),

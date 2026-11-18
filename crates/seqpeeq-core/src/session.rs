@@ -1,6 +1,6 @@
 //! A session: the open datasets, and the one place commands are executed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,6 +9,7 @@ use jiff::{Timestamp, Zoned};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
+use crate::pair::Pair;
 use crate::progress::Progress;
 use crate::tree::newick::save_newick;
 use crate::tree::reroot::some_names;
@@ -296,6 +297,8 @@ pub struct Session {
     clock: fn() -> Zoned,
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
+    /// The id the next edit to two files will tag both its steps with.
+    next_pair: u64,
 }
 
 /// Enough of the state before a command to put it back if the command
@@ -303,8 +306,9 @@ pub struct Session {
 struct Checkpoint {
     datasets: usize,
     current: Option<usize>,
-    /// The current file's state, when the command may change it.
-    snapshot: Option<Snapshot>,
+    /// The state of each file the command may change, by position: the
+    /// current file and, for an edit to two files, the other one.
+    snapshots: Vec<(usize, Snapshot)>,
     links: HashMap<u64, u64>,
 }
 
@@ -330,6 +334,7 @@ impl Session {
             log,
             clock,
             links: HashMap::new(),
+            next_pair: 1,
         }
     }
 
@@ -618,15 +623,21 @@ impl Session {
             cmd,
             Command::Msa(_) | Command::Tree(_) | Command::Undo | Command::Redo
         );
-        let snapshot = match self.current.map(|index| &self.datasets[index].content) {
-            Some(Content::Msa(alignment)) if edits => Some(Snapshot::Msa(alignment.snapshot())),
-            Some(Content::Tree(tree)) if edits => Some(Snapshot::Tree(tree.snapshot())),
-            _ => None,
-        };
+        let mut snapshots = Vec::new();
+        if edits {
+            for index in self.current.into_iter().chain(self.partner(cmd)) {
+                let snapshot = match &self.datasets[index].content {
+                    Content::Msa(alignment) => Snapshot::Msa(alignment.snapshot()),
+                    Content::Tree(tree) => Snapshot::Tree(tree.snapshot()),
+                    Content::Unloaded => continue,
+                };
+                snapshots.push((index, snapshot));
+            }
+        }
         Checkpoint {
             datasets: self.datasets.len(),
             current: self.current,
-            snapshot,
+            snapshots,
             links: self.links.clone(),
         }
     }
@@ -641,12 +652,367 @@ impl Session {
         }
         self.current = checkpoint.current;
         self.links = checkpoint.links;
-        let content = self.current.map(|index| &mut self.datasets[index].content);
-        match (checkpoint.snapshot, content) {
-            (Some(Snapshot::Msa(layer)), Some(Content::Msa(alignment))) => alignment.restore(layer),
-            (Some(Snapshot::Tree(state)), Some(Content::Tree(tree))) => tree.restore(state),
-            _ => {}
+        for (index, snapshot) in checkpoint.snapshots {
+            match (snapshot, &mut self.datasets[index].content) {
+                (Snapshot::Msa(layer), Content::Msa(alignment)) => alignment.restore(layer),
+                (Snapshot::Tree(state), Content::Tree(tree)) => tree.restore(state),
+                _ => {}
+            }
         }
+    }
+
+    /// The position of the other file a command will change besides the
+    /// current one: the linked file for `--seqs` and `--tree`, and for
+    /// `undo` and `redo` the open file holding the other half of the step.
+    fn partner(&self, cmd: &Command) -> Option<usize> {
+        let current = self.current?;
+        let other = |pair: Option<Pair>| self.position(pair?.with);
+        match cmd {
+            Command::Tree(
+                TreeCmd::Prune { seqs: true, .. } | TreeCmd::Rename { seqs: true, .. },
+            ) => self.position(*self.links.get(&self.datasets[current].id)?),
+            Command::Msa(MsaCmd::Rename { tree: true, .. }) => {
+                match self.trees_linked_to(self.datasets[current].id).as_slice() {
+                    &[tree] => self.position(tree),
+                    _ => None,
+                }
+            }
+            Command::Undo => other(self.step_pair(current, true)),
+            Command::Redo => other(self.step_pair(current, false)),
+            _ => None,
+        }
+    }
+
+    /// The position of the open file with dataset id `id`.
+    fn position(&self, id: u64) -> Option<usize> {
+        self.datasets.iter().position(|d| d.id == id)
+    }
+
+    /// The pair tag on the file's next undo (or redo) step.
+    fn step_pair(&self, index: usize, undo: bool) -> Option<Pair> {
+        match (&self.datasets[index].content, undo) {
+            (Content::Msa(alignment), true) => alignment.undo_pair(),
+            (Content::Msa(alignment), false) => alignment.redo_pair(),
+            (Content::Tree(tree), true) => tree.undo_pair(),
+            (Content::Tree(tree), false) => tree.redo_pair(),
+            (Content::Unloaded, _) => None,
+        }
+    }
+
+    /// `tree rename --seqs`: rename tips and the rows carrying the same
+    /// names. The rows' renames are worked out and checked first, then the
+    /// tree is renamed (the step that may refuse), then the rows.
+    fn rename_from_tree(&mut self, cmd: &TreeCmd) -> Result<Applied> {
+        let TreeCmd::Rename {
+            at,
+            to,
+            regex,
+            replace,
+            ..
+        } = cmd
+        else {
+            unreachable!("rename_from_tree takes a rename");
+        };
+        self.current_tree()?;
+        let tree_at = self.current.expect("there is a current tree");
+        let aln_at = self.linked_alignment()?;
+        let aln_name = self.datasets[aln_at].file_name();
+        let doc = self.datasets[tree_at].tree().expect("a tree");
+        let alignment = self.datasets[aln_at].msa().expect("an alignment");
+        // A tip whose name other tips share is renamed with them, as every
+        // row carrying the name is, so no tip loses its sequence.
+        let mut shared = None;
+        let rows = match (to, regex, replace) {
+            (Some(to), _, _) => {
+                let old = doc.tip_name(at)?;
+                let map = HashMap::from([(old.clone(), to.trim().to_string())]);
+                let rows = alignment.renames_for(&map);
+                if !old.is_empty() && doc.tips_named(&old) > 1 {
+                    shared = Some((old, map));
+                }
+                rows
+            }
+            (None, Some(pattern), Some(replace)) if at.is_empty() => {
+                alignment.regex_renames(pattern, replace)?
+            }
+            // The tree's own rename says what is wrong.
+            _ => return self.current_tree()?.apply(cmd),
+        };
+        if let Some(name) = alignment.name_clash(&rows) {
+            return Err(row_clash(&aln_name, &name));
+        }
+        let mut applied = match shared {
+            Some((old, map)) => {
+                let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
+                    unreachable!("the current file is a tree");
+                };
+                let renamed = doc
+                    .rename_names("rename", &map)?
+                    .expect("the tips carry the name");
+                let mut applied = Applied::new(format!("{renamed} named '{old}'"));
+                applied.note = Some(format!("was: {old}"));
+                applied
+            }
+            None => self.current_tree()?.apply(cmd)?,
+        };
+        if rows.is_empty() {
+            applied
+                .message
+                .push_str(&format!("; no row of {aln_name} was renamed"));
+        } else {
+            let renamed = rows.len();
+            let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+                unreachable!("checked above");
+            };
+            alignment.commit_renames("rename", rows);
+            self.pair_steps(tree_at, aln_at);
+            applied.message.push_str(&format!(
+                "; renamed {} in {aln_name}",
+                count(renamed, "row")
+            ));
+        }
+        if let Some(counts) = self.link_counts() {
+            applied.message.push_str(&format!("; {}", counts.matched));
+        }
+        Ok(applied)
+    }
+
+    /// `msa rename --tree`: rename rows and the tips carrying their old
+    /// names. The rows' renames are checked first, then the tree is renamed
+    /// (the step that may refuse), then the rows.
+    fn rename_from_alignment(&mut self, cmd: &MsaCmd) -> Result<Applied> {
+        let MsaCmd::Rename {
+            rows,
+            to,
+            regex,
+            replace,
+            ..
+        } = cmd
+        else {
+            unreachable!("rename_from_alignment takes a rename");
+        };
+        self.current_alignment()?;
+        let aln_at = self.current.expect("there is a current alignment");
+        let aln_name = self.datasets[aln_at].file_name();
+        let tree_at = match self.trees_linked_to(self.datasets[aln_at].id).as_slice() {
+            [] => {
+                return Err(Error::Invalid(
+                    "--tree needs this alignment linked to a tree: tree link FILE from the tree's tab"
+                        .to_string(),
+                ));
+            }
+            &[tree] => self.position(tree).expect("a linked file is open"),
+            trees => {
+                return Err(Error::Invalid(format!(
+                    "{aln_name} is linked to {} trees; --tree needs exactly one",
+                    trees.len()
+                )));
+            }
+        };
+        let tree_name = self.datasets[tree_at].file_name();
+        let alignment = self.datasets[aln_at].msa().expect("an alignment");
+        // Every row carrying a chosen row's name is renamed with it, as
+        // every tip carrying it is, so no row loses its tip.
+        let map = alignment.plan_renamed_names(
+            rows,
+            to.as_deref(),
+            regex.as_deref().zip(replace.as_deref()),
+        )?;
+        let plan = alignment.renames_for(&map);
+        if let Some(name) = alignment.name_clash(&plan) {
+            return Err(row_clash(&aln_name, &name));
+        }
+        let mut applied = match (plan.as_slice(), &map.iter().next()) {
+            ([(row, new)], Some((old, _))) => {
+                let mut applied = Applied::new(format!("renamed row {} to '{new}'", row + 1));
+                applied.note = Some(format!("was: {old}"));
+                applied
+            }
+            _ => Applied::new(format!("renamed {}", count(plan.len(), "row"))),
+        };
+        let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
+            unreachable!("a linked tree is a tree");
+        };
+        let tips = doc.rename_names("rename", &map)?;
+        let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+            unreachable!("the current file is an alignment");
+        };
+        alignment.commit_renames("rename", plan);
+        match tips {
+            Some(renamed) => {
+                self.pair_steps(aln_at, tree_at);
+                applied
+                    .message
+                    .push_str(&format!("; {renamed} in {tree_name}"));
+            }
+            None => applied
+                .message
+                .push_str(&format!("; no tip of {tree_name} was renamed")),
+        }
+        Ok(applied)
+    }
+
+    /// `undo` or `redo` in the current file. A step that was half of an
+    /// edit to two files is undone (or redone) in both, or refused, unless
+    /// the other file has been closed.
+    fn undo_or_redo(&mut self, undo: bool) -> Result<Applied> {
+        let Some(index) = self.current else {
+            return Err(Error::Invalid("no file is open".to_string()));
+        };
+        let Some(pair) = self.step_pair(index, undo) else {
+            return self.step(undo);
+        };
+        let Some(other) = self.position(pair.with) else {
+            let mut applied = self.step(undo)?;
+            applied
+                .message
+                .push_str("; the other file is closed, so only this one changed");
+            return Ok(applied);
+        };
+        let name = self.datasets[other].file_name();
+        if self.step_pair(other, undo).map(|p| p.id) != Some(pair.id) {
+            let keeps = match (&self.datasets[other].content, undo) {
+                (Content::Msa(alignment), true) => alignment.keeps(pair.id),
+                (Content::Msa(alignment), false) => alignment.redo_keeps(pair.id),
+                (Content::Tree(tree), true) => tree.keeps(pair.id),
+                (Content::Tree(tree), false) => tree.redo_keeps(pair.id),
+                (Content::Unloaded, _) => false,
+            };
+            return Err(Error::Invalid(match (undo, keeps) {
+                (true, true) => format!("undo the later edit in {name} first"),
+                (true, false) => {
+                    format!("{name} no longer keeps that step, so it cannot be undone in both")
+                }
+                (false, true) => format!("redo in {name} first"),
+                (false, false) => {
+                    format!("{name} has been edited since, so this cannot be redone in both")
+                }
+            }));
+        }
+        let mut applied = self.step(undo)?;
+        let theirs = match &mut self.datasets[other].content {
+            Content::Msa(alignment) if undo => alignment.undo(),
+            Content::Msa(alignment) => alignment.redo(),
+            Content::Tree(tree) if undo => tree.undo(),
+            Content::Tree(tree) => tree.redo(),
+            Content::Unloaded => unreachable!("a file with an undo step is loaded"),
+        }?;
+        applied.message = format!("{}; and in {name}: {}", applied.message, theirs.message);
+        Ok(applied)
+    }
+
+    /// Undo or redo one step of the current file alone.
+    fn step(&mut self, undo: bool) -> Result<Applied> {
+        match (self.current_is_tree(), undo) {
+            (true, true) => self.current_tree()?.undo(),
+            (true, false) => self.current_tree()?.redo(),
+            (false, true) => self.current_alignment()?.undo(),
+            (false, false) => self.current_alignment()?.redo(),
+        }
+    }
+
+    /// Tag the newest steps of the files at `a` and `b` as one edit.
+    fn pair_steps(&mut self, a: usize, b: usize) {
+        let id = self.next_pair;
+        self.next_pair += 1;
+        for (index, other) in [(a, b), (b, a)] {
+            let pair = Pair {
+                id,
+                with: self.datasets[other].id,
+            };
+            match &mut self.datasets[index].content {
+                Content::Msa(alignment) => alignment.pair_last(pair),
+                Content::Tree(tree) => tree.pair_last(pair),
+                Content::Unloaded => {}
+            }
+        }
+    }
+
+    /// The dataset ids of the trees linked to the alignment `alignment`.
+    pub fn trees_linked_to(&self, alignment: u64) -> Vec<u64> {
+        let mut trees: Vec<u64> = self
+            .links
+            .iter()
+            .filter(|&(_, &aln)| aln == alignment)
+            .map(|(&tree, _)| tree)
+            .collect();
+        trees.sort_unstable();
+        trees
+    }
+
+    /// The position of the alignment linked to the current tree, for
+    /// `--seqs`.
+    fn linked_alignment(&self) -> Result<usize> {
+        self.current
+            .and_then(|index| self.links.get(&self.datasets[index].id))
+            .and_then(|&id| self.position(id))
+            .filter(|&index| self.datasets[index].msa().is_some())
+            .ok_or_else(|| {
+                Error::Invalid(
+                    "--seqs needs the tree linked to an alignment: tree link FILE".to_string(),
+                )
+            })
+    }
+
+    /// `tree prune --seqs`: prune the clade and delete its tips' rows from
+    /// the linked alignment. Everything that could refuse is checked before
+    /// the prune, the one step that may still fail, so a refusal changes
+    /// neither file.
+    fn prune_linked(&mut self, cmd: &TreeCmd) -> Result<Applied> {
+        let TreeCmd::Prune { at, .. } = cmd else {
+            unreachable!("prune_linked takes a prune");
+        };
+        self.current_tree()?;
+        let tree_at = self.current.expect("there is a current tree");
+        let aln_at = self.linked_alignment()?;
+        if at.is_empty() {
+            // The prune itself says what is missing.
+            return self.current_tree()?.apply(cmd);
+        }
+        let aln_name = self.datasets[aln_at].file_name();
+        let names = self.datasets[tree_at]
+            .tree()
+            .expect("a tree")
+            .clade_tip_names(at)?;
+        let alignment = self.datasets[aln_at].msa().expect("an alignment");
+        let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
+        let rows = alignment.rows_named(&wanted);
+        if !rows.is_empty() && rows.len() == alignment.rows() {
+            return Err(Error::Invalid(format!(
+                "{aln_name}: that would delete every sequence"
+            )));
+        }
+        let found: HashSet<&str> = rows.iter().map(|&row| alignment.name(row)).collect();
+        let without = names
+            .iter()
+            .filter(|name| !found.contains(name.as_str()))
+            .count();
+        let mut applied = self.current_tree()?.apply(cmd)?;
+        if rows.is_empty() {
+            applied
+                .message
+                .push_str(&format!("; no row of {aln_name} carried those names"));
+        } else {
+            let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+                unreachable!("checked above");
+            };
+            alignment.delete_listed("prune", &rows);
+            self.pair_steps(tree_at, aln_at);
+            applied.message.push_str(&format!(
+                "; deleted {} from {aln_name}",
+                count(rows.len(), "row")
+            ));
+            if without > 0 {
+                let had = if without == 1 { "tip had" } else { "tips had" };
+                applied
+                    .message
+                    .push_str(&format!(" ({without} {had} no sequence)"));
+            }
+        }
+        if let Some(counts) = self.link_counts() {
+            applied.message.push_str(&format!("; {}", counts.matched));
+        }
+        Ok(applied)
     }
 
     /// The alignment that data commands apply to.
@@ -894,13 +1260,16 @@ impl Session {
                     created: Vec::new(),
                 })
             }
-            Command::Undo if self.current_is_tree() => self.current_tree()?.undo(),
-            Command::Redo if self.current_is_tree() => self.current_tree()?.redo(),
-            Command::Undo => self.current_alignment()?.undo(),
-            Command::Redo => self.current_alignment()?.redo(),
+            Command::Undo => self.undo_or_redo(true),
+            Command::Redo => self.undo_or_redo(false),
+            Command::Msa(cmd @ MsaCmd::Rename { tree: true, .. }) => {
+                self.rename_from_alignment(&cmd)
+            }
             Command::Msa(cmd) => self.current_alignment()?.apply(&cmd),
             Command::Tree(TreeCmd::Link { file }) => self.link(&file),
             Command::Tree(TreeCmd::Unlink) => self.unlink(),
+            Command::Tree(cmd @ TreeCmd::Prune { seqs: true, .. }) => self.prune_linked(&cmd),
+            Command::Tree(cmd @ TreeCmd::Rename { seqs: true, .. }) => self.rename_from_tree(&cmd),
             Command::Tree(cmd) => {
                 let mut applied = self.current_tree()?.apply(&cmd)?;
                 if matches!(cmd, TreeCmd::Rename { .. })
@@ -912,6 +1281,13 @@ impl Session {
             }
         }
     }
+}
+
+/// A linked rename refused because it would give one name to several rows.
+fn row_clash(alignment: &str, name: &str) -> Error {
+    Error::Invalid(format!(
+        "{alignment}: that would give '{name}' to more than one sequence"
+    ))
 }
 
 #[cfg(test)]
@@ -1245,6 +1621,8 @@ mod tests {
         let path = dir.path().to_path_buf();
         fs::write(path.join("t.nwk"), "((A:1,B:2)90:3,C:4);").unwrap();
         fs::write(path.join("dup.nwk"), "((A,A),B);").unwrap();
+        fs::write(path.join("l.nwk"), "((A,B),(C,D));").unwrap();
+        fs::write(path.join("two.fa"), ">A\nAC\n>B\nGG\n>C\nTT\n>A\nCC\n").unwrap();
         fs::write(
             path.join("a.fa"),
             ">A\nAC-T\n>B\nACGT\n>C\nTTTT\n>Z\nGGGG\n",
@@ -1756,6 +2134,7 @@ mod tests {
             to: Some("x".into()),
             regex: Some("a".into()),
             replace: Some("b".into()),
+            tree: false,
         });
         let error = session.execute(odd).unwrap_err().to_string();
         assert!(error.starts_with("internal error: "), "{error}");
@@ -2060,5 +2439,462 @@ mod tests {
             check_input(&dir.join("x.fa"), None),
             Err(Error::Io { .. })
         ));
+    }
+
+    #[test]
+    fn prune_with_seqs_deletes_the_clades_rows_too() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "l.nwk"]);
+        assert_eq!(
+            ex(&mut s, "tree prune --tip A --seqs")
+                .unwrap_err()
+                .to_string(),
+            "--seqs needs the tree linked to an alignment: tree link FILE"
+        );
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        let out = ex(&mut s, "tree prune --mrca C --mrca D --seqs").unwrap();
+        assert_eq!(
+            out.message,
+            "pruned 2 tips; now 2 tips; deleted 1 row from a.fa (1 tip had no sequence); \
+             2 of 2 tips have a sequence"
+        );
+        let a = s.datasets()[0].msa().unwrap();
+        assert_eq!(
+            (0..a.rows()).map(|r| a.name(r)).collect::<Vec<_>>(),
+            ["A", "B", "Z"]
+        );
+        assert_eq!(
+            s.history().last().unwrap(),
+            "tree prune --mrca C --mrca D --seqs"
+        );
+    }
+
+    #[test]
+    fn prune_with_seqs_deletes_every_copy_and_is_refused_whole() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["two.fa", "l.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/two.fa").unwrap();
+        // A and B are every row but C: fine. Then C and D would empty two.fa.
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        assert_eq!(s.datasets()[0].msa().unwrap().rows(), 1);
+        let err = ex(&mut s, "tree prune --mrca C --mrca D --seqs").unwrap_err();
+        assert_eq!(err.to_string(), "two.fa: that would delete every sequence");
+        assert_eq!(
+            s.datasets()[1].tree().unwrap().tips(),
+            2,
+            "the tree is untouched too"
+        );
+    }
+
+    #[test]
+    fn a_clade_with_no_sequences_prunes_the_tree_alone() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "l.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        let out = ex(&mut s, "tree prune --tip D --seqs").unwrap();
+        assert!(
+            out.message.contains("; no row of a.fa carried those names"),
+            "{}",
+            out.message
+        );
+        assert_eq!(
+            s.datasets()[1].tree().unwrap().undo_pair(),
+            None,
+            "decision 1"
+        );
+    }
+
+    /// a.fa and l.nwk open (tree current) and linked.
+    fn linked(dir: &Path) -> Session {
+        let mut s = opened(dir, &["a.fa", "l.nwk"]);
+        ex_in(&mut s, dir, "tree link {}/a.fa").unwrap();
+        s
+    }
+
+    fn sizes(s: &Session) -> (usize, usize) {
+        (
+            s.datasets()[0].msa().unwrap().rows(),
+            s.datasets()[1].tree().unwrap().tips(),
+        )
+    }
+
+    #[test]
+    fn one_undo_reverses_both_files_from_either_tab() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        let out = ex(&mut s, "undo").unwrap();
+        assert_eq!(
+            out.message,
+            "undid prune; now 4 sequences x 4 columns; and in l.nwk: undid prune; now 4 tips"
+        );
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn a_later_edit_in_the_other_file_comes_first() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "undo the later edit in a.fa first"
+        );
+        assert_eq!(sizes(&s), (2, 2), "nothing changed");
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "undo").unwrap(); // the column
+        ex(&mut s, "undo").unwrap(); // the pair, from the alignment's tab
+        assert_eq!(sizes(&s), (4, 4));
+    }
+
+    #[test]
+    fn redo_is_refused_once_the_other_file_has_moved_on() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "redo").unwrap_err().to_string(),
+            "a.fa has been edited since, so this cannot be redone in both"
+        );
+        assert_eq!(sizes(&s), (4, 4));
+    }
+
+    #[test]
+    fn a_step_the_other_file_has_dropped_cannot_be_undone() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        for i in 0..20 {
+            let with = if i % 2 == 0 { "N" } else { "A" };
+            ex(&mut s, &format!("msa fill --rows 1 --cols 1 --with {with}")).unwrap();
+        }
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "undo").unwrap_err().to_string(),
+            "a.fa no longer keeps that step, so it cannot be undone in both"
+        );
+        assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn closing_the_other_file_leaves_this_half_to_undo_alone() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "tree unlink").unwrap();
+        ex(&mut s, "undo").unwrap();
+        assert_eq!(sizes(&s), (4, 4), "unlinking does not split the step");
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "close").unwrap();
+        let out = ex(&mut s, "undo").unwrap();
+        assert!(
+            out.message
+                .ends_with("; the other file is closed, so only this one changed"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.datasets()[0].tree().unwrap().tips(), 4);
+    }
+
+    #[test]
+    fn a_failed_log_write_undoes_both_files() {
+        let (_keep, dir) = trees();
+        // A log with room for the lines `steps` make and a little more.
+        let full_after = |steps: &[&str]| {
+            let (log, buffer) = limited_log(100_000);
+            let mut s = Session::with_clock(Some(log), fixed);
+            s.execute(open(&dir.join("a.fa"))).unwrap();
+            s.execute(open(&dir.join("l.nwk"))).unwrap();
+            for line in steps {
+                ex_in(&mut s, &dir, line).unwrap();
+            }
+            let used = buffer.lock().unwrap().len();
+            let mut s = Session::with_clock(Some(limited_log(used + 10).0), fixed);
+            s.execute(open(&dir.join("a.fa"))).unwrap();
+            s.execute(open(&dir.join("l.nwk"))).unwrap();
+            for line in steps {
+                ex_in(&mut s, &dir, line).unwrap();
+            }
+            s
+        };
+        let mut s = full_after(&["tree link {}/a.fa"]);
+        let err = ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert_eq!(sizes(&s), (4, 4), "both files as they were");
+
+        let mut s = full_after(&["tree link {}/a.fa", "tree prune --mrca A --mrca B --seqs"]);
+        let err = ex(&mut s, "undo").unwrap_err();
+        assert!(matches!(err, Error::Log { .. }), "{err}");
+        assert_eq!(sizes(&s), (2, 2), "the undo did not stand in either file");
+    }
+
+    #[test]
+    fn a_tip_rename_renames_its_sequences_and_back() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["two.fa", "l.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/two.fa").unwrap();
+        let out = ex(&mut s, "tree rename --tip A --to Q --seqs").unwrap();
+        assert!(
+            out.message.contains("; renamed 2 rows in two.fa"),
+            "{}",
+            out.message
+        );
+        let a = s.datasets()[0].msa().unwrap();
+        assert_eq!((a.name(0), a.name(3)), ("Q", "Q"), "every copy");
+        ex(&mut s, "use 1").unwrap();
+        let out = ex(&mut s, "msa rename --rows 2 --to R --tree").unwrap();
+        assert!(
+            out.message.ends_with("; renamed 1 tip in l.nwk"),
+            "{}",
+            out.message
+        );
+        let tree = s.datasets()[1].tree().unwrap().tree();
+        assert!(tree.tip_named("R").is_ok());
+        let out = ex(&mut s, "undo").unwrap();
+        assert!(out.message.contains("; and in l.nwk:"), "{}", out.message);
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("B")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_regex_rename_reaches_every_row_and_is_checked_first() {
+        let (_keep, dir) = trees();
+        fs::write(dir.join("z.fa"), ">A_1\nAC\n>B_2\nGG\n>x\nTT\n").unwrap();
+        fs::write(dir.join("u.nwk"), "(A_1,(B_2,C_3));").unwrap();
+        let mut s = opened(&dir, &["z.fa", "u.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/z.fa").unwrap();
+        let out = ex(&mut s, "tree rename --regex _ --replace ' ' --seqs").unwrap();
+        assert!(
+            out.message.contains("; renamed 2 rows in z.fa"),
+            "{}",
+            out.message
+        );
+        let names = |s: &Session| {
+            let a = s.datasets()[0].msa().unwrap();
+            (0..a.rows())
+                .map(|r| a.name(r).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&s), ["A 1", "B 2", "x"]);
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("C 3")
+                .is_ok()
+        );
+
+        // Only the alignment has x: its check refuses before the tree changes.
+        assert_eq!(
+            ex(&mut s, "tree rename --regex '^x$' --replace '' --seqs")
+                .unwrap_err()
+                .to_string(),
+            "a name cannot be empty (row 3)"
+        );
+        assert_eq!(names(&s), ["A 1", "B 2", "x"]);
+
+        // Only the tree has C: an edit to the tree alone.
+        let out = ex(&mut s, "tree rename --regex '^C' --replace D --seqs").unwrap();
+        assert!(
+            out.message.contains("; no row of z.fa was renamed"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.datasets()[1].tree().unwrap().undo_pair(), None);
+    }
+
+    #[test]
+    fn a_rename_that_would_share_a_new_tip_name_is_refused_in_both() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa", "dup.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        // Tips that already share a name may go on sharing a new one (2a).
+        let out = ex(&mut s, "msa rename --name A --to N --tree").unwrap();
+        assert!(
+            out.message.ends_with("; renamed 2 tips in dup.nwk"),
+            "{}",
+            out.message
+        );
+        // But not a name another tip has: refused before either file changes.
+        let err = ex(&mut s, "msa rename --name N --to B --tree").unwrap_err();
+        assert!(err.to_string().contains("'B'"), "{err}");
+        assert_eq!(s.datasets()[0].msa().unwrap().name(0), "N");
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("N")
+                .is_err(),
+            "N is shared"
+        );
+        assert_eq!(
+            s.datasets()[1].tree().unwrap().undo_pair().map(|p| p.id),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn tree_needs_one_linked_tree() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["a.fa"]);
+        assert_eq!(
+            ex(&mut s, "msa rename --name A --to Q --tree")
+                .unwrap_err()
+                .to_string(),
+            "--tree needs this alignment linked to a tree: tree link FILE from the tree's tab"
+        );
+        ex_in(&mut s, &dir, "open {}/t.nwk").unwrap();
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        ex_in(&mut s, &dir, "open {}/l.nwk").unwrap();
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        assert_eq!(
+            ex(&mut s, "msa rename --name A --to Q --tree")
+                .unwrap_err()
+                .to_string(),
+            "a.fa is linked to 2 trees; --tree needs exactly one"
+        );
+    }
+
+    #[test]
+    fn a_linked_rename_refuses_to_give_two_rows_one_name() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        const CLASH: &str = "a.fa: that would give 'Z' to more than one sequence";
+        let err = ex(&mut s, "tree rename --tip A --to Z --seqs").unwrap_err();
+        assert_eq!(err.to_string(), CLASH);
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("A")
+                .is_ok()
+        );
+        ex(&mut s, "use 1").unwrap();
+        let err = ex(&mut s, "msa rename --name A --to Z --tree").unwrap_err();
+        assert_eq!(err.to_string(), CLASH);
+        assert_eq!(s.datasets()[0].msa().unwrap().name(0), "A");
+
+        // Two names merged into one by a regex.
+        fs::write(dir.join("m.fa"), ">A_1\nAC\n>A-1\nGG\n").unwrap();
+        fs::write(dir.join("m.nwk"), "(A_1,B,C);").unwrap();
+        let mut s = opened(&dir, &["m.fa", "m.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/m.fa").unwrap();
+        assert_eq!(
+            ex(&mut s, "tree rename --regex '[_-]' --replace ' ' --seqs")
+                .unwrap_err()
+                .to_string(),
+            "m.fa: that would give 'A 1' to more than one sequence"
+        );
+        assert!(
+            s.datasets()[1]
+                .tree()
+                .unwrap()
+                .tree()
+                .tip_named("A_1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn redo_advice_points_at_the_step_in_the_way() {
+        let (_keep, dir) = trees();
+        let mut s = linked(&dir);
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa delete-cols --cols 1").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "tree prune --mrca A --mrca B --seqs").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "undo").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        assert_eq!(
+            ex(&mut s, "redo").unwrap_err().to_string(),
+            "redo in a.fa first"
+        );
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "redo").unwrap();
+        ex(&mut s, "use 2").unwrap();
+        ex(&mut s, "redo").unwrap();
+        assert_eq!(sizes(&s), (2, 2));
+    }
+
+    #[test]
+    fn a_linked_rename_reaches_every_copy_on_both_sides() {
+        let (_keep, dir) = trees();
+        // One of two tips named A, renamed from the tree: both tips follow
+        // the row, so neither tip loses its sequence.
+        let mut s = opened(&dir, &["a.fa", "dup.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
+        ex(&mut s, "tree rename --node 3 --to Q --seqs").unwrap();
+        let tips = |s: &Session| {
+            let tree = s.datasets()[1].tree().unwrap().tree();
+            let mut names: Vec<String> = tree
+                .tips()
+                .into_iter()
+                .map(|n| tree.label(n).unwrap_or_default().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(tips(&s), ["B", "Q", "Q"]);
+        assert_eq!(s.datasets()[0].msa().unwrap().name(0), "Q");
+        ex(&mut s, "undo").unwrap();
+        assert_eq!(tips(&s), ["A", "A", "B"]);
+
+        // One of two rows named A, renamed from the alignment: both rows.
+        fs::write(dir.join("aab.fa"), ">A\nAC\n>A\nGG\n>B\nTT\n").unwrap();
+        fs::write(dir.join("ab.nwk"), "(A,B);").unwrap();
+        let names = |s: &Session| {
+            let a = s.datasets()[0].msa().unwrap();
+            (0..a.rows())
+                .map(|r| a.name(r).to_string())
+                .collect::<Vec<_>>()
+        };
+        for line in [
+            "msa rename --rows 1 --to Q --tree",
+            "msa rename --name A --to Q --tree",
+            "msa rename --rows 2 --regex A --replace Q --tree",
+        ] {
+            let mut s = opened(&dir, &["aab.fa", "ab.nwk"]);
+            ex_in(&mut s, &dir, "tree link {}/aab.fa").unwrap();
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, line).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(names(&s), ["Q", "Q", "B"], "{line}");
+            assert!(
+                s.datasets()[1]
+                    .tree()
+                    .unwrap()
+                    .tree()
+                    .tip_named("Q")
+                    .is_ok(),
+                "{line}"
+            );
+            ex(&mut s, "undo").unwrap();
+            assert_eq!(names(&s), ["A", "A", "B"], "{line}");
+        }
     }
 }

@@ -7,6 +7,7 @@ pub mod command;
 pub mod error;
 pub mod log;
 pub mod msa;
+mod pair;
 pub mod progress;
 pub mod ranges;
 pub mod replay;

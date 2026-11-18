@@ -118,6 +118,9 @@ pub enum MsaCmd {
         regex: Option<String>,
         #[arg(long, allow_hyphen_values = true, requires = "regex")]
         replace: Option<String>,
+        /// Also rename the matching tips in the linked tree
+        #[arg(long)]
+        tree: bool,
     },
 }
 
@@ -178,6 +181,7 @@ impl MsaCmd {
                 to,
                 regex,
                 replace,
+                tree,
             } => {
                 rows.write(words);
                 if let Some(to) = to {
@@ -188,6 +192,9 @@ impl MsaCmd {
                 }
                 if let Some(replace) = replace {
                     words.flag("--replace", replace);
+                }
+                if *tree {
+                    words.switch("--tree");
                 }
             }
         }
