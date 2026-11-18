@@ -90,6 +90,30 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
                 finished: true,
             });
         }
+        Request::Gather {
+            dataset,
+            read,
+            source,
+            progress,
+        } => send(Done::Gather {
+            dataset,
+            name: read.name.clone(),
+            result: source.gather(&read, &progress),
+        }),
+        Request::Search {
+            dataset,
+            names,
+            source,
+            progress,
+        } => {
+            let wanted = names.iter().cloned().collect();
+            send(Done::Search {
+                dataset,
+                result: source.search_names(&wanted, &progress),
+                names,
+                progress,
+            })
+        }
         Request::Jump {
             dataset,
             contig,

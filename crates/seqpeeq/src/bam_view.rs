@@ -2,6 +2,8 @@
 //! shows: zoom levels, positions and columns, packing, and how a read is
 //! described and coloured. Nothing here reads the BAM.
 
+use crate::elsewhere::ElsewhereList;
+use crate::read_axis::AxisView;
 use std::cmp::{Ordering, Reverse};
 
 use seqpeeq_core::bam::{Contig, Place, Read, Region, Window};
@@ -324,6 +326,15 @@ pub struct Loaded {
     pub with_reference: bool,
 }
 
+/// A view opened over the reference view, drawn in its place.
+#[derive(Debug, Clone)]
+pub enum Over {
+    /// `A`: the reads in view aligning elsewhere.
+    List(ElsewhereList),
+    /// `a`: one read's placements along its own bases.
+    Axis(AxisView),
+}
+
 /// Where the user is in one BAM.
 #[derive(Debug, Clone)]
 pub struct BamView {
@@ -360,6 +371,12 @@ pub struct BamView {
     pub generation: u64,
     /// The loaded reads that are shown, stacked; indexes into its reads.
     pub packed: Packed,
+    /// Views opened over this one, the last on top.
+    pub over: Vec<Over>,
+    /// Views put aside by `g` from the axis view, for `'` to bring back,
+    /// with where the reference view was and how long `back` was then.
+    pub parked: Vec<Over>,
+    pub parked_from: Option<(usize, u64, usize)>,
 }
 
 impl BamView {
@@ -385,6 +402,9 @@ impl BamView {
             loaded: None,
             generation: 0,
             packed: Packed::default(),
+            over: Vec::new(),
+            parked: Vec::new(),
+            parked_from: None,
         }
     }
 

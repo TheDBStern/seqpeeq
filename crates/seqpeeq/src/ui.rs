@@ -341,6 +341,9 @@ pub fn info_text(app: &App) -> (String, String) {
     if let Some(jumping) = &app.jumping {
         right.push(job_text("jumping", jumping.progress.fraction()));
     }
+    for (_, progress) in app.searches.values().filter_map(|s| s.running.as_ref()) {
+        right.push(job_text("searching", progress.fraction()));
+    }
     if let Some((_, doc, view)) = app.bam() {
         let contig = &doc.source().contigs()[view.contig];
         left = format!(

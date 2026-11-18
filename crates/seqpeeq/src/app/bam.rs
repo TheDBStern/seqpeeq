@@ -94,6 +94,20 @@ impl App {
         if let Some(jumping) = self.jumping.take_if(|j| !open.contains(&j.dataset)) {
             jumping.progress.cancel();
         }
+        self.searches.retain(|id, s| {
+            let keep = open.contains(id);
+            if let (false, Some((_, progress))) = (keep, &s.running) {
+                progress.cancel();
+            }
+            keep
+        });
+        self.gathering.retain(|(id, _, progress)| {
+            let keep = open.contains(id);
+            if !keep {
+                progress.cancel();
+            }
+            keep
+        });
         let body = self.bam_body();
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
@@ -253,7 +267,14 @@ impl App {
     pub(super) fn bam_key(&mut self, key: &KeyEvent) {
         use Direction::{Back, Forward};
         use Stretch::{Covered, Empty};
+        match self.bam().and_then(|(_, _, view)| view.over.last()) {
+            Some(crate::bam_view::Over::List(_)) => return self.list_key(key),
+            Some(crate::bam_view::Over::Axis(_)) => return self.axis_key(key),
+            None => {}
+        }
         match key.code {
+            KeyCode::Char('a') => return self.bam_axis(),
+            KeyCode::Char('A') => return self.bam_elsewhere(),
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
             KeyCode::Char(']') => return self.bam_jump(Forward, Covered),
             KeyCode::Char('[') => return self.bam_jump(Back, Covered),
@@ -741,6 +762,12 @@ impl App {
         let Some((source, view)) = self.bam_mut() else {
             return;
         };
+        if let Some((contig, pos, back)) = view.parked_from.take() {
+            view.over = std::mem::take(&mut view.parked);
+            view.back.truncate(back);
+            view.place(contig, pos, source.contigs()[contig].length);
+            return;
+        }
         match view.back.pop() {
             Some((contig, pos)) => view.place(contig, pos, source.contigs()[contig].length),
             None => self.status = "nothing to go back to".to_string(),
@@ -1737,5 +1764,271 @@ pub(crate) mod tests {
             started.elapsed(),
             listed(&app).len()
         );
+    }
+
+    // The read-as-axis view and the reads aligning elsewhere (phase 5).
+
+    use crate::bam_view::Over;
+    use crate::elsewhere::ElsewhereList;
+    use crate::read_axis::{AxisView, Found, Kind};
+
+    /// An app showing `multi.bam`, everything read.
+    fn with_multi() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let bam = seqpeeq_core::bam::testing::multi(dir.path());
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        (app, dir)
+    }
+
+    fn top(app: &App) -> Option<&Over> {
+        view(app).over.last()
+    }
+
+    fn axis(app: &App) -> &AxisView {
+        match top(app) {
+            Some(Over::Axis(a)) => a,
+            other => panic!("not the axis view: {other:?}"),
+        }
+    }
+
+    fn list(app: &App) -> &ElsewhereList {
+        match top(app) {
+            Some(Over::List(l)) => l,
+            other => panic!("not the list: {other:?}"),
+        }
+    }
+
+    fn requests(app: &mut App) -> Vec<Request> {
+        std::mem::take(&mut app.outbox)
+    }
+
+    fn deliver(app: &mut App, held: Vec<Request>) {
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        settle(app);
+    }
+
+    #[test]
+    fn a_opens_the_axis_view_and_the_mate_fills_in() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        assert_eq!(held.len(), 1);
+        assert!(matches!(&held[0], Request::Gather { read, .. } if read.name == "x1"));
+        assert_eq!(axis(&app).name, "x1");
+        assert_eq!(axis(&app).segments.len(), 1, "read 2 waits for the gather");
+        assert!(app.wants_tick());
+        deliver(&mut app, held);
+        let segs = &axis(&app).segments;
+        assert_eq!(segs.len(), 2);
+        let p = &segs[1].placements[0];
+        assert_eq!(
+            (segs[1].number, p.kind, p.contig, p.pos),
+            (2, Kind::Primary, 0, 401)
+        );
+        assert!(app.gathering.is_empty() && !app.wants_tick());
+
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        at_base_level(&mut app, 0, 500, 0);
+        keys(&mut app, "a");
+        assert_eq!(app.status, "no read under the cursor");
+        assert!(view(&app).over.is_empty());
+    }
+
+    #[test]
+    fn capital_a_lists_and_enter_opens_a_read_and_esc_steps_back() {
+        let (mut app, _dir) = with_multi();
+        let before = (view(&app).contig, view(&app).left, view(&app).per_col);
+        keys(&mut app, "A");
+        assert_eq!(list(&app).groups.len(), 3);
+        assert_eq!(list(&app).rows(), [0, 1, 2]);
+        keys(&mut app, "/p");
+        assert_eq!(list(&app).rows(), [1], "typing filters");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).rows(), [0, 1, 2], "Esc clears the filter");
+        assert!(matches!(top(&app), Some(Over::List(_))));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(list(&app).open, Some(0));
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!(axis(&app).name, "x1");
+        assert_eq!(view(&app).over.len(), 2);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).open, Some(0));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).open, None);
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        assert_eq!(
+            (view(&app).contig, view(&app).left, view(&app).per_col),
+            before
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:big\tLN:1000000\n\
+                   a\t0\tbig\t1\t60\t10M\t*\t0\t0\t*\t*\n";
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam_from_sam(dir.path(), "big.bam", sam));
+        settle(&mut app);
+        keys(&mut app, "A");
+        assert_eq!(app.status, "zoom in to list the reads in view");
+        assert!(view(&app).over.is_empty());
+    }
+
+    #[test]
+    fn s_searches_once_for_every_name_in_question() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        press(&mut app, KeyCode::Char('S'));
+        let held = requests(&mut app);
+        assert_eq!(held.len(), 1);
+        assert!(matches!(&held[0], Request::Search { names, .. } if names == &["y1"]));
+        assert!(app.wants_tick());
+        deliver(&mut app, held);
+        let groups = &list(&app).groups;
+        assert!(groups.iter().all(|g| g.contig.is_some()), "no ? group");
+        assert_eq!(groups[0].reads.len(), 3);
+        assert_eq!(groups[0].contig, Some(1));
+        assert!(!app.wants_tick());
+
+        press(&mut app, KeyCode::Char('S'));
+        assert!(requests(&mut app).is_empty());
+        assert_eq!(app.status, "nothing left to search");
+
+        press(&mut app, KeyCode::Esc);
+        at_base_level(&mut app, 0, 201, 0);
+        keys(&mut app, "a");
+        assert_eq!(axis(&app).name, "y1");
+        assert!(axis(&app).searched);
+        let found: Vec<Found> = axis(&app).segments[0]
+            .placements
+            .iter()
+            .map(|p| p.found)
+            .collect();
+        assert_eq!(found, [Found::Record, Found::Search, Found::Search]);
+        press(&mut app, KeyCode::Char('S'));
+        assert!(requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn asking_to_search_while_one_runs_waits_for_it() {
+        let (mut app, _dir) = with_multi();
+        app.bam_search(vec!["y1".to_string()]);
+        let first = requests(&mut app);
+        app.bam_search(vec!["y1".to_string(), "p1".to_string()]);
+        assert!(requests(&mut app).is_empty());
+        assert_eq!(app.searches[&id(&app)].waiting, ["p1"]);
+        deliver(&mut app, first);
+        let s = &app.searches[&id(&app)];
+        assert!(s.searched.contains("y1") && s.searched.contains("p1"));
+        assert_eq!(s.found["p1"].len(), 2, "the queued search ran after");
+    }
+
+    #[test]
+    fn esc_cancels_a_search_before_stepping_back() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        press(&mut app, KeyCode::Char('S'));
+        let held = requests(&mut app);
+        let Some(Request::Search { progress, .. }) = held.first() else {
+            panic!("no search");
+        };
+        let progress = progress.clone();
+        press(&mut app, KeyCode::Esc);
+        assert!(progress.is_cancelled());
+        assert_eq!(app.status, "search cancelled");
+        assert!(matches!(top(&app), Some(Over::List(_))), "the list stays");
+        deliver(&mut app, held);
+        assert_eq!(
+            list(&app).pending_names(),
+            ["y1"],
+            "the late end changes nothing"
+        );
+        assert!(app.searches[&id(&app)].searched.is_empty());
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(requests(&mut app).len(), 1, "a new search");
+    }
+
+    #[test]
+    fn g_from_the_axis_goes_there_and_quote_comes_back() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        let picked = axis(&app).current().map(|(_, p)| (p.contig, p.pos));
+        assert_eq!(picked, Some((1, 301)));
+        keys(&mut app, "g");
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 301));
+        assert!(view(&app).over.is_empty());
+        assert!(!view(&app).parked.is_empty());
+        keys(&mut app, "'");
+        assert_eq!(axis(&app).picked, 1, "the axis view, as it was");
+        assert_eq!(
+            (view(&app).contig, view(&app).cursor),
+            (0, 101),
+            "and the reference view where it was opened"
+        );
+        assert!(view(&app).parked.is_empty());
+    }
+
+    #[test]
+    fn e_fills_the_everywhere_export() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        keys(&mut app, "ae");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --name x1 --everywhere --out "
+        );
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('A'));
+        assert_eq!(app.status, "the reads in view are still being read");
+        assert!(view(&app).over.is_empty());
+        settle(&mut app);
+        keys(&mut app, "Ae");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --name x1 --name z1 --everywhere --out "
+        );
+    }
+
+    #[test]
+    fn a_search_or_gather_for_a_closed_bam_is_ignored() {
+        let (mut app, _dir) = with_multi();
+        let multi = id(&app);
+        app.bam_search(vec!["y1".to_string()]);
+        let held = requests(&mut app);
+        app.run_line("close");
+        settle(&mut app);
+        assert!(app.session.datasets().is_empty());
+        deliver(&mut app, held);
+        assert!(!app.searches.contains_key(&multi));
+
+        let (mut app, dir) = with_multi();
+        let multi = id(&app);
+        open(&mut app, fixture(dir.path()).bam);
+        settle(&mut app);
+        assert_ne!(id(&app), multi);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(id(&app), multi);
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(id(&app), multi);
+        deliver(&mut app, held);
+        let Some(Over::Axis(a)) = app.bams[&multi].over.last() else {
+            panic!("no axis view");
+        };
+        assert_eq!(a.segments.len(), 2, "the mate arrived");
     }
 }

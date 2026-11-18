@@ -25,6 +25,7 @@ pub enum Kind {
 
 impl Kind {
     /// The word the view shows.
+    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn word(self) -> &'static str {
         match self {
             Kind::Primary => "primary",
@@ -84,6 +85,7 @@ pub struct Segment {
 
 impl Segment {
     /// Stretches of the read no placement covers.
+    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn uncovered(&self) -> Vec<(u64, u64)> {
         let mut spans: Vec<(u64, u64)> = self.placements.iter().filter_map(|p| p.span).collect();
         spans.sort_unstable();
@@ -264,6 +266,8 @@ pub struct AxisView {
     pub height: usize,
     /// Whether the BAM has been searched for this name.
     pub searched: bool,
+    /// The records in hand: the read, and those fetched through the index.
+    pub records: Vec<Read>,
     /// Where `z` came from, to go back.
     before_whole: Option<(u64, u64)>,
 }
@@ -281,10 +285,24 @@ impl AxisView {
             width: width.max(1),
             height: 0,
             searched: false,
+            records: Vec::new(),
             before_whole: None,
         };
         v.per_col = v.whole();
         v
+    }
+
+    /// The placements again, from the records in hand and `found` by the
+    /// search, keeping the zoom unless it showed the whole read.
+    pub fn rebuild(&mut self, found: &[&Read]) {
+        let whole = self.per_col == self.whole();
+        let records: Vec<&Read> = self.records.iter().collect();
+        self.segments = assemble(&records, found);
+        if whole {
+            self.per_col = self.whole();
+        }
+        self.clamp();
+        self.picked = self.picked.min(self.placements().len().saturating_sub(1));
     }
 
     /// The longest segment's length, at least 1.
@@ -374,6 +392,7 @@ impl AxisView {
     }
 
     /// The column showing read base `pos`, if one does.
+    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn col_of(&self, pos: u64) -> Option<usize> {
         let col = pos.checked_sub(self.left)? / self.per_col;
         (col < self.width as u64).then_some(col as usize)

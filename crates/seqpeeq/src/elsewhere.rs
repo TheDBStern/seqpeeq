@@ -29,6 +29,7 @@ pub enum Via {
 }
 
 impl Via {
+    #[allow(dead_code)] // drawn in phase 5 task 7
     pub const ALL: [Via; 5] = [
         Via::Split,
         Via::Mate,
@@ -159,9 +160,21 @@ pub fn groups(
     out
 }
 
+/// What a list was made from, to group again after a search.
+#[derive(Debug, Clone)]
+pub struct Basis {
+    /// The reads in view when it was opened.
+    pub reads: Vec<Read>,
+    pub view: Region,
+    pub window: Region,
+}
+
 /// The `A` list: groups, or the reads of the open one.
 #[derive(Debug, Clone)]
 pub struct ElsewhereList {
+    pub basis: Option<Basis>,
+    /// `/`: keys go to the filter until Enter or Esc.
+    pub typing: bool,
     pub groups: Vec<Group>,
     /// The group whose reads are listed.
     pub open: Option<usize>,
@@ -174,6 +187,8 @@ pub struct ElsewhereList {
 impl ElsewhereList {
     pub fn new(groups: Vec<Group>) -> ElsewhereList {
         ElsewhereList {
+            basis: None,
+            typing: false,
             groups,
             open: None,
             filter: LineEdit::new(""),
@@ -195,6 +210,65 @@ impl ElsewhereList {
                 .filter(|&i| self.groups[i].reads.iter().any(hit))
                 .collect(),
         }
+    }
+
+    /// The list of `reads` in `view`, grouped.
+    pub fn build(
+        reads: Vec<Read>,
+        view: Region,
+        window: Region,
+        found: &HashMap<String, Vec<Read>>,
+        searched: &HashSet<String>,
+    ) -> ElsewhereList {
+        let mut list = ElsewhereList::new(groups(&reads, &view, &window, found, searched));
+        list.basis = Some(Basis {
+            reads,
+            view,
+            window,
+        });
+        list
+    }
+
+    /// Group again with what the search knows now, keeping the open group
+    /// open if it is still there.
+    pub fn regroup(&mut self, found: &HashMap<String, Vec<Read>>, searched: &HashSet<String>) {
+        let Some(basis) = &self.basis else {
+            return;
+        };
+        let open = self.open.and_then(|i| self.groups.get(i)).map(|g| g.contig);
+        self.groups = groups(&basis.reads, &basis.view, &basis.window, found, searched);
+        self.open = open.and_then(|c| self.groups.iter().position(|g| g.contig == c));
+        if open.is_some() && self.open.is_none() {
+            self.cursor = 0;
+            self.top = 0;
+        }
+        self.cursor = self.cursor.min(self.rows().len().saturating_sub(1));
+        self.top = self.top.min(self.cursor);
+    }
+
+    /// The read in view a group names.
+    pub fn read(&self, id: &ReadId) -> Option<&Read> {
+        let basis = self.basis.as_ref()?;
+        basis.reads.iter().find(|r| ReadId::of(r) == *id)
+    }
+
+    /// The names in the open group, or in the group under the cursor, in
+    /// order, each once.
+    pub fn names(&self) -> Vec<String> {
+        let group = match self.open {
+            Some(i) => self.groups.get(i),
+            None => self
+                .rows()
+                .get(self.cursor)
+                .and_then(|&i| self.groups.get(i)),
+        };
+        let mut out: Vec<String> = Vec::new();
+        for r in group.map(|g| g.reads.as_slice()).unwrap_or_default() {
+            if !out.contains(&r.name) {
+                out.push(r.name.clone());
+            }
+        }
+        out
     }
 
     /// Names in `?` not yet searched for.
