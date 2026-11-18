@@ -25,3 +25,4 @@ insta = "1"
 tempfile = "3"
 portable-pty = "0.9"
 vt100 = "0.18"
+noodles = { version = "0.119", features = ["bam", "bgzf", "csi", "fasta", "sam", "core"] }

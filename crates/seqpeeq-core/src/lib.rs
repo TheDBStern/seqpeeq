@@ -3,6 +3,7 @@
 //! This crate has no terminal dependencies. Interfaces build [`Command`]s and
 //! hand them to a session; they never change data directly.
 
+pub mod bam;
 pub mod command;
 pub mod error;
 pub mod log;
