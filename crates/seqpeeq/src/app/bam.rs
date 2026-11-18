@@ -1772,6 +1772,40 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "timing on testdata/; run with: cargo test --release -p seqpeeq -- --ignored timings_on"]
+    fn timings_on_a_search() {
+        use std::time::Instant;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        open(&mut app, data.join("deep.bam"));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 2_000_000, 0);
+        let name = view(&app).reads()[0].name.clone();
+        let started = Instant::now();
+        app.bam_search(vec![name.clone()]);
+        settle(&mut app);
+        let s = &app.searches[&id(&app)];
+        assert!(s.searched.contains(&name), "{}", app.status);
+        eprintln!(
+            "deep: a search for one name {:?}, {} records found",
+            started.elapsed(),
+            s.found.get(&name).map_or(0, Vec::len)
+        );
+        let started = Instant::now();
+        press(&mut app, KeyCode::Char('A'));
+        settle(&mut app);
+        eprintln!(
+            "deep: A at base level {:?}, {}",
+            started.elapsed(),
+            match view(&app).over.last() {
+                Some(Over::List(l)) => format!("{} groups", l.groups.len()),
+                _ => app.status.clone(),
+            }
+        );
+    }
+
     // The read-as-axis view and the reads aligning elsewhere (phase 5).
 
     use crate::bam_view::Over;

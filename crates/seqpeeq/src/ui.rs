@@ -613,6 +613,8 @@ const HELP: &[&str] = &[
     "          - + z zoom   F filtered   S clips",
     "          click, drag select   Space add   Esc clear",
     "          e export reads   E reference   to a file",
+    "          a read's places   A reads aligning elsewhere",
+    "          in those: S search the BAM   g go   / filter",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -1425,7 +1427,7 @@ mod tests {
     fn help_names_every_key_and_command() {
         let mut app = with_file("tests/data/grid.fa");
         app.mode = Mode::Help;
-        let screen = rows(&render(&app, 100, 30)).join("\n");
+        let screen = rows(&render(&app, 100, 32)).join("\n");
         for needle in [
             "hjkl",
             "PgUp",
@@ -1501,7 +1503,7 @@ mod tests {
             .join("session-END.log");
         let mut app = App::new(Session::new(Some(SessionLog::new(log))));
         app.mode = Mode::Help;
-        let screen = rows(&render(&app, 60, 30)).join("\n");
+        let screen = rows(&render(&app, 60, 32)).join("\n");
         assert!(screen.contains("log: …"), "{screen}");
         assert!(screen.contains("session-END.log"), "{screen}");
     }
@@ -1580,6 +1582,18 @@ mod tests {
             "Space add",
             "e export reads",
             "E reference",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn help_has_a_read_axis_section() {
+        let help = HELP.join("\n");
+        for text in [
+            "a read's places",
+            "A reads aligning elsewhere",
+            "S search the BAM",
         ] {
             assert!(help.contains(text), "{text}");
         }

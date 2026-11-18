@@ -210,6 +210,28 @@ fn a_tree_opens_and_is_drawn() {
 }
 
 #[test]
+fn a_read_opens_along_its_own_bases() {
+    let mut run = Pty::start_with(&["--no-log", "multi.bam"], |dir| {
+        seqpeeq_core::bam::testing::multi(dir);
+    });
+    run.wait_for("g1  2,000 bp");
+    run.send("g");
+    run.send("g1:101-160\r");
+    run.wait_for("g1:101  1 bp a column");
+    run.send("a");
+    run.wait_for("x1 · pair");
+    run.wait_for("g1:401 (−)");
+    // Esc alone: sent with the next key it would read as Alt-A.
+    run.send("\x1b");
+    run.wait_for("g1  2,000 bp");
+    run.send("A");
+    run.wait_for("aligning elsewhere");
+    run.send("q");
+    assert!(run.wait_exit().success());
+    run.assert_terminal_restored("after q over the list");
+}
+
+#[test]
 fn a_bam_opens_is_drawn_and_jumps() {
     let mut run = Pty::start_with(&["--no-log", "reads.bam", "--ref", "ref.fa"], |dir| {
         seqpeeq_core::bam::testing::fixture(dir);
