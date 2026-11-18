@@ -294,6 +294,16 @@ fn draw_bar(buf: &mut Buffer, bars: Rect, y: u16, axis: &AxisView, p: &Placement
 }
 
 /// `a`: the read along its own bases, a bar per placement.
+/// `text`, then `right` ending at `width` when two spaces or more fit
+/// between them; `text` alone when they do not.
+fn with_hint(text: String, right: &str, width: usize) -> String {
+    let gap = width.saturating_sub(text.width() + right.width());
+    if text.width() + right.width() + 2 > width {
+        return text;
+    }
+    format!("{text}{}{right}", " ".repeat(gap))
+}
+
 pub fn draw_axis(frame: &mut Frame, app: &App, axis: &AxisView, area: Rect) {
     let Some((_, doc, _)) = app.bam() else {
         return;
@@ -303,7 +313,8 @@ pub fn draw_axis(frame: &mut Frame, app: &App, axis: &AxisView, area: Rect) {
     let buf = frame.buffer_mut();
     let width = area.width as usize;
     if layout.header.height > 0 {
-        buf.set_stringn(area.x, area.y, axis_header(app, axis), width, Style::new());
+        let header = with_hint(axis_header(app, axis), "Esc back", width);
+        buf.set_stringn(area.x, area.y, header, width, Style::new());
     }
     let labels = labels(axis, contigs);
     let lw = layout.labels.width as usize;
@@ -481,6 +492,12 @@ pub fn draw_elsewhere(frame: &mut Frame, app: &App, list: &ElsewhereList, area: 
         None => "reads in view aligning elsewhere".to_string(),
     };
     let count = grouped(list.read_count as u64);
+    let hinted = format!("{count}  Esc back");
+    let count = if title.width() + 1 + hinted.width() <= width {
+        hinted
+    } else {
+        count
+    };
     let gap = width.saturating_sub(title.width() + count.len());
     title.push_str(&" ".repeat(gap.max(1)));
     title.push_str(&count);
@@ -603,7 +620,7 @@ mod tests {
         insta::assert_snapshot!(terminal.backend());
         let screen = rows(&terminal);
         assert!(screen[1].starts_with("reads in view aligning elsewhere"));
-        assert!(screen[1].trim_end().ends_with('4'), "{}", screen[1]);
+        assert!(screen[1].ends_with("4  Esc back"), "{}", screen[1]);
         assert!(
             screen
                 .iter()
@@ -704,11 +721,50 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert!(screen[1].trim_end().ends_with("100,000"), "{}", screen[1]);
+        assert!(
+            screen[1].trim_end().ends_with("100,000  Esc back"),
+            "{}",
+            screen[1]
+        );
         let q1 = screen.iter().find(|r| r.contains("q1 ")).unwrap();
         assert!(
             q1.contains("no other placement found outside this stretch"),
             "{q1}"
         );
+    }
+
+    #[test]
+    fn the_axis_view_and_the_list_say_esc_goes_back() {
+        let (mut app, _dir) = with_multi();
+        sized(&mut app, 120, 20);
+        at_base_level(&mut app, 0, 1001, 0);
+        keys(&mut app, "a");
+        let screen = rows(&render(&app, 120, 20));
+        assert!(screen[1].ends_with("Esc back"), "{}", screen[1]);
+        press(&mut app, KeyCode::Esc);
+        keys(&mut app, "A");
+        let screen = rows(&render(&app, 120, 20));
+        assert!(screen[1].ends_with("  Esc back"), "{}", screen[1]);
+        let count = screen[1].trim_end_matches("Esc back").trim_end();
+        assert!(
+            count.ends_with(|c: char| c.is_ascii_digit()),
+            "{}",
+            screen[1]
+        );
+    }
+
+    #[test]
+    fn a_narrow_screen_drops_the_hint_first() {
+        let (mut app, _dir) = with_multi();
+        sized(&mut app, 40, 20);
+        at_base_level(&mut app, 0, 1001, 0);
+        keys(&mut app, "a");
+        let screen = rows(&render(&app, 40, 20));
+        assert!(!screen[1].contains("Esc back"), "{}", screen[1]);
+        assert!(screen[1].starts_with("z1"), "{}", screen[1]);
+        press(&mut app, KeyCode::Esc);
+        keys(&mut app, "A");
+        let screen = rows(&render(&app, 40, 20));
+        assert!(!screen[1].contains("Esc back"), "{}", screen[1]);
     }
 }
