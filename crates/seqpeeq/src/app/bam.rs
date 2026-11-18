@@ -2,7 +2,9 @@
 //! it hands to worker threads.
 
 use super::*;
-use crate::bam_view::{ContigList, ContigSort, pass_bin, serves, zoom_levels};
+use crate::bam_view::{ContigList, ContigSort, ReadId, pass_bin, serves, zoom_levels};
+use crate::ui::bam::BamHit;
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use seqpeeq_core::bam::parse_region;
 
 /// A jump reading the BAM in the background.
@@ -217,7 +219,7 @@ impl App {
     }
 
     /// The visible BAM's source and view.
-    fn bam_mut(&mut self) -> Option<(BamSource, &mut BamView)> {
+    pub(super) fn bam_mut(&mut self) -> Option<(BamSource, &mut BamView)> {
         let dataset = self.session.datasets().get(self.active)?;
         let (id, source) = (dataset.id, dataset.bam()?.source().clone());
         Some((source, self.bams.get_mut(&id)?))
@@ -284,6 +286,11 @@ impl App {
             KeyCode::Char('S') => {
                 view.hide_clips = !view.hide_clips;
                 view.repack();
+            }
+            KeyCode::Char(' ') => {
+                if let Some(read) = view.cursor_read().map(ReadId::of) {
+                    view.select(read);
+                }
             }
             _ => {}
         }
@@ -464,6 +471,81 @@ impl App {
             list.top = list.cursor;
         } else if list.cursor >= list.top + visible {
             list.top = list.cursor + 1 - visible;
+        }
+    }
+
+    /// The mouse on the BAM tab: the wheel scrolls rows, or sideways over
+    /// the ruler or strip; a click on the strip goes there; clicks and
+    /// drags on the reads select them.
+    pub(super) fn bam_mouse(&mut self, mouse: &MouseEvent) {
+        let body = self.bam_body();
+        let Some(dataset) = self.session.datasets().get(self.active) else {
+            return;
+        };
+        let id = dataset.id;
+        let Some(source) = dataset.bam().map(|b| b.source().clone()) else {
+            return;
+        };
+        // Fields, not bam_mut(), so that bam_drag can change alongside.
+        let Some(view) = self.bams.get_mut(&id) else {
+            return;
+        };
+        let contig = &source.contigs()[view.contig];
+        let length = contig.length;
+        let layout = ui::bam::bam_layout(body, view);
+        let hit = ui::bam::bam_hit(&layout, view, contig, mouse.column, mouse.row);
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
+        let sideways = layout.strip.contains(at) || layout.ruler.contains(at);
+        match mouse.kind {
+            MouseEventKind::ScrollDown if sideways => view.scroll(3, length),
+            MouseEventKind::ScrollUp if sideways => view.scroll(-3, length),
+            MouseEventKind::ScrollDown => view.scroll_rows(3),
+            MouseEventKind::ScrollUp => view.scroll_rows(-3),
+            MouseEventKind::Down(button) => {
+                self.bam_drag = None;
+                match hit {
+                    BamHit::Strip(pos) if button == MouseButton::Left => {
+                        view.go(view.contig, pos, length);
+                    }
+                    BamHit::Ruler(pos) if button == MouseButton::Left => {
+                        view.cursor = pos;
+                    }
+                    BamHit::Read { col, row } => {
+                        let span = view.span_of(col);
+                        if span.0 > length {
+                            return;
+                        }
+                        let read = view.read_at(col, row).map(|i| ReadId::of(&view.reads()[i]));
+                        let adding = shift || button == MouseButton::Right;
+                        if button == MouseButton::Left {
+                            view.cursor = span.0;
+                            view.row = view.top + row;
+                        }
+                        match read {
+                            Some(read) if adding => view.select(read),
+                            _ if adding => {}
+                            Some(read) => view.selected = vec![read],
+                            None => view.selected.clear(),
+                        }
+                        if button == MouseButton::Left && !adding {
+                            self.bam_drag = Some((span, view.top + row));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let (Some((start, from)), BamHit::Read { col, row }) = (self.bam_drag, hit) else {
+                    return;
+                };
+                let span = view.span_of(col);
+                let to = view.top + row;
+                let positions = (start.0.min(span.0), start.1.max(span.1));
+                view.selected = view.touched(positions, from.min(to)..=from.max(to));
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.bam_drag = None,
+            _ => {}
         }
     }
 
@@ -687,7 +769,6 @@ pub(crate) mod tests {
         let id = id(&app);
         let generation = app.bams[&id].generation;
         let mut stale = app.bams[&id].loaded.clone().unwrap();
-        stale.generation = generation - 1;
         stale.window.count = 99;
         app.handle_done(Done::Window {
             dataset: id,
@@ -1034,5 +1115,208 @@ pub(crate) mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal), "nothing to go to");
         assert_eq!(view(&app).contig, 1);
+    }
+
+    use crate::bam_view::ReadId;
+    use crate::ui::bam::{BamLayout, bam_layout};
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::{Rect, Size};
+
+    fn mouse(app: &mut App, kind: MouseEventKind, (column, row): (u16, u16), shift: bool) {
+        let modifiers = if shift {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        app.handle_event(&Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        }));
+    }
+
+    fn click(app: &mut App, at: (u16, u16)) {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), at, false);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), at, false);
+    }
+
+    /// The tab's layout on an 80 x 14 screen.
+    fn layout_of(app: &mut App) -> BamLayout {
+        app.resize(Size::new(80, 14));
+        settle(app);
+        app.status.clear();
+        let body = crate::ui::regions(app, Rect::new(0, 0, 80, 14)).body;
+        bam_layout(body, view(app))
+    }
+
+    fn id_of(name: &str, flags: u16, start: u64) -> ReadId {
+        ReadId {
+            name: name.to_string(),
+            flags,
+            contig: 0,
+            start,
+        }
+    }
+
+    #[test]
+    fn the_mouse_scrolls_and_clicks_on_the_strip_go_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n".to_string();
+        for i in 0..30 {
+            sam.push_str(&format!("r{i}\t0\tc\t1\t60\t5M\t*\t0\t0\t*\t*\n"));
+        }
+        let bam = bam_from_sam(dir.path(), "t.bam", &sam);
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        layout_of(&mut app);
+        at_base_level(&mut app, 0, 1, 0);
+        let layout = layout_of(&mut app);
+
+        let down = MouseEventKind::ScrollDown;
+        mouse(&mut app, down, (5, layout.reads.y + 1), false);
+        assert_eq!(view(&app).top, 3);
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            (5, layout.reads.y),
+            false,
+        );
+        assert_eq!(view(&app).top, 0);
+        for _ in 0..20 {
+            mouse(&mut app, down, (5, layout.reads.y), false);
+        }
+        assert_eq!(
+            view(&app).top,
+            30 - view(&app).height,
+            "no further than the last row"
+        );
+
+        mouse(&mut app, down, (5, layout.ruler.y), false);
+        assert_eq!(view(&app).left, 4, "sideways over the ruler");
+        mouse(&mut app, down, (5, layout.strip.y), false);
+        assert_eq!(view(&app).left, 7, "and over the strip");
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            (5, layout.strip.y),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            (5, layout.strip.y),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            (5, layout.strip.y),
+            false,
+        );
+        assert_eq!(view(&app).left, 1);
+
+        let (_, doc, _) = app.bam().unwrap();
+        let bar = crate::ui::bam::strip_bar(layout.strip, &doc.source().contigs()[0]);
+        click(&mut app, (bar.x + bar.width / 2, bar.y));
+        let cursor = view(&app).cursor;
+        assert!((480..=520).contains(&cursor), "{cursor}");
+        assert!(view(&app).col_of(cursor).is_some());
+        assert_eq!(view(&app).back.last(), Some(&(0, 1)));
+    }
+
+    #[test]
+    fn clicks_and_drags_select_reads() {
+        let (mut app, _dir) = with_bam();
+        layout_of(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().left = 101;
+        let layout = layout_of(&mut app);
+        let (y, x) = (layout.reads.y, layout.reads.x);
+        let (r1, r2) = (id_of("r1", 99, 101), id_of("r2", 0, 121));
+
+        click(&mut app, (x, y));
+        assert_eq!(view(&app).selected, vec![r1.clone()]);
+        assert_eq!((view(&app).cursor, view(&app).row), (101, 0));
+        assert!(crate::ui::info_text(&app).0.contains("1 read selected"));
+        click(&mut app, (x + 20, y + 1));
+        assert_eq!(view(&app).selected, vec![r2.clone()]);
+        assert_eq!((view(&app).cursor, view(&app).row), (121, 1));
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x, y),
+            true,
+        );
+        assert_eq!(view(&app).selected, vec![r2.clone(), r1.clone()]);
+        assert!(crate::ui::info_text(&app).0.contains("2 reads selected"));
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Right),
+            (x, y),
+            false,
+        );
+        assert_eq!(view(&app).selected.len(), 2, "already selected");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).selected.is_empty());
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Right),
+            (x + 20, y + 1),
+            false,
+        );
+        assert_eq!(view(&app).selected, vec![r2.clone()]);
+
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + 70, y),
+            false,
+        );
+        assert!(view(&app).selected.is_empty(), "a click on nothing lets go");
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (x + 20, y + 1),
+            false,
+        );
+        assert_eq!(
+            view(&app).selected,
+            [r1.clone(), r2.clone()],
+            "both rows dragged over"
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            (x + 20, y + 1),
+            false,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (x, y),
+            false,
+        );
+        assert_eq!(view(&app).selected.len(), 2, "a drag ends with the button");
+
+        press(&mut app, KeyCode::Esc);
+        app.bams.get_mut(&id).unwrap().cursor = 101;
+        app.bams.get_mut(&id).unwrap().row = 0;
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(view(&app).selected, vec![r1.clone()]);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(view(&app).selected, vec![r1], "added once");
+
+        app.passes.clear();
+        app.pass_failed.insert((id, 0));
+        press(&mut app, KeyCode::Char(']'));
+        let progress = app.jumping.as_ref().unwrap().progress.clone();
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).selected.is_empty() && !progress.is_cancelled());
+        press(&mut app, KeyCode::Esc);
+        assert!(progress.is_cancelled(), "the second Esc cancels the jump");
     }
 }

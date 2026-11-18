@@ -53,7 +53,6 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
                     .filter(|_| reads)
                     .and_then(|r| r.fetch(name, region.start, region.end).ok());
                 Loaded {
-                    generation,
                     window,
                     asked_reads: reads,
                     reference,

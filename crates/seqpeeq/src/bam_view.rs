@@ -2,9 +2,6 @@
 //! shows: zoom levels, positions and columns, packing, and how a read is
 //! described and coloured. Nothing here reads the BAM.
 
-// Wired into the app by the tasks that follow; until then only tests use it.
-#![allow(dead_code)]
-
 use std::cmp::{Ordering, Reverse};
 
 use seqpeeq_core::bam::{Contig, Place, Read, Region, Window};
@@ -293,8 +290,6 @@ impl ContigList {
 /// What a window read in the background brought back.
 #[derive(Debug, Clone)]
 pub struct Loaded {
-    /// The [`BamView::generation`] it was asked for under.
-    pub generation: u64,
     pub window: Window,
     /// Whether reads were asked for (they are `None` past the limit).
     pub asked_reads: bool,
@@ -531,6 +526,49 @@ impl BamView {
         }
     }
 
+    /// Scroll sideways by `cols` columns, leaving the cursor where it is.
+    pub fn scroll(&mut self, cols: i64, length: u64) {
+        let by = cols.saturating_mul(self.per_col as i64);
+        self.place_left(self.left.saturating_add_signed(by), length);
+    }
+
+    /// Scroll the rows of reads by `by`, down to one row past the last
+    /// when some were not drawn.
+    pub fn scroll_rows(&mut self, by: isize) {
+        let extra = usize::from(self.packed.not_drawn > 0);
+        let most = (self.packed.rows.len() + extra).saturating_sub(self.height.max(1));
+        self.top = self.top.saturating_add_signed(by).min(most);
+    }
+
+    /// Add `read` to the selection, once.
+    pub fn select(&mut self, read: ReadId) {
+        if !self.selected.contains(&read) {
+            self.selected.push(read);
+        }
+    }
+
+    /// Every read drawn in rows `rows` that overlaps `a..=b`, row by row.
+    pub fn touched(
+        &self,
+        (a, b): (u64, u64),
+        rows: std::ops::RangeInclusive<usize>,
+    ) -> Vec<ReadId> {
+        let reads = self.reads();
+        let mut out = Vec::new();
+        for row in rows {
+            let Some(row) = self.packed.rows.get(row) else {
+                break;
+            };
+            for &i in row {
+                let (s, e) = self.span(&reads[i]);
+                if s <= b && e >= a {
+                    out.push(ReadId::of(&reads[i]));
+                }
+            }
+        }
+        out
+    }
+
     /// Put the cursor's row on the read [`focus`](Self::focus) names, once
     /// the window around it has been read.
     pub fn apply_focus(&mut self) {
@@ -590,14 +628,6 @@ impl BamView {
             end: (self.left + 2 * shown - 1).min(length),
         };
         Some((region, self.per_col, reads))
-    }
-
-    /// The reads drawn: those that count, or all with `F`.
-    pub fn shown_reads<'a>(&self, reads: &'a [Read]) -> Vec<&'a Read> {
-        reads
-            .iter()
-            .filter(|r| self.show_filtered || r.counts())
-            .collect()
     }
 
     /// The stretch `read` takes on screen: with its clipped ends at base
@@ -827,10 +857,14 @@ pub(crate) mod tests {
         };
 
         let mut v = BamView::new(0, 1000, 80);
+        v.per_col = 1;
         let (reads, _) = fixture_reads_in("c1:701-760");
-        assert_eq!(v.shown_reads(&reads).len(), 1);
+        load(&mut v, reads);
+        v.repack();
+        assert_eq!(v.packed.rows.concat(), [0], "r4 and r5 do not count");
         v.show_filtered = true;
-        assert_eq!(v.shown_reads(&reads).len(), 3);
+        v.repack();
+        assert_eq!(v.packed.rows.concat(), [0, 1, 2]);
     }
 
     #[test]
@@ -861,7 +895,6 @@ pub(crate) mod tests {
     pub(crate) fn load(v: &mut BamView, reads: Vec<Read>) {
         let count = reads.len();
         v.loaded = Some(Loaded {
-            generation: v.generation,
             window: seqpeeq_core::bam::Window {
                 region: seqpeeq_core::bam::Region {
                     contig: v.contig,

@@ -107,6 +107,50 @@ pub fn strip_bar(strip: Rect, contig: &Contig) -> Rect {
     }
 }
 
+/// What is under a point of the BAM tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BamHit {
+    /// The whole-contig strip, at this position.
+    Strip(u64),
+    /// The ruler, reference or coverage, at the first position of a column.
+    Ruler(u64),
+    /// The reads, at a column and a row counted from the first shown.
+    Read {
+        col: usize,
+        row: usize,
+    },
+    Nothing,
+}
+
+pub fn bam_hit(
+    layout: &BamLayout,
+    view: &BamView,
+    contig: &Contig,
+    column: u16,
+    row: u16,
+) -> BamHit {
+    let at = Position::new(column, row);
+    let bar = strip_bar(layout.strip, contig);
+    if bar.contains(at) {
+        let (pos, _) = strip_span(column - bar.x, bar.width, contig.length);
+        return BamHit::Strip(pos);
+    }
+    let col = (column.saturating_sub(layout.reads.x)) as usize;
+    let past_end = view.span_of(col).0 > contig.length;
+    for band in [layout.ruler, layout.reference, layout.coverage] {
+        if band.contains(at) && !past_end {
+            return BamHit::Ruler(view.span_of(col).0);
+        }
+    }
+    if layout.reads.contains(at) {
+        return BamHit::Read {
+            col,
+            row: (row - layout.reads.y) as usize,
+        };
+    }
+    BamHit::Nothing
+}
+
 /// The positions column `i` of a `width`-column strip covers.
 pub fn strip_span(i: u16, width: u16, length: u64) -> (u64, u64) {
     let (i, width) = (u64::from(i), u64::from(width.max(1)));

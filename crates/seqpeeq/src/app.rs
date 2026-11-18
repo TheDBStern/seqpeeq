@@ -244,6 +244,9 @@ pub struct App {
     pub pass_failed: HashSet<(u64, usize)>,
     /// The window being read for a BAM view.
     pub reading: Option<bam::Reading>,
+    /// Where a drag across a BAM's reads started: the first and last
+    /// positions of its column, and its row of reads.
+    pub bam_drag: Option<((u64, u64), usize)>,
     /// The jump reading the BAM.
     pub jumping: Option<bam::Jumping>,
     /// The last window that failed to read, not to be asked for again.
@@ -281,6 +284,7 @@ impl App {
             pass_failed: HashSet::new(),
             reading: None,
             jumping: None,
+            bam_drag: None,
             window_failed: None,
             history: History::default(),
             dragging: false,
@@ -858,6 +862,10 @@ impl App {
                     } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
                     {
                         view.select = None;
+                    } else if let Some((_, view)) =
+                        self.bam_mut().filter(|(_, view)| !view.selected.is_empty())
+                    {
+                        view.selected.clear();
                     } else if let Some(jumping) = &self.jumping {
                         jumping.progress.cancel();
                         self.status = "cancelling the jump…".to_string();
@@ -1673,6 +1681,9 @@ impl App {
         }
         if self.tree().is_some() {
             return self.tree_mouse(mouse);
+        }
+        if self.bam().is_some() {
+            return self.bam_mouse(mouse);
         }
         self.wheel(mouse);
         self.grid_mouse(mouse);
