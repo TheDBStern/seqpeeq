@@ -1569,3 +1569,116 @@ fn a_cancelled_search_stops() {
         Err(Error::Cancelled)
     ));
 }
+
+#[test]
+fn everywhere_exports_every_record_of_the_names() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = |name: &str| out.path().join(name);
+    let mut s = session(cache.path());
+    open(&mut s, &super::testing::multi(data.path())).unwrap();
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name y1 --everywhere --out {}",
+            o("y.bam").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 3 records"),
+        "{}",
+        done.message
+    );
+    let flags: Vec<u16> = bam_records(&o("y.bam")).1.iter().map(|(_, f)| *f).collect();
+    assert_eq!(flags, [0, 256, 256]);
+
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name r2 --everywhere --out {}",
+            o("r2.bam").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 2 records"),
+        "{}",
+        done.message
+    );
+    assert_eq!(
+        bam_records(&o("r2.bam")).1,
+        [("r2".to_string(), 0), ("r2".to_string(), 2048)]
+    );
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name r2 --everywhere --out {}",
+            o("r2.fa").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 1 read to r2.fa"),
+        "{}",
+        done.message
+    );
+    assert_eq!(
+        fs::read_to_string(o("r2.fa")).unwrap().matches('>').count(),
+        1
+    );
+}
+
+#[test]
+fn everywhere_is_refused_without_names_or_with_a_region_or_mates() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = |name: &str| out.path().join(name).display().to_string();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let mut err = |line: String| match ex(&mut s, &line) {
+        Err(e) => e.to_string(),
+        Ok(done) => panic!("{line} ran: {}", done.message),
+    };
+    assert!(
+        err(format!(
+            "bam export-reads --everywhere --out {}",
+            o("a.bam")
+        ))
+        .contains("--everywhere needs --name or --names-file")
+    );
+    assert!(
+        err(format!(
+            "bam export-reads --name r1 --everywhere --with-mates --out {}",
+            o("b.bam")
+        ))
+        .contains("--with-mates")
+    );
+    assert!(
+        err(format!(
+            "bam export-reads --name r1 --everywhere --clip --out {}",
+            o("c.fa")
+        ))
+        .contains("--clip")
+    );
+    assert!(
+        Command::parse_line(&format!(
+            "bam export-reads --region c1 --name r1 --everywhere --out {}",
+            o("d.bam")
+        ))
+        .is_err()
+    );
+    assert!(
+        Command::parse_line(&format!("bam export-reads --name r1 --out {}", o("e.bam"))).is_err()
+    );
+    let line = format!(
+        "bam export-reads --name r1 --everywhere --out {}",
+        o("f.bam")
+    );
+    let parsed = Command::parse_line(&line).unwrap();
+    assert_eq!(parsed.to_line().unwrap(), line);
+}

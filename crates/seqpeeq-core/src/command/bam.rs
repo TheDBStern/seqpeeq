@@ -22,8 +22,12 @@ pub enum BamCmd {
     /// Write reads to a new BAM, FASTA or FASTQ (by --out's extension).
     ExportReads {
         /// contig:start-end, or a contig's name for all of it
-        #[arg(long)]
-        region: String,
+        #[arg(
+            long,
+            required_unless_present = "everywhere",
+            conflicts_with = "everywhere"
+        )]
+        region: Option<String>,
         /// Only reads with this name (repeat for more)
         #[arg(long = "name", allow_hyphen_values = true)]
         names: Vec<String>,
@@ -38,6 +42,10 @@ pub enum BamCmd {
         /// Keep only the bases inside the region (FASTA or FASTQ)
         #[arg(long)]
         clip: bool,
+        /// Search the whole BAM for the names instead of reading a region,
+        /// writing every record found
+        #[arg(long)]
+        everywhere: bool,
     },
     /// Write a stretch of the reference to a new FASTA.
     ExportRef {
@@ -74,13 +82,19 @@ impl BamCmd {
                 out,
                 with_mates,
                 clip,
+                everywhere,
             } => {
-                words.flag("--region", region);
+                if let Some(region) = region {
+                    words.flag("--region", region);
+                }
                 for name in names {
                     words.flag("--name", name);
                 }
                 if let Some(file) = names_file {
                     words.flag("--names-file", path_word(file)?);
+                }
+                if *everywhere {
+                    words.switch("--everywhere");
                 }
                 words.flag("--out", path_word(out)?);
                 if *with_mates {

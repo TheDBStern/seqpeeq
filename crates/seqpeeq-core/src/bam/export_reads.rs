@@ -74,7 +74,8 @@ fn read_names(file: &Path) -> Result<Vec<String>> {
 
 /// The arguments of `bam export-reads`, as the command gives them.
 pub(crate) struct ReadsArgs<'a> {
-    pub region: &'a str,
+    pub region: Option<&'a str>,
+    pub everywhere: bool,
     pub names: &'a [String],
     pub names_file: Option<&'a Path>,
     pub out: &'a Path,
@@ -85,7 +86,8 @@ pub(crate) struct ReadsArgs<'a> {
 /// `bam export-reads`, checked and ready to write.
 pub(crate) struct ReadsExport {
     source: BamSource,
-    region: Region,
+    /// `None` with `--everywhere`: the whole file is read.
+    region: Option<Region>,
     cut: Option<String>,
     /// Only these names; `None` for every read.
     names: Option<Vec<String>>,
@@ -234,7 +236,31 @@ impl ReadsExport {
             None if args.names.is_empty() => None,
             None => Some(args.names.to_vec()),
         };
-        let (region, cut) = parse_region(args.region, source.contigs(), &source.file_name())?;
+        if args.everywhere {
+            if names.is_none() {
+                return Err(Error::Invalid(
+                    "--everywhere needs --name or --names-file".to_string(),
+                ));
+            }
+            if args.with_mates {
+                return Err(Error::Invalid(
+                    "--everywhere already writes every record of the names, so it cannot take --with-mates"
+                        .to_string(),
+                ));
+            }
+            if args.clip {
+                return Err(Error::Invalid(
+                    "--everywhere reads no region, so it cannot take --clip".to_string(),
+                ));
+            }
+        }
+        let (region, cut) = match args.region {
+            Some(text) if !args.everywhere => {
+                let (region, cut) = parse_region(text, source.contigs(), &source.file_name())?;
+                (Some(region), cut)
+            }
+            _ => (None, None),
+        };
         refuse_taken(args.out)?;
         if format == Format::Bam {
             refuse_taken(&with_suffix(args.out, ".bai"))?;
@@ -250,6 +276,19 @@ impl ReadsExport {
             with_mates: args.with_mates,
             clip: args.clip,
         })
+    }
+
+    /// Hand each record of the region, or of the whole file with
+    /// `--everywhere`, to `each`, until it says to stop.
+    fn walk(
+        &self,
+        progress: &Progress,
+        each: impl FnMut(&bam::Record) -> io::Result<bool>,
+    ) -> Result<()> {
+        match &self.region {
+            Some(region) => self.source.scan(region, progress, each),
+            None => self.source.each_record(progress, each),
+        }
     }
 
     pub(crate) fn out(&self) -> &Path {
@@ -284,7 +323,7 @@ impl ReadsExport {
 
         let mut applied = if self.with_mates {
             let mut selected = Vec::new();
-            self.source.scan(&self.region, progress, |record| {
+            self.walk(progress, |record| {
                 if select(record) {
                     selected.push(record.clone());
                 }
@@ -335,7 +374,7 @@ impl ReadsExport {
         } else {
             match self.format {
                 Format::Bam => write_bam(&self.source, &self.out, progress, |put| {
-                    self.source.scan(&self.region, progress, |record| {
+                    self.walk(progress, |record| {
                         if select(record) {
                             put(record)?;
                         }
@@ -346,7 +385,7 @@ impl ReadsExport {
                     // Reading stops at the first failure to write, which is
                     // kept whole.
                     let mut failed = None;
-                    self.source.scan(&self.region, progress, |record| {
+                    self.walk(progress, |record| {
                         if !select(record) {
                             return Ok(true);
                         }
@@ -580,8 +619,10 @@ impl ReadsExport {
         }
         let (bases, qualities) = if self.clip {
             let (bases, qualities) = bases_and_qualities(record);
-            let inside = clipped(record, self.region.start, self.region.end)
-                .map_err(|e| self.read_error(e))?;
+            // --clip is refused with --everywhere, so a region is there.
+            let region = self.region.expect("--clip reads a region");
+            let inside =
+                clipped(record, region.start, region.end).map_err(|e| self.read_error(e))?;
             let Some((kept, a, b)) = inside else {
                 tally.no_base += 1;
                 return Ok(());

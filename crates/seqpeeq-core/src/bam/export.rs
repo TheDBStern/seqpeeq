@@ -100,10 +100,12 @@ impl BamExport {
                 out,
                 with_mates,
                 clip,
+                everywhere,
             } => Ok(BamExport::Reads(Box::new(ReadsExport::plan(
                 source,
                 ReadsArgs {
-                    region,
+                    region: region.as_deref(),
+                    everywhere: *everywhere,
                     names,
                     names_file: names_file.as_deref(),
                     out,
