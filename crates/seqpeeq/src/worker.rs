@@ -90,6 +90,22 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
                 finished: true,
             });
         }
+        Request::Jump {
+            dataset,
+            contig,
+            from,
+            dir,
+            want,
+            source,
+            progress,
+        } => send(Done::Jump {
+            dataset,
+            contig,
+            from,
+            dir,
+            want,
+            result: source.jump(contig, from, dir, want, &progress),
+        }),
     }
 }
 

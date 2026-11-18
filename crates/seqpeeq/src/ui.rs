@@ -333,6 +333,9 @@ pub fn info_text(app: &App) -> (String, String) {
     if let Some(reading) = &app.reading {
         right.push(job_text("reading", reading.progress.fraction()));
     }
+    if let Some(jumping) = &app.jumping {
+        right.push(job_text("jumping", jumping.progress.fraction()));
+    }
     if let Some((_, doc, view)) = app.bam() {
         let contig = &doc.source().contigs()[view.contig];
         left = format!(

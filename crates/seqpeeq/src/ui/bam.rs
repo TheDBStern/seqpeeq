@@ -253,7 +253,7 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
     draw_reads(buf, layout.reads, view, length, &bases);
 
     if layout.details.height > 0
-        && let Some(read) = cursor_read(view)
+        && let Some(read) = view.cursor_read()
     {
         buf.set_stringn(
             layout.details.x,
@@ -278,12 +278,6 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
             frame.set_cursor_position(Position::new(area.x + col as u16, y));
         }
     }
-}
-
-/// The read under the cursor: on the cursor's row, at its position.
-pub fn cursor_read(view: &BamView) -> Option<&Read> {
-    let i = view.read_in_row(view.row, (view.cursor, view.cursor))?;
-    view.reads().get(i)
 }
 
 /// The tick spacing for the ruler: 1, 2 or 5 times a power of ten, at

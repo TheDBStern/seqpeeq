@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::layout::Size;
-use seqpeeq_core::bam::{BamDoc, BamSource, Coverage};
+use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
     Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
@@ -131,6 +131,16 @@ pub enum Request {
         source: BamSource,
         progress: Arc<Progress>,
     },
+    /// Find the next stretch of a kind by reading the BAM.
+    Jump {
+        dataset: u64,
+        contig: usize,
+        from: u64,
+        dir: Direction,
+        want: Stretch,
+        source: BamSource,
+        progress: Arc<Progress>,
+    },
 }
 
 /// Work that a worker thread has finished.
@@ -158,6 +168,15 @@ pub enum Done {
         contig: usize,
         coverage: seqpeeq_core::Result<Coverage>,
         finished: bool,
+    },
+    /// Where a jump read from the BAM landed.
+    Jump {
+        dataset: u64,
+        contig: usize,
+        from: u64,
+        dir: Direction,
+        want: Stretch,
+        result: seqpeeq_core::Result<Option<u64>>,
     },
 }
 
@@ -223,6 +242,8 @@ pub struct App {
     pub pass_failed: HashSet<(u64, usize)>,
     /// The window being read for a BAM view.
     pub reading: Option<bam::Reading>,
+    /// The jump reading the BAM.
+    pub jumping: Option<bam::Jumping>,
     /// The last window that failed to read, not to be asked for again.
     pub window_failed: Option<(u64, Want)>,
     /// Lines entered on the command line.
@@ -257,6 +278,7 @@ impl App {
             passing: None,
             pass_failed: HashSet::new(),
             reading: None,
+            jumping: None,
             window_failed: None,
             history: History::default(),
             dragging: false,
@@ -509,6 +531,9 @@ impl App {
         if let Some(reading) = &self.reading {
             reading.progress.cancel();
         }
+        if let Some(jumping) = &self.jumping {
+            jumping.progress.cancel();
+        }
     }
 
     /// Take in work a thread has finished.
@@ -566,6 +591,14 @@ impl App {
                 coverage,
                 finished,
             } => self.pass_done(dataset, contig, coverage, finished),
+            Done::Jump {
+                dataset,
+                contig,
+                from,
+                dir,
+                want,
+                result,
+            } => self.jump_done(dataset, (contig, from, dir, want), result),
             Done::Summary { dataset, result } => {
                 let Some(summary) = result else {
                     return;
@@ -764,6 +797,7 @@ impl App {
             || self.summarising.is_some()
             || self.passing.is_some()
             || self.reading.is_some()
+            || self.jumping.is_some()
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -822,6 +856,9 @@ impl App {
                     } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
                     {
                         view.select = None;
+                    } else if let Some(jumping) = &self.jumping {
+                        jumping.progress.cancel();
+                        self.status = "cancelling the jump…".to_string();
                     } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
                         self.status = "cancelling…".to_string();
@@ -834,6 +871,7 @@ impl App {
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
                 _ if self.tree().is_some() => self.tree_key(key),
+                _ if self.bam().is_some() => self.bam_key(key),
                 _ => self.grid_key(key),
             },
             Mode::Prompt(prompt) => match key.code {
@@ -1583,6 +1621,7 @@ impl App {
                 self.history.push(prompt.line.text());
                 self.run_line(prompt.line.text());
             }
+            PromptKind::Goto if self.bam().is_some() => self.bam_go(prompt.line.text()),
             PromptKind::Goto => self.go_to(prompt.line.text()),
             PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
             PromptKind::Search => self.search(prompt.line.text()),

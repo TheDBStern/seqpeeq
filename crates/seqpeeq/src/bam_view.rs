@@ -221,8 +221,9 @@ pub struct BamView {
     pub selected: Vec<ReadId>,
     /// Where each jump started, for `'`.
     pub back: Vec<(usize, u64)>,
-    /// Which split part `s` goes to next.
-    pub part: usize,
+    /// A read to put the cursor's row on once it is loaded: its name and
+    /// start (for `m` and `s`).
+    pub focus: Option<(String, u64)>,
     /// Where `z` goes back to: bases per column and left edge.
     pub before_whole: Option<(u64, u64)>,
     pub loaded: Option<Loaded>,
@@ -251,7 +252,7 @@ impl BamView {
             hide_clips: false,
             selected: Vec::new(),
             back: Vec::new(),
-            part: 0,
+            focus: None,
             before_whole: None,
             loaded: None,
             generation: 0,
@@ -369,7 +370,6 @@ impl BamView {
             self.packed = Packed::default();
             self.row = 0;
             self.top = 0;
-            self.part = 0;
             self.generation += 1;
         }
         self.cursor = pos.clamp(1, length.max(1));
@@ -377,6 +377,76 @@ impl BamView {
             let half = self.cols() / 2 * self.per_col;
             self.place_left(self.cursor.saturating_sub(half), length);
         }
+    }
+
+    /// Show `a..=b` at the closest zoom that fits it, cursor at `a`.
+    pub fn fit(&mut self, a: u64, b: u64, length: u64) {
+        let levels = zoom_levels(length, self.width);
+        let want = b.saturating_sub(a) + 1;
+        self.per_col = levels
+            .iter()
+            .copied()
+            .find(|&l| l * self.cols() >= want)
+            .unwrap_or(*levels.last().expect("a level"));
+        self.cursor = a.clamp(1, length.max(1));
+        self.place_left(a, length);
+        self.before_whole = None;
+        self.repack();
+    }
+
+    /// Move the cursor's row by `by`, scrolling to keep it on screen. The
+    /// screen may scroll one row past the last, to show what was not
+    /// drawn.
+    pub fn move_row(&mut self, by: isize) {
+        let rows = self.packed.rows.len();
+        self.row = self
+            .row
+            .saturating_add_signed(by)
+            .min(rows.saturating_sub(1));
+        let height = self.height.max(1);
+        if self.row < self.top {
+            self.top = self.row;
+        } else if self.row >= self.top + height {
+            self.top = self.row + 1 - height;
+        }
+        let extra = usize::from(self.packed.not_drawn > 0);
+        if by > 0 && self.row + 1 == rows {
+            self.top = self.top.max((rows + extra).saturating_sub(height));
+        }
+    }
+
+    /// Put the cursor's row on the read [`focus`](Self::focus) names, once
+    /// the window around it has been read.
+    pub fn apply_focus(&mut self) {
+        let Some((name, start)) = &self.focus else {
+            return;
+        };
+        let Some(loaded) = &self.loaded else {
+            return;
+        };
+        let region = loaded.window.region;
+        if region.contig != self.contig || *start < region.start || *start > region.end {
+            return;
+        }
+        let reads = self.reads();
+        let found = self.packed.rows.iter().position(|row| {
+            row.iter()
+                .any(|&i| reads[i].name == *name && reads[i].start == *start)
+        });
+        self.focus = None;
+        if let Some(row) = found {
+            self.row = row;
+            let height = self.height.max(1);
+            if row < self.top || row >= self.top + height {
+                self.top = row.saturating_sub(height / 2);
+            }
+        }
+    }
+
+    /// The read under the cursor: on the cursor's row, at its position.
+    pub fn cursor_read(&self) -> Option<&Read> {
+        let i = self.read_in_row(self.row, (self.cursor, self.cursor))?;
+        self.reads().get(i)
     }
 
     /// The region shown.

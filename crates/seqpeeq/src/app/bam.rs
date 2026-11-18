@@ -3,6 +3,32 @@
 
 use super::*;
 use crate::bam_view::{pass_bin, serves, zoom_levels};
+use seqpeeq_core::bam::parse_region;
+
+/// A jump reading the BAM in the background.
+pub struct Jumping {
+    pub dataset: u64,
+    /// The contig, the position it started from, and which way and to
+    /// what kind of stretch.
+    pub asked: (usize, u64, Direction, Stretch),
+    pub progress: Arc<Progress>,
+}
+
+/// What a jump that found nothing says.
+fn no_more(want: Stretch, dir: Direction, contig: &str) -> String {
+    match (want, dir) {
+        (Stretch::Covered, Direction::Forward) => format!("no more covered stretches on {contig}"),
+        (Stretch::Empty, Direction::Forward) => {
+            format!("no more stretches without coverage on {contig}")
+        }
+        (Stretch::Covered, Direction::Back) => {
+            format!("no covered stretch before here on {contig}")
+        }
+        (Stretch::Empty, Direction::Back) => {
+            format!("no stretch without coverage before here on {contig}")
+        }
+    }
+}
 
 /// A window being read in the background.
 pub struct Reading {
@@ -48,6 +74,9 @@ impl App {
         }
         if let Some(reading) = self.reading.take_if(|r| !open.contains(&r.dataset)) {
             reading.progress.cancel();
+        }
+        if let Some(jumping) = self.jumping.take_if(|j| !open.contains(&j.dataset)) {
+            jumping.progress.cancel();
         }
         let body = self.bam_body();
         for dataset in self.session.datasets() {
@@ -175,6 +204,7 @@ impl App {
             Ok(loaded) => {
                 view.loaded = Some(loaded);
                 view.repack();
+                view.apply_focus();
             }
             Err(Error::Cancelled) => {}
             Err(e) => {
@@ -183,6 +213,251 @@ impl App {
                     self.window_failed = Some((dataset, reading.want));
                 }
             }
+        }
+    }
+
+    /// The visible BAM's source and view.
+    fn bam_mut(&mut self) -> Option<(BamSource, &mut BamView)> {
+        let dataset = self.session.datasets().get(self.active)?;
+        let (id, source) = (dataset.id, dataset.bam()?.source().clone());
+        Some((source, self.bams.get_mut(&id)?))
+    }
+
+    /// A key on the BAM tab.
+    pub(super) fn bam_key(&mut self, key: &KeyEvent) {
+        use Direction::{Back, Forward};
+        use Stretch::{Covered, Empty};
+        match key.code {
+            KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
+            KeyCode::Char(']') => return self.bam_jump(Forward, Covered),
+            KeyCode::Char('[') => return self.bam_jump(Back, Covered),
+            KeyCode::Char('}') => return self.bam_jump(Forward, Empty),
+            KeyCode::Char('{') => return self.bam_jump(Back, Empty),
+            KeyCode::Char('m') => return self.bam_mate(),
+            KeyCode::Char('s') => return self.bam_part(),
+            KeyCode::Char('\'') => return self.bam_back(),
+            _ => {}
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let Some((source, view)) = self.bam_mut() else {
+            return;
+        };
+        let length = source.contigs()[view.contig].length;
+        let across = view.width.max(1) as i64;
+        let page = view.height.max(1) as isize;
+        match key.code {
+            KeyCode::Left if shift => view.step(-across, length),
+            KeyCode::Right if shift => view.step(across, length),
+            KeyCode::Left | KeyCode::Char('h') => view.step(-1, length),
+            KeyCode::Right | KeyCode::Char('l') => view.step(1, length),
+            KeyCode::Up if shift => view.move_row(-page),
+            KeyCode::Down if shift => view.move_row(page),
+            KeyCode::PageUp => view.move_row(-page),
+            KeyCode::PageDown => view.move_row(page),
+            KeyCode::Up | KeyCode::Char('k') => view.move_row(-1),
+            KeyCode::Down | KeyCode::Char('j') => view.move_row(1),
+            KeyCode::Home => view.step(i64::MIN / 2, length),
+            KeyCode::End => view.step(i64::MAX / 2, length),
+            KeyCode::Char('+' | '=') => {
+                view.zoom(-1, length);
+                view.repack();
+            }
+            KeyCode::Char('-') => {
+                view.zoom(1, length);
+                view.repack();
+            }
+            KeyCode::Char('z') => {
+                view.toggle_whole(length);
+                view.repack();
+            }
+            KeyCode::Char('F') => {
+                view.show_filtered = !view.show_filtered;
+                view.repack();
+            }
+            KeyCode::Char('S') => {
+                view.hide_clips = !view.hide_clips;
+                view.repack();
+            }
+            _ => {}
+        }
+    }
+
+    /// Go where `text` says: a position on this contig, `ctg:pos`,
+    /// `ctg:a-b` (zoomed to fit) or a contig's name.
+    pub(super) fn bam_go(&mut self, text: &str) {
+        let text = text.trim();
+        let Some((source, view)) = self.bam_mut() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let contigs = source.contigs();
+        let named = contigs.iter().any(|c| c.name == text);
+        let position = !named && text.replace(',', "").parse::<u64>().is_ok();
+        let query = match position {
+            true => format!("{{{}}}:{text}", contigs[view.contig].name),
+            false => text.to_string(),
+        };
+        let region = match parse_region(&query, contigs, &source.file_name()) {
+            Ok((region, _)) => region,
+            Err(e) => {
+                self.status = format!("error: {e}");
+                return;
+            }
+        };
+        let length = contigs[region.contig].length;
+        view.go(region.contig, region.start, length);
+        if !named && region.end > region.start {
+            view.fit(region.start, region.end, length);
+        }
+    }
+
+    /// `]` `[` `}` `{`: the next stretch of a kind, from the coverage pass
+    /// where it can answer, else read from the BAM in the background.
+    fn bam_jump(&mut self, dir: Direction, want: Stretch) {
+        let Some(dataset) = self.session.datasets().get(self.active) else {
+            return;
+        };
+        let id = dataset.id;
+        let Some(source) = dataset.bam().map(|b| b.source().clone()) else {
+            return;
+        };
+        let Some(view) = self.bams.get_mut(&id) else {
+            return;
+        };
+        let (contig, from) = (view.contig, view.cursor);
+        let length = source.contigs()[contig].length;
+        if let Some(pass) = self.passes.get(&(id, contig)) {
+            match pass.next_start(length, from, dir, want) {
+                Some(to) => return view.go(contig, to, length),
+                None if pass.done_to >= length => {
+                    self.status = no_more(want, dir, &source.contigs()[contig].name);
+                    return;
+                }
+                None => {}
+            }
+        }
+        if let Some(old) = self.jumping.take() {
+            old.progress.cancel();
+        }
+        let progress = Arc::new(Progress::new());
+        self.outbox.push(Request::Jump {
+            dataset: id,
+            contig,
+            from,
+            dir,
+            want,
+            source,
+            progress: progress.clone(),
+        });
+        self.jumping = Some(Jumping {
+            dataset: id,
+            asked: (contig, from, dir, want),
+            progress,
+        });
+    }
+
+    /// Take in where a jump read from the BAM landed, unless the view has
+    /// moved since it was asked for.
+    pub(super) fn jump_done(
+        &mut self,
+        dataset: u64,
+        asked: (usize, u64, Direction, Stretch),
+        result: seqpeeq_core::Result<Option<u64>>,
+    ) {
+        if self
+            .jumping
+            .take_if(|j| (j.dataset, j.asked) == (dataset, asked))
+            .is_none()
+        {
+            return;
+        }
+        let (contig, from, dir, want) = asked;
+        let Some(source) = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == dataset)
+            .and_then(Dataset::bam)
+            .map(|b| b.source().clone())
+        else {
+            return;
+        };
+        let Some(view) = self.bams.get_mut(&dataset) else {
+            return;
+        };
+        if (view.contig, view.cursor) != (contig, from) {
+            return;
+        }
+        let name = &source.contigs()[contig].name;
+        match result {
+            Ok(Some(to)) => view.go(contig, to, source.contigs()[contig].length),
+            Ok(None) => self.status = no_more(want, dir, name),
+            Err(Error::Cancelled) => self.status = "jump cancelled".to_string(),
+            Err(e) => self.status = format!("error: {e}"),
+        }
+    }
+
+    /// `m`: to the mate of the read under the cursor.
+    fn bam_mate(&mut self) {
+        let Some((source, view)) = self.bam_mut() else {
+            return;
+        };
+        let Some(read) = view.cursor_read() else {
+            self.status = "no read under the cursor".to_string();
+            return;
+        };
+        let Some(mate) = read.mate else {
+            self.status =
+                "the read under the cursor has no mate on a contig of this BAM".to_string();
+            return;
+        };
+        let name = read.name.clone();
+        view.go(mate.contig, mate.pos, source.contigs()[mate.contig].length);
+        view.focus = Some((name, mate.pos));
+        view.apply_focus();
+    }
+
+    /// `s`: to the next part of the read under the cursor, in order along
+    /// the contigs, coming round to the first after the last.
+    fn bam_part(&mut self) {
+        let Some((source, view)) = self.bam_mut() else {
+            return;
+        };
+        let Some(read) = view.cursor_read() else {
+            self.status = "no read under the cursor".to_string();
+            return;
+        };
+        if read.parts.is_empty() {
+            self.status = "the read under the cursor has no split parts".to_string();
+            return;
+        }
+        let here = (read.contig, read.start);
+        let mut places: Vec<(usize, u64)> = read
+            .parts
+            .iter()
+            .map(|p| (p.place.contig, p.place.pos))
+            .chain([here])
+            .collect();
+        places.sort_unstable();
+        places.dedup();
+        let at = places.iter().position(|&p| p == here).unwrap_or(0);
+        let (contig, pos) = places[(at + 1) % places.len()];
+        let name = read.name.clone();
+        view.go(contig, pos, source.contigs()[contig].length);
+        view.focus = Some((name, pos));
+        view.apply_focus();
+    }
+
+    /// `'`: back to where the last jump started.
+    fn bam_back(&mut self) {
+        let Some((source, view)) = self.bam_mut() else {
+            return;
+        };
+        match view.back.pop() {
+            Some((contig, pos)) => view.place(contig, pos, source.contigs()[contig].length),
+            None => self.status = "nothing to go back to".to_string(),
         }
     }
 
@@ -413,5 +688,233 @@ pub(crate) mod tests {
         assert!(app.status.contains("reads.bam"), "{}", app.status);
         assert_eq!(settle_counting_windows(&mut app), 0);
         assert!(app.reading.is_none());
+    }
+
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn shift(app: &mut App, code: KeyCode) {
+        app.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT)));
+    }
+
+    /// Press each character of `keys`, then let the work finish.
+    fn keys(app: &mut App, keys: &str) {
+        for c in keys.chars() {
+            press(app, KeyCode::Char(c));
+        }
+        settle(app);
+    }
+
+    /// `g`, `text`, Enter.
+    fn go(app: &mut App, text: &str) {
+        keys(app, &format!("g{text}"));
+        press(app, KeyCode::Enter);
+        settle(app);
+    }
+
+    fn view(app: &App) -> &BamView {
+        app.bam().unwrap().2
+    }
+
+    /// The fixture at a base a column, cursor at `pos` on its contig.
+    fn at_base_level(app: &mut App, contig: usize, pos: u64, row: usize) {
+        let id = id(app);
+        let length = app.bam().unwrap().1.source().contigs()[contig].length;
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = 1;
+        view.place(contig, pos, length);
+        settle(app);
+        app.bams.get_mut(&id).unwrap().row = row;
+    }
+
+    #[test]
+    fn keys_move_zoom_and_go() {
+        let (mut app, _dir) = with_bam();
+        go(&mut app, "c1:301");
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 301));
+        let per_col = view(&app).per_col;
+        keys(&mut app, "l");
+        assert_eq!(view(&app).cursor, 301 + per_col);
+        keys(&mut app, "+");
+        assert!(view(&app).per_col < per_col, "zoomed in");
+        let closer = view(&app).per_col;
+        keys(&mut app, "-");
+        assert_eq!(view(&app).per_col, per_col);
+        keys(&mut app, "++");
+        keys(&mut app, "z");
+        assert_eq!(
+            (view(&app).per_col, view(&app).left),
+            (per_col, 1),
+            "whole contig"
+        );
+        keys(&mut app, "z");
+        assert!(view(&app).per_col < closer, "and back");
+
+        at_base_level(&mut app, 0, 301, 0);
+        let width = view(&app).width as u64;
+        shift(&mut app, KeyCode::Right);
+        assert_eq!(view(&app).cursor, 301 + width);
+        shift(&mut app, KeyCode::Left);
+        assert_eq!(view(&app).cursor, 301);
+
+        go(&mut app, "c1:101");
+        keys(&mut app, "j");
+        assert_eq!(view(&app).row, 1);
+        keys(&mut app, "jjj");
+        assert_eq!(view(&app).row, 1, "no rows past the last");
+        keys(&mut app, "k");
+        assert_eq!(view(&app).row, 0);
+
+        go(&mut app, "2,000");
+        assert_eq!(app.status, "error: c1 is 1,000 bp; 2,000 is past its end");
+        go(&mut app, "450");
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 450));
+        go(&mut app, "c2");
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 1));
+        go(&mut app, "c1:101-200");
+        let v = view(&app);
+        assert_eq!((v.contig, v.cursor), (0, 101));
+        assert!(
+            v.col_of(101).is_some() && v.col_of(200).is_some(),
+            "the range fits"
+        );
+        assert!(v.per_col * (v.width as u64) < 1000, "zoomed in to it");
+        go(&mut app, "nope");
+        assert_eq!(app.status, "error: no contig named 'nope' in reads.bam");
+    }
+
+    #[test]
+    fn jumps_walk_the_stretches_and_stop_at_the_end() {
+        let (mut app, _dir) = with_bam();
+        let mut walk = Vec::new();
+        for _ in 0..4 {
+            keys(&mut app, "]");
+            walk.push(view(&app).cursor);
+        }
+        assert_eq!(walk, [101, 301, 701, 901]);
+        keys(&mut app, "]");
+        assert_eq!(app.status, "no more covered stretches on c1");
+        assert_eq!(view(&app).cursor, 901);
+        assert!(
+            app.outbox.is_empty() && app.jumping.is_none(),
+            "the pass answered"
+        );
+
+        go(&mut app, "101");
+        keys(&mut app, "}");
+        assert_eq!(view(&app).cursor, 166, "a deletion does not end a stretch");
+        go(&mut app, "750");
+        keys(&mut app, "[");
+        assert_eq!(view(&app).cursor, 701);
+        keys(&mut app, "'");
+        assert_eq!(view(&app).cursor, 750);
+        keys(&mut app, "{");
+        assert_eq!(view(&app).cursor, 741);
+        go(&mut app, "50");
+        keys(&mut app, "[");
+        assert_eq!(app.status, "no covered stretch before here on c1");
+        go(&mut app, "1");
+        keys(&mut app, "{");
+        assert_eq!(app.status, "no stretch without coverage before here on c1");
+        go(&mut app, "960");
+        keys(&mut app, "}");
+        assert_eq!(view(&app).cursor, 960, "already in the last empty stretch");
+        assert_eq!(app.status, "no more stretches without coverage on c1");
+    }
+
+    #[test]
+    fn a_jump_the_pass_cannot_answer_runs_in_the_background_and_esc_cancels_it() {
+        let (mut app, _dir) = with_bam();
+        let id = id(&app);
+        app.passes.clear();
+        app.pass_failed.insert((id, 0));
+        press(&mut app, KeyCode::Char(']'));
+        assert!(matches!(app.outbox.last(), Some(Request::Jump { .. })));
+        let progress = app.jumping.as_ref().unwrap().progress.clone();
+        assert!(app.wants_tick());
+        press(&mut app, KeyCode::Esc);
+        assert!(progress.is_cancelled());
+        settle(&mut app);
+        assert_eq!(app.status, "jump cancelled");
+        assert_eq!(view(&app).cursor, 1);
+        assert!(app.jumping.is_none());
+
+        keys(&mut app, "]");
+        assert_eq!(view(&app).cursor, 101, "read from the BAM");
+
+        // A jump ending after the view moved to another contig is ignored.
+        press(&mut app, KeyCode::Char(']'));
+        assert!(app.jumping.is_some());
+        app.bams.get_mut(&id).unwrap().place(1, 1, 500);
+        settle(&mut app);
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 1));
+        assert!(app.jumping.is_none());
+    }
+
+    #[test]
+    fn m_and_s_follow_mates_and_split_parts() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 101, 0);
+        keys(&mut app, "m");
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 301));
+        assert_eq!(
+            view(&app).cursor_read().map(|r| r.flags),
+            Some(147),
+            "the cursor is on the mate"
+        );
+        at_base_level(&mut app, 0, 901, 0);
+        keys(&mut app, "m");
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 201));
+
+        at_base_level(&mut app, 0, 121, 1);
+        keys(&mut app, "s");
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 51));
+        assert_eq!(view(&app).cursor_read().map(|r| r.flags), Some(2048));
+        keys(&mut app, "s");
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 121), "and back");
+        keys(&mut app, "''");
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 121));
+        keys(&mut app, "'");
+        assert_eq!(
+            (view(&app).contig, view(&app).cursor),
+            (0, 901),
+            "where the second m started"
+        );
+
+        at_base_level(&mut app, 0, 701, 0);
+        keys(&mut app, "m");
+        assert_eq!(
+            app.status,
+            "the read under the cursor has no mate on a contig of this BAM"
+        );
+        keys(&mut app, "s");
+        assert_eq!(app.status, "the read under the cursor has no split parts");
+        at_base_level(&mut app, 0, 500, 0);
+        keys(&mut app, "m");
+        assert_eq!(app.status, "no read under the cursor");
+        app.bams.get_mut(&id(&app)).unwrap().back.clear();
+        keys(&mut app, "'");
+        assert_eq!(app.status, "nothing to go back to");
+    }
+
+    #[test]
+    fn f_and_s_toggle_filtered_reads_and_clips() {
+        let (mut app, _dir) = with_bam();
+        at_base_level(&mut app, 0, 701, 0);
+        assert_eq!(view(&app).packed.rows.len(), 1);
+        keys(&mut app, "F");
+        assert_eq!(view(&app).packed.rows.len(), 3);
+        keys(&mut app, "F");
+        assert_eq!(view(&app).packed.rows.len(), 1);
+
+        at_base_level(&mut app, 0, 101, 1);
+        let v = view(&app);
+        let col = v.col_of(111).unwrap();
+        assert!(v.read_at(col, 1).is_some(), "r2's clip is drawn");
+        keys(&mut app, "S");
+        assert!(view(&app).read_at(col, 1).is_none());
     }
 }
