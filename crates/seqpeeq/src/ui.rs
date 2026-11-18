@@ -1,5 +1,6 @@
 //! Drawing. Reads the [`App`](crate::app::App) state and never changes it.
 
+pub mod bam;
 pub mod grid;
 pub mod overview;
 pub mod tree;
@@ -80,7 +81,12 @@ pub fn regions(app: &App, area: Rect) -> Regions {
             height: area.height - 1 - bottom,
             ..area
         };
-        let wanted = app.busy.is_some() || app.alignment().is_some() || app.tree().is_some();
+        let bam = app
+            .session
+            .datasets()
+            .get(app.active)
+            .is_some_and(|d| d.bam().is_some());
+        let wanted = app.busy.is_some() || app.alignment().is_some() || app.tree().is_some() || bam;
         let info = u16::from(wanted && middle.height >= 3);
         let log = if app.show_log && middle.height - info > LOG_HEIGHT {
             LOG_HEIGHT
@@ -286,6 +292,10 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         tree::draw_tree(frame, doc, view, &header, area);
         return;
     }
+    if app.bam().is_some() {
+        bam::draw_bam(frame, app, area);
+        return;
+    }
     let lines = match app.session.datasets().get(app.active) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
@@ -316,6 +326,22 @@ pub fn info_text(app: &App) -> (String, String) {
     }
     if let Some((_, _, progress)) = &app.summarising {
         right.push(job_text("summarising", progress.fraction()));
+    }
+    if let Some((_, _, progress)) = &app.passing {
+        right.push(job_text("coverage", progress.fraction()));
+    }
+    if let Some(reading) = &app.reading {
+        right.push(job_text("reading", reading.progress.fraction()));
+    }
+    if let Some((_, doc, view)) = app.bam() {
+        let contig = &doc.source().contigs()[view.contig];
+        left = format!(
+            "{}:{}  {} bp a column",
+            contig.name, view.cursor, view.per_col
+        );
+        if view.per_col == 1 && !bam::knows_reference(app) {
+            left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+        }
     }
     if let Some((alignment, view)) = app.alignment()
         && view.zoom > 0
@@ -683,14 +709,14 @@ mod tests {
         })
     }
 
-    fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    pub(super) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = terminal(width, height);
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
     }
 
     /// Do, on this thread, the work the loop would hand to worker threads.
-    fn settle(app: &mut App) {
+    pub(super) fn settle(app: &mut App) {
         loop {
             app.pump();
             let Some(request) = app.outbox.pop() else {
@@ -779,7 +805,7 @@ mod tests {
     }
 
     /// The text of each screen row, trailing spaces removed.
-    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    pub(super) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {

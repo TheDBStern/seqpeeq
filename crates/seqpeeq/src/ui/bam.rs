@@ -1,0 +1,714 @@
+//! Drawing the BAM tab: the whole-contig strip, the ruler, the reference,
+//! coverage, the reads, and the details of the read under the cursor.
+
+use std::collections::HashMap;
+
+use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Modifier, Style};
+use seqpeeq_core::bam::{Contig, Coverage, Piece, Read, grouped};
+use unicode_width::UnicodeWidthStr;
+
+use crate::app::{App, Mode};
+use crate::bam_view::{BamView, READS_WIDTH, ReadId, details, read_kind};
+use crate::palette;
+
+/// Where each row of the BAM tab goes. A row not shown has no height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BamLayout {
+    pub strip: Rect,
+    pub ruler: Rect,
+    /// Only at a base a column.
+    pub reference: Rect,
+    pub coverage: Rect,
+    pub reads: Rect,
+    pub details: Rect,
+}
+
+/// Lay the tab out in `area`. When it is short, rows go in this order
+/// until the reads keep one: the details, the reference, the strip, the
+/// ruler, the coverage.
+pub fn bam_layout(area: Rect, view: &BamView) -> BamLayout {
+    // strip, ruler, reference, coverage, details
+    let mut keep = [true, true, view.per_col == 1, true, true];
+    let kept = |keep: &[bool; 5]| keep.iter().filter(|&&k| k).count() as u16;
+    for i in [4, 2, 0, 1, 3] {
+        if kept(&keep) < area.height {
+            break;
+        }
+        keep[i] = false;
+    }
+    let mut y = area.y;
+    let mut take = |height: u16| {
+        let height = height.min(area.bottom().saturating_sub(y));
+        let rect = Rect { y, height, ..area };
+        y += height;
+        rect
+    };
+    let strip = take(u16::from(keep[0]));
+    let ruler = take(u16::from(keep[1]));
+    let reference = take(u16::from(keep[2]));
+    let coverage = take(u16::from(keep[3]));
+    let reads = take(area.height.saturating_sub(kept(&keep)));
+    let details = take(u16::from(keep[4]));
+    BamLayout {
+        strip,
+        ruler,
+        reference,
+        coverage,
+        reads,
+        details,
+    }
+}
+
+const BARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// A bar for `value` out of `most`: blank for nothing, at least the
+/// lowest bar for anything.
+fn bar(value: f32, most: f32) -> char {
+    if value <= 0.0 || most <= 0.0 {
+        return BARS[0];
+    }
+    let step = 1 + ((value / most) * 7.0).round() as usize;
+    BARS[step.min(8)]
+}
+
+/// The mean of the bins of `values` (spread evenly over `1..=length`)
+/// that overlap `a..=b`.
+fn resample(values: &[f32], length: u64, a: u64, b: u64) -> f32 {
+    let n = values.len() as u64;
+    if n == 0 || length == 0 || b < a {
+        return 0.0;
+    }
+    let first = ((a - 1) * n / length).min(n - 1) as usize;
+    let last = ((b.min(length) - 1) * n / length).min(n - 1) as usize;
+    let part = &values[first..=last.max(first)];
+    part.iter().sum::<f32>() / part.len() as f32
+}
+
+/// The strip's head: the contig's name, length and reads.
+fn strip_head(contig: &Contig) -> String {
+    let reads = contig.mapped.map_or("?".to_string(), grouped);
+    format!(
+        "{}  {} bp  {reads} reads  ",
+        contig.name,
+        grouped(contig.length)
+    )
+}
+
+/// The part of the strip that pictures the whole contig.
+pub fn strip_bar(strip: Rect, contig: &Contig) -> Rect {
+    let head = (strip_head(contig).width() as u16).min(strip.width);
+    Rect {
+        x: strip.x + head,
+        width: strip.width - head,
+        ..strip
+    }
+}
+
+/// The positions column `i` of a `width`-column strip covers.
+pub fn strip_span(i: u16, width: u16, length: u64) -> (u64, u64) {
+    let (i, width) = (u64::from(i), u64::from(width.max(1)));
+    let a = 1 + i * length / width;
+    (a, ((i + 1) * length / width).max(a))
+}
+
+fn put(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
+    if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+        cell.set_char(ch).set_style(style);
+    }
+}
+
+/// The reference base at each position the view can show, from the
+/// reference read with the window or else from the reads' MD tags.
+fn reference_bases(view: &BamView, length: u64) -> HashMap<u64, u8> {
+    let mut bases = HashMap::new();
+    let Some(loaded) = &view.loaded else {
+        return bases;
+    };
+    let (left, end) = (view.left, view.end(length));
+    if let Some(reference) = &loaded.reference {
+        let start = loaded.window.region.start;
+        for pos in left.max(start)..=end {
+            if let Some(&b) = reference.get((pos - start) as usize) {
+                bases.insert(pos, b.to_ascii_uppercase());
+            }
+        }
+        return bases;
+    }
+    for read in view.reads() {
+        if read.end < left || read.start > end {
+            continue;
+        }
+        for (pos, b) in read.md_reference().unwrap_or_default() {
+            if (left..=end).contains(&pos) {
+                bases.insert(pos, b);
+            }
+        }
+    }
+    bases
+}
+
+/// Whether the view can say where reads differ from the reference.
+pub fn knows_reference(app: &App) -> bool {
+    let Some((_, doc, view)) = app.bam() else {
+        return true;
+    };
+    doc.source().reference().is_some() || view.reads().iter().any(|r| r.md.is_some())
+}
+
+pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
+    let Some((dataset, doc, view)) = app.bam() else {
+        return;
+    };
+    let source = doc.source();
+    let contig = &source.contigs()[view.contig];
+    let length = contig.length;
+    let layout = bam_layout(area, view);
+    let pass = app.passes.get(&(dataset.id, view.contig));
+    let finished = pass.filter(|p| p.done_to >= length);
+    let buf = frame.buffer_mut();
+
+    // The strip: the sketch from the index until the pass is done.
+    if layout.strip.height > 0 {
+        let head = strip_head(contig);
+        buf.set_stringn(
+            layout.strip.x,
+            layout.strip.y,
+            &head,
+            layout.strip.width as usize,
+            Style::new(),
+        );
+        let bar_area = strip_bar(layout.strip, contig);
+        let width = bar_area.width;
+        let values: Vec<f32> = match finished {
+            Some(pass) => (0..width)
+                .map(|i| {
+                    let (a, b) = strip_span(i, width, length);
+                    resample(&pass.bins, length, a, b)
+                })
+                .collect(),
+            None => source.sketch(view.contig, width as usize),
+        };
+        let most = values.iter().copied().fold(0.0, f32::max);
+        let (left, end) = (view.left, view.end(length));
+        for (i, &value) in values.iter().enumerate() {
+            let (a, b) = strip_span(i as u16, width, length);
+            let style = if a <= end && b >= left {
+                palette::IN_VIEW
+            } else {
+                palette::DEPTH
+            };
+            let style = palette::DEPTH.patch(style);
+            put(
+                buf,
+                bar_area.x + i as u16,
+                bar_area.y,
+                bar(value, most),
+                style,
+            );
+        }
+    }
+
+    draw_ruler(buf, layout.ruler, view, length);
+
+    let bases = if view.per_col == 1 {
+        reference_bases(view, length)
+    } else {
+        HashMap::new()
+    };
+    if layout.reference.height > 0 {
+        for col in 0..layout.reference.width {
+            let pos = view.left + u64::from(col);
+            if pos > length {
+                break;
+            }
+            if let Some(&b) = bases.get(&pos) {
+                put(
+                    buf,
+                    layout.reference.x + col,
+                    layout.reference.y,
+                    b as char,
+                    palette::base(b),
+                );
+            }
+        }
+    }
+
+    if layout.coverage.height > 0 {
+        let depths = column_depths(view, length, pass, source);
+        let most = depths.iter().copied().fold(0.0, f32::max);
+        for (col, &depth) in depths.iter().enumerate() {
+            put(
+                buf,
+                layout.coverage.x + col as u16,
+                layout.coverage.y,
+                bar(depth, most),
+                palette::DEPTH,
+            );
+        }
+    }
+
+    draw_reads(buf, layout.reads, view, length, &bases);
+
+    if layout.details.height > 0
+        && let Some(read) = cursor_read(view)
+    {
+        buf.set_stringn(
+            layout.details.x,
+            layout.details.y,
+            details(read, source.contigs()),
+            layout.details.width as usize,
+            Style::new(),
+        );
+    }
+
+    if matches!(app.mode, Mode::Normal)
+        && let Some(col) = view.col_of(view.cursor)
+        && (col as u16) < area.width
+    {
+        let on_screen = view.row >= view.top && view.row - view.top < layout.reads.height as usize;
+        let y = if on_screen {
+            layout.reads.y + (view.row - view.top) as u16
+        } else {
+            layout.ruler.y
+        };
+        if y < area.bottom() {
+            frame.set_cursor_position(Position::new(area.x + col as u16, y));
+        }
+    }
+}
+
+/// The read under the cursor: on the cursor's row, at its position.
+pub fn cursor_read(view: &BamView) -> Option<&Read> {
+    let i = view.read_in_row(view.row, (view.cursor, view.cursor))?;
+    view.reads().get(i)
+}
+
+/// The tick spacing for the ruler: 1, 2 or 5 times a power of ten, at
+/// least `n`.
+fn nice(n: u64) -> u64 {
+    let mut decade = 1u64;
+    loop {
+        for step in [1, 2, 5] {
+            let tick = decade.saturating_mul(step);
+            if tick >= n || tick == u64::MAX {
+                return tick;
+            }
+        }
+        decade = decade.saturating_mul(10);
+    }
+}
+
+fn draw_ruler(buf: &mut Buffer, area: Rect, view: &BamView, length: u64) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let end = view.end(length);
+    let spacing = nice(view.per_col * 10);
+    let mut labels = vec![view.left];
+    let mut tick = view.left.div_ceil(spacing) * spacing;
+    while tick <= end {
+        if tick > view.left {
+            labels.push(tick);
+        }
+        tick += spacing;
+    }
+    let mut free = 0u16;
+    for pos in labels {
+        let Some(col) = view.col_of(pos) else {
+            continue;
+        };
+        let col = col as u16;
+        let text = pos.to_string();
+        if col < free || col + text.len() as u16 > area.width {
+            continue;
+        }
+        buf.set_string(area.x + col, area.y, &text, Style::new());
+        free = col + text.len() as u16 + 1;
+    }
+    if let Some(col) = view
+        .col_of(view.cursor)
+        .filter(|&c| (c as u16) < area.width)
+        && let Some(cell) = buf.cell_mut(Position::new(area.x + col as u16, area.y))
+    {
+        cell.set_style(palette::SELECTED);
+    }
+}
+
+/// The mean depth under each column in view: from the window when it was
+/// read at this zoom, else from the coverage pass, else from the sketch.
+fn column_depths(
+    view: &BamView,
+    length: u64,
+    pass: Option<&Coverage>,
+    source: &seqpeeq_core::bam::BamSource,
+) -> Vec<f32> {
+    let end = view.end(length);
+    let cols: Vec<(u64, u64)> = (0..view.width)
+        .map(|c| view.span_of(c))
+        .take_while(|&(a, _)| a <= end)
+        .map(|(a, b)| (a, b.min(length)))
+        .collect();
+    if let Some(loaded) = &view.loaded {
+        let w = &loaded.window;
+        if w.region.contig == view.contig
+            && w.bin == view.per_col
+            && w.region.start <= view.left
+            && w.region.end >= end
+        {
+            return cols
+                .iter()
+                .map(|&(a, _)| {
+                    let i = ((a - w.region.start) / w.bin) as usize;
+                    w.depth.get(i).copied().unwrap_or(0.0)
+                })
+                .collect();
+        }
+    }
+    let values = match pass {
+        Some(pass) => pass.bins.clone(),
+        None => source.sketch(view.contig, crate::bam_view::PASS_BINS as usize),
+    };
+    cols.iter()
+        .map(|&(a, b)| resample(&values, length, a, b))
+        .collect()
+}
+
+fn draw_reads(buf: &mut Buffer, area: Rect, view: &BamView, length: u64, bases: &HashMap<u64, u8>) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let say = |buf: &mut Buffer, text: &str| {
+        buf.set_stringn(area.x, area.y, text, area.width as usize, dim);
+    };
+    if view.width as u64 * view.per_col >= READS_WIDTH {
+        return say(buf, "zoom in to see reads");
+    }
+    let Some(loaded) = view
+        .loaded
+        .as_ref()
+        .filter(|l| l.asked_reads && l.window.region.contig == view.contig)
+    else {
+        return;
+    };
+    let Some(reads) = &loaded.window.reads else {
+        return say(buf, "zoom in to see reads");
+    };
+    let rows = view.packed.rows.len();
+    for line in 0..area.height {
+        let row = view.top + line as usize;
+        let y = area.y + line;
+        if row < rows {
+            for &i in &view.packed.rows[row] {
+                draw_read(buf, area, y, view, length, &reads[i], bases);
+            }
+        } else if row == rows && view.packed.not_drawn > 0 {
+            let text = format!("+{} reads not drawn", grouped(view.packed.not_drawn as u64));
+            buf.set_stringn(area.x, y, text, area.width as usize, dim);
+        }
+    }
+}
+
+fn draw_read(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    view: &BamView,
+    length: u64,
+    read: &Read,
+    bases: &HashMap<u64, u8>,
+) {
+    let mut style = palette::read(read_kind(read));
+    if read.mapq == 0 || !read.counts() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if view.selected.contains(&ReadId::of(read)) {
+        style = style.patch(palette::SELECTED);
+    }
+    let end = view.end(length);
+    let at = |pos: u64| {
+        view.col_of(pos)
+            .filter(|&c| (c as u16) < area.width && pos <= end)
+            .map(|c| area.x + c as u16)
+    };
+    let reverse = read.reverse();
+    if view.per_col > 1 {
+        let (a, b) = (read.start.max(view.left), read.end.min(end));
+        if a > b {
+            return;
+        }
+        let (Some(first), Some(last)) = (at(a), at(b)) else {
+            return;
+        };
+        for x in first..=last {
+            put(buf, x, y, '━', style);
+        }
+        if !reverse && read.end <= end {
+            put(buf, last, y, '▸', style);
+        } else if reverse && read.start >= view.left {
+            put(buf, first, y, '◂', style);
+        }
+        return;
+    }
+    let mut inserted = Vec::new();
+    for piece in read.pieces() {
+        match piece {
+            Piece::Base { pos, base } => {
+                let Some(x) = at(pos) else { continue };
+                let differs = match (base, bases.get(&pos)) {
+                    (Some(b), Some(r)) => !b.eq_ignore_ascii_case(r),
+                    _ => false,
+                };
+                match base.filter(|_| differs) {
+                    Some(b) => {
+                        let ch = if reverse {
+                            b.to_ascii_lowercase()
+                        } else {
+                            b.to_ascii_uppercase()
+                        };
+                        put(buf, x, y, ch as char, style.patch(palette::base(b)));
+                    }
+                    None => put(buf, x, y, if reverse { ',' } else { '.' }, style),
+                }
+            }
+            Piece::Deleted { pos } => {
+                if let Some(x) = at(pos) {
+                    put(buf, x, y, '*', style);
+                }
+            }
+            Piece::Skipped { start, end: last } => {
+                for pos in start.max(view.left)..=last.min(end) {
+                    if let Some(x) = at(pos) {
+                        put(buf, x, y, '─', style);
+                    }
+                }
+            }
+            Piece::Inserted { before, .. } => inserted.push(before),
+            Piece::Clipped { pos, base } if !view.hide_clips => {
+                if let Some(x) = at(pos) {
+                    let faint = style.add_modifier(Modifier::DIM);
+                    put(buf, x, y, base.to_ascii_lowercase() as char, faint);
+                }
+            }
+            Piece::Clipped { .. } => {}
+        }
+    }
+    for before in inserted {
+        if let Some(x) = at(before)
+            && let Some(cell) = buf.cell_mut(Position::new(x, y))
+        {
+            cell.set_style(palette::INSERTION);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::app::bam::tests::{id, with_bam};
+    use crate::palette;
+    use crate::ui::tests::{render, rows, settle};
+    use ratatui::layout::Size;
+    use seqpeeq_core::bam::testing::{bam_from_sam, ref_bases};
+    use seqpeeq_core::{BamCmd, Command, Session};
+    use tempfile::TempDir;
+
+    /// Tell `app` the screen is `width` by `height` and let it catch up.
+    fn sized(app: &mut App, width: u16, height: u16) {
+        app.resize(Size::new(width, height));
+        settle(app);
+        // A long "opened …" would wrap and push the rows up.
+        app.status.clear();
+    }
+
+    /// Show base level from `pos` on the current contig, cursor there.
+    fn base_level_at(app: &mut App, pos: u64) {
+        let id = id(app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = 1;
+        view.left = pos;
+        view.cursor = pos;
+        view.repack();
+        settle(app);
+    }
+
+    /// The fixture at base level from `pos` on c1, on an 80 x 14 screen.
+    fn bam_at(pos: u64, with_ref: bool) -> (App, TempDir) {
+        let (mut app, dir) = with_bam();
+        if with_ref {
+            app.enqueue(Command::Bam(BamCmd::Ref {
+                file: dir.path().join("ref.fa"),
+            }));
+        }
+        sized(&mut app, 80, 14);
+        base_level_at(&mut app, pos);
+        (app, dir)
+    }
+
+    /// An app showing a BAM made from `sam`, on an 80 x 14 screen.
+    fn with_sam(sam: &str) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let bam = bam_from_sam(dir.path(), "t.bam", sam);
+        let mut app = App::new(Session::new(None));
+        app.enqueue(Command::Open {
+            path: bam,
+            kind: None,
+        });
+        settle(&mut app);
+        sized(&mut app, 80, 14);
+        (app, dir)
+    }
+
+    const HEAD: &str = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n";
+
+    #[test]
+    fn bam_base_level() {
+        let (app, _dir) = bam_at(101, true);
+        let terminal = render(&app, 80, 14);
+        insta::assert_snapshot!(terminal.backend());
+        let screen = rows(&terminal);
+        assert!(
+            screen[1].starts_with("c1  1,000 bp  7 reads  "),
+            "{}",
+            screen[1]
+        );
+        assert!(screen[2].starts_with("101"), "{}", screen[2]);
+        assert_eq!(screen[3], ref_bases("c1", 101, 180));
+        assert!(screen[5].starts_with(".........G........"), "{}", screen[5]);
+        assert!(
+            screen[6].contains("..........*****.........."),
+            "{}",
+            screen[6]
+        );
+        assert!(
+            screen[11].starts_with("r1 · c1:101-150 (+)"),
+            "{}",
+            screen[11]
+        );
+        assert!(screen[12].starts_with("c1:101"), "{}", screen[12]);
+    }
+
+    #[test]
+    fn bam_zoomed_out_bars_and_hidden_reads() {
+        let (mut app, _dir) = with_bam();
+        sized(&mut app, 80, 12);
+        let terminal = render(&app, 80, 12);
+        insta::assert_snapshot!(terminal.backend());
+        let screen = rows(&terminal);
+        assert!(screen.iter().any(|r| r.contains("━━▸")), "{screen:#?}");
+        assert!(screen.iter().any(|r| r.contains("◂━━")), "{screen:#?}");
+
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:big\tLN:1000000\n\
+                   a\t0\tbig\t1\t60\t10M\t*\t0\t0\t*\t*\n";
+        let (app, _dir) = with_sam(sam);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen.iter().any(|r| r.contains("zoom in to see reads")),
+            "{screen:#?}"
+        );
+    }
+
+    #[test]
+    fn insertions_and_mapq_0_are_styled() {
+        let sam = format!(
+            "{HEAD}i\t0\tc\t1\t60\t3M2I3M\t*\t0\t0\tACGTTACG\t*\n\
+             z\t0\tc\t1\t0\t8M\t*\t0\t0\tACGTACGT\t*\n"
+        );
+        let (mut app, _dir) = with_sam(&sam);
+        base_level_at(&mut app, 1);
+        let terminal = render(&app, 80, 14);
+        let buffer = terminal.backend().buffer();
+        // Reads start on screen row 5: i on the first row, z on the second.
+        assert_eq!(buffer[(3, 5)].bg, palette::INSERTION.bg.unwrap());
+        assert_ne!(buffer[(2, 5)].bg, palette::INSERTION.bg.unwrap());
+        assert!(
+            buffer[(0, 6)]
+                .modifier
+                .contains(ratatui::style::Modifier::DIM)
+        );
+        assert!(
+            !buffer[(0, 5)]
+                .modifier
+                .contains(ratatui::style::Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn rows_past_the_limit_are_counted() {
+        let mut sam = HEAD.to_string();
+        for i in 0..1005 {
+            sam.push_str(&format!("r{i}\t0\tc\t1\t60\t5M\t*\t0\t0\t*\t*\n"));
+        }
+        let (mut app, _dir) = with_sam(&sam);
+        base_level_at(&mut app, 1);
+        let id = id(&app);
+        let view = app.bams.get_mut(&id).unwrap();
+        assert_eq!((view.packed.rows.len(), view.packed.not_drawn), (1000, 5));
+        view.top = 1000 + 1 - view.height;
+        let screen = rows(&render(&app, 80, 14));
+        assert_eq!(screen[10], "+5 reads not drawn");
+    }
+
+    #[test]
+    fn mismatches_come_from_md_without_a_reference() {
+        let (app, _dir) = bam_at(101, false);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[5].starts_with(".........G"), "{}", screen[5]);
+        assert!(!screen[12].contains("no reference"), "{}", screen[12]);
+
+        let sam = format!("{HEAD}a\t0\tc\t11\t60\t5M\t*\t0\t0\tACGTA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        base_level_at(&mut app, 1);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen[12].contains("no reference: mismatches not shown (bam ref FILE)"),
+            "{}",
+            screen[12]
+        );
+    }
+
+    #[test]
+    fn seq_star_reads_and_tiny_terminals_do_not_panic() {
+        let (mut app, _dir) = bam_at(701, true);
+        let id = id(&app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.show_filtered = true;
+        view.repack();
+        let screen = rows(&render(&app, 80, 14));
+        assert_eq!(
+            screen[6],
+            format!("{:10}{}", "", ".".repeat(40)),
+            "r4 has no SEQ"
+        );
+        for (w, h) in [(20, 5), (1, 1), (80, 3), (0, 0)] {
+            sized(&mut app, w, h);
+            render(&app, w, h);
+        }
+    }
+
+    #[test]
+    fn small_areas_drop_the_details_before_the_reads() {
+        let view = crate::bam_view::BamView::new(0, 1000, 80);
+        let layout = bam_layout(Rect::new(0, 0, 80, 3), &view);
+        assert!(layout.reads.height >= 1);
+        assert_eq!(layout.details.height, 0);
+        let layout = bam_layout(Rect::new(0, 0, 80, 10), &view);
+        assert_eq!(
+            [
+                layout.strip,
+                layout.ruler,
+                layout.reference,
+                layout.coverage,
+                layout.details
+            ]
+            .map(|r| r.height),
+            [1, 1, 0, 1, 1],
+            "no reference row when zoomed out"
+        );
+        assert_eq!(layout.reads.height, 6);
+    }
+}

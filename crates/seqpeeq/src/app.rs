@@ -24,7 +24,7 @@ use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
 
-mod bam;
+pub(crate) mod bam;
 
 pub enum Mode {
     Normal,

@@ -16,18 +16,15 @@ pub struct Reading {
 
 impl App {
     /// The BAM on the visible tab and where the user is in it.
-    #[allow(dead_code)] // drawn from in the next task
     pub fn bam(&self) -> Option<(&Dataset, &BamDoc, &BamView)> {
         let dataset = self.session.datasets().get(self.active)?;
         Some((dataset, dataset.bam()?, self.bams.get(&dataset.id)?))
     }
 
-    /// Columns across and rows of reads a BAM view has on screen.
-    pub(super) fn bam_area(&self) -> (usize, usize) {
+    /// The screen area a BAM tab is drawn in.
+    fn bam_body(&self) -> ratatui::layout::Rect {
         let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
-        let body = ui::regions(self, screen).body;
-        // The strip, ruler, reference, coverage and details rows.
-        (body.width as usize, body.height.saturating_sub(5) as usize)
+        ui::regions(self, screen).body
     }
 
     /// Keep one view per open BAM, sized to the screen, and ask for what
@@ -52,7 +49,7 @@ impl App {
         if let Some(reading) = self.reading.take_if(|r| !open.contains(&r.dataset)) {
             reading.progress.cancel();
         }
-        let (width, height) = self.bam_area();
+        let body = self.bam_body();
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
                 continue;
@@ -63,9 +60,11 @@ impl App {
                     .iter()
                     .position(|c| c.mapped.is_some_and(|m| m > 0))
                     .unwrap_or(0);
-                BamView::new(first, contigs[first].length, width)
+                BamView::new(first, contigs[first].length, body.width as usize)
             });
             let length = contigs[view.contig].length;
+            let reads = ui::bam::bam_layout(body, view).reads;
+            let (width, height) = (reads.width as usize, reads.height as usize);
             if (view.width, view.height) != (width, height) {
                 view.width = width;
                 view.height = height;

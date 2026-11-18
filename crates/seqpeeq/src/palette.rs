@@ -43,6 +43,37 @@ pub fn residue(alphabet: Alphabet, residue: u8) -> Style {
     }
 }
 
+/// A base with bases inserted just before it.
+pub const INSERTION: Style = Style::new().bg(Color::Indexed(93)).fg(Color::Indexed(255));
+
+/// The part of the whole-contig strip that the view shows.
+pub const IN_VIEW: Style = Style::new().bg(Color::Indexed(238));
+
+/// The coverage row's bars.
+pub const DEPTH: Style = Style::new().fg(Color::Indexed(68));
+
+/// A mismatching base's letter, coloured as the residue colours are.
+pub fn base(base: u8) -> Style {
+    match base.to_ascii_uppercase() {
+        b'A' => Style::new().fg(Color::Indexed(71)),
+        b'C' => Style::new().fg(Color::Indexed(68)),
+        b'G' => Style::new().fg(Color::Indexed(178)),
+        b'T' | b'U' => Style::new().fg(Color::Indexed(167)),
+        _ => Style::new(),
+    }
+}
+
+/// A read's colour, for what is unusual about it.
+pub fn read(kind: crate::bam_view::ReadKind) -> Style {
+    use crate::bam_view::ReadKind;
+    match kind {
+        ReadKind::Split => Style::new().fg(Color::Indexed(170)),
+        ReadKind::MateElsewhere => Style::new().fg(Color::Indexed(208)),
+        ReadKind::Improper => Style::new().fg(Color::Indexed(75)),
+        ReadKind::Plain => Style::new(),
+    }
+}
+
 /// The overview's blue ramp, from few residues matching their column's
 /// conserved residue to all of them.
 pub const RAMP: [u8; 5] = [189, 153, 111, 68, 24];
