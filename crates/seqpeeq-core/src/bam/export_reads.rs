@@ -302,10 +302,11 @@ impl ReadsExport {
             .map(|names| names.iter().map(|n| n.as_bytes()).collect());
         let mut matched: HashSet<Vec<u8>> = HashSet::new();
         let mut tally = Tally::default();
-        // Is this record one of the selection? Mapped, and named if names
-        // were given.
+        // Is this record one of the selection? Named if names were given,
+        // and mapped unless the whole file is read for the names.
+        let everywhere = self.region.is_none();
         let mut select = |record: &bam::Record| -> bool {
-            if record.flags().bits() & UNMAPPED != 0 {
+            if record.flags().bits() & UNMAPPED != 0 && !everywhere {
                 return false;
             }
             match &wanted {

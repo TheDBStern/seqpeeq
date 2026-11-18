@@ -474,4 +474,41 @@ mod tests {
             started.elapsed()
         );
     }
+
+    #[test]
+    fn a_read_going_to_a_contig_twice_is_listed_once() {
+        use seqpeeq_core::bam::{Alt, Place};
+        let alt = |contig: usize, pos: u64| Alt {
+            place: Place {
+                contig,
+                pos,
+                reverse: false,
+            },
+            cigar: "50M".to_string(),
+            nm: Some(0),
+        };
+        let r = Read {
+            name: "q".to_string(),
+            contig: 0,
+            start: 1,
+            end: 50,
+            mapq: 60,
+            alts: vec![alt(1, 301), alt(2, 501), alt(1, 901)],
+            ..Read::default()
+        };
+        let view = Region {
+            contig: 0,
+            start: 1,
+            end: 100,
+        };
+        let gs = groups(&[r], &view, &view, &HashMap::new(), &HashSet::new());
+        assert_eq!(gs[0].contig, Some(1));
+        assert_eq!(gs[0].reads.len(), 1);
+        assert_eq!(gs[0].span, (301, 901));
+        assert_eq!(
+            gs[0].whither,
+            [vec![(301, Via::Alternative), (901, Via::Alternative)]]
+        );
+        assert_eq!(gs[0].vias[Via::Alternative as usize], 1);
+    }
 }

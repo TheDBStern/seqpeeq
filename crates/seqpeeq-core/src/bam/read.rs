@@ -287,7 +287,7 @@ impl BamSource {
                         reverse,
                     },
                     cigar: cigar.to_string(),
-                    nm: nm.parse().ok(),
+                    nm: Some(nm.parse().ok()?),
                 })
             })();
             match alt {

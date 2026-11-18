@@ -1682,3 +1682,38 @@ fn everywhere_is_refused_without_names_or_with_a_region_or_mates() {
     let parsed = Command::parse_line(&line).unwrap();
     assert_eq!(parsed.to_line().unwrap(), line);
 }
+
+#[test]
+fn everywhere_writes_unmapped_records_too() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = out.path().join("u.bam");
+    let mut s = session(cache.path());
+    open(&mut s, &super::testing::multi(data.path())).unwrap();
+    ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name u1 --everywhere --out {}",
+            o.display()
+        ),
+    )
+    .unwrap();
+    let flags: Vec<u16> = bam_records(&o).1.iter().map(|(_, f)| *f).collect();
+    assert_eq!(flags, [73, 133], "the unmapped mate as well");
+}
+
+#[test]
+fn an_xa_entry_whose_nm_is_not_a_number_is_skipped() {
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:g1\tLN:2000\n@SQ\tSN:g2\tLN:2000\n\
+               q\t0\tg1\t1\t0\t50M\t*\t0\t0\t*\t*\tXA:Z:g2,+301,50M,x;g2,+401,50M,;g2,+501,50M,2;\n";
+    let bam = bam_from_sam(data.path(), "q.bam", sam);
+    let source = super::BamDoc::open(&bam, cache.path(), &crate::Progress::new())
+        .unwrap()
+        .source()
+        .clone();
+    let q = read_at(&source, "g1:1-1", "q", 1);
+    assert_eq!(q.alts.len(), 1);
+    assert_eq!(q.alts[0].place.pos, 501);
+    assert_eq!(q.alts_skipped, 2);
+}

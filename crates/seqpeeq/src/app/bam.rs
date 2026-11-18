@@ -781,10 +781,17 @@ impl App {
         let Some((source, view)) = self.bam_mut() else {
             return;
         };
-        if let Some((contig, pos, back)) = view.parked_from.take() {
+        if let Some(was) = view.parked_from.take() {
             view.over = std::mem::take(&mut view.parked);
-            view.back.truncate(back);
-            view.place(contig, pos, source.contigs()[contig].length);
+            view.back.truncate(was.back);
+            view.place(was.contig, was.cursor, source.contigs()[was.contig].length);
+            view.focus = None;
+            view.per_col = was.per_col;
+            view.left = was.left;
+            view.before_whole = was.before_whole;
+            view.row = was.row;
+            view.top = was.top;
+            view.repack();
             return;
         }
         match view.back.pop() {
@@ -2180,5 +2187,28 @@ pub(crate) mod tests {
             started.elapsed()
         );
         assert_eq!(app.searches[&id(&app)].waiting, ["more"]);
+    }
+
+    #[test]
+    fn quote_after_g_puts_the_reference_view_back_as_it_was() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().left = 81;
+        settle(&mut app);
+        let before = {
+            let v = view(&app);
+            (v.contig, v.left, v.per_col, v.cursor, v.row, v.top)
+        };
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        keys(&mut app, "g");
+        assert_eq!(view(&app).contig, 1);
+        keys(&mut app, "'");
+        let v = view(&app);
+        assert_eq!(
+            (v.contig, v.left, v.per_col, v.cursor, v.row, v.top),
+            before
+        );
     }
 }

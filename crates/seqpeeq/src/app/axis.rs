@@ -297,7 +297,16 @@ impl App {
                 let Some(length) = source.contigs().get(contig).map(|c| c.length) else {
                     return;
                 };
-                view.parked_from = Some((view.contig, view.cursor, view.back.len()));
+                view.parked_from = Some(crate::bam_view::Parked {
+                    contig: view.contig,
+                    left: view.left,
+                    per_col: view.per_col,
+                    cursor: view.cursor,
+                    row: view.row,
+                    top: view.top,
+                    before_whole: view.before_whole,
+                    back: view.back.len(),
+                });
                 view.parked = std::mem::take(&mut view.over);
                 view.go(contig, pos, length);
                 if follow {

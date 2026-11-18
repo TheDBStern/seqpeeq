@@ -102,6 +102,11 @@ impl Segment {
     }
 }
 
+/// A mapping quality, or `None` for 255, which SAM uses for none given.
+fn known(mapq: u8) -> Option<u8> {
+    (mapq != 255).then_some(mapq)
+}
+
 /// The bases a CIGAR says the read has, hard clips included.
 fn query_length(cigar: &[(char, u32)]) -> u64 {
     cigar
@@ -172,7 +177,7 @@ pub fn assemble(records: &[&Read], found_by_search: &[&Read]) -> Vec<Segment> {
             pos: read.start,
             reverse,
             cigar: read.cigar.clone(),
-            mapq: Some(read.mapq),
+            mapq: known(read.mapq),
             nm: read.nm,
             score: read.score,
             span,
@@ -195,7 +200,7 @@ pub fn assemble(records: &[&Read], found_by_search: &[&Read]) -> Vec<Segment> {
                 pos: part.place.pos,
                 reverse: part.place.reverse,
                 cigar,
-                mapq: Some(part.mapq),
+                mapq: known(part.mapq),
                 nm: part.nm,
                 score: None,
                 span,
@@ -657,5 +662,24 @@ mod tests {
         assert_eq!((v.per_col, v.left), (2, 1));
         v.zoom('z');
         assert_eq!((v.per_col, v.left), (1, 51), "and back");
+    }
+
+    #[test]
+    fn a_mapq_of_255_is_unknown() {
+        let mut r = read("50M", 0, 0, 1);
+        r.mapq = 255;
+        r.parts = vec![seqpeeq_core::bam::Part {
+            place: seqpeeq_core::bam::Place {
+                contig: 1,
+                pos: 5,
+                reverse: false,
+            },
+            cigar: "50S50M".to_string(),
+            mapq: 255,
+            nm: None,
+        }];
+        let segs = assemble(&[&r], &[]);
+        let mapqs: Vec<Option<u8>> = segs[0].placements.iter().map(|p| p.mapq).collect();
+        assert_eq!(mapqs, [None, None]);
     }
 }

@@ -335,6 +335,20 @@ pub enum Over {
     Axis(AxisView),
 }
 
+/// The reference view as `g` from the axis view left it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parked {
+    pub contig: usize,
+    pub left: u64,
+    pub per_col: u64,
+    pub cursor: u64,
+    pub row: usize,
+    pub top: usize,
+    pub before_whole: Option<(u64, u64)>,
+    /// How long `back` was.
+    pub back: usize,
+}
+
 /// Where the user is in one BAM.
 #[derive(Debug, Clone)]
 pub struct BamView {
@@ -374,9 +388,9 @@ pub struct BamView {
     /// Views opened over this one, the last on top.
     pub over: Vec<Over>,
     /// Views put aside by `g` from the axis view, for `'` to bring back,
-    /// with where the reference view was and how long `back` was then.
+    /// with the reference view as it was then.
     pub parked: Vec<Over>,
-    pub parked_from: Option<(usize, u64, usize)>,
+    pub parked_from: Option<Parked>,
 }
 
 impl BamView {
