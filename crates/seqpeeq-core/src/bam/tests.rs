@@ -435,3 +435,121 @@ fn a_cancelled_jump_stops() {
         .unwrap_err();
     assert!(matches!(err, Error::Cancelled), "{err}");
 }
+
+#[test]
+fn the_pass_gives_mean_depth_and_exact_stretches() {
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    let mut seen = Vec::new();
+    let c1 = source
+        .coverage(0, 10, &progress, |partial| seen.push(partial.clone()))
+        .unwrap();
+    assert_eq!(c1.bins, [0.0, 0.9, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4, 0.0, 0.5]);
+    assert_eq!(
+        c1.covered,
+        [(101, 150), (156, 165), (301, 350), (701, 740), (901, 950)]
+    );
+    assert_eq!((c1.contig, c1.done_to), (0, 1000));
+    assert_eq!(seen.last(), Some(&c1));
+
+    let c3 = source.coverage(2, 3, &progress, |_| {}).unwrap();
+    assert_eq!(c3.bins, [0.0, 0.0, 0.0]);
+    assert!(c3.covered.is_empty());
+
+    progress.cancel();
+    let err = source.coverage(0, 10, &progress, |_| {}).unwrap_err();
+    assert!(matches!(err, Error::Cancelled), "{err}");
+}
+
+#[test]
+fn the_sketch_shows_where_reads_are_from_the_index_alone() {
+    let (data, cache) = dirs();
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:w\tLN:100000\n");
+    for i in 0..20 {
+        sam.push_str(&format!(
+            "r{i}\t0\tw\t{}\t60\t100M\t*\t0\t0\t{}\t*\n",
+            70_001 + i,
+            "ACGT".repeat(25)
+        ));
+    }
+    let path = bam_from_sam(data.path(), "w.bam", &sam);
+    let doc = super::BamDoc::open(&path, cache.path(), &crate::Progress::new()).unwrap();
+    let sketch = doc.source().sketch(0, 4);
+    assert_eq!(
+        (sketch[0], sketch[1], sketch[2]),
+        (0.0, 0.0, 1.0),
+        "{sketch:?}"
+    );
+
+    let source = fixture_source(data.path(), cache.path());
+    assert_eq!(source.sketch(2, 5), [0.0; 5]);
+}
+
+#[test]
+fn coverage_answers_jumps_only_where_it_is_final() {
+    use super::{Coverage, Direction, Stretch};
+    let partial = Coverage {
+        contig: 0,
+        bins: vec![],
+        covered: vec![(101, 150), (156, 165), (301, 350)],
+        done_to: 400,
+    };
+    let n = |from, dir, want| partial.next_start(1000, from, dir, want);
+    assert_eq!(n(120, Direction::Forward, Stretch::Covered), Some(156));
+    assert_eq!(
+        n(360, Direction::Forward, Stretch::Covered),
+        None,
+        "701 is not known yet"
+    );
+    assert_eq!(n(320, Direction::Forward, Stretch::Empty), Some(351));
+    assert_eq!(n(360, Direction::Forward, Stretch::Empty), None);
+    assert_eq!(n(380, Direction::Back, Stretch::Covered), Some(301));
+    assert_eq!(
+        n(600, Direction::Back, Stretch::Covered),
+        None,
+        "past what is known"
+    );
+}
+
+#[test]
+fn the_pass_hands_out_partial_results_that_are_final_so_far() {
+    let (data, cache) = dirs();
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:d\tLN:200000\n");
+    let seq = "ACGT".repeat(25);
+    for pos in 1..=70_000 {
+        sam.push_str(&format!(
+            "r{pos}\t0\td\t{pos}\t60\t100M\t*\t0\t0\t{seq}\t*\n"
+        ));
+    }
+    let path = bam_from_sam(data.path(), "d.bam", &sam);
+    let doc = super::BamDoc::open(&path, cache.path(), &crate::Progress::new()).unwrap();
+    let mut seen = Vec::new();
+    let whole = doc
+        .source()
+        .coverage(0, 4, &crate::Progress::new(), |c| seen.push(c.clone()))
+        .unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].done_to, 65_535);
+    assert_eq!(seen[0].covered, [(1, 65_535)]);
+    assert_eq!(whole.covered, [(1, 70_099)]);
+    assert_eq!(
+        seen[0].next_start(
+            200_000,
+            10,
+            super::Direction::Forward,
+            super::Stretch::Empty
+        ),
+        None,
+        "where coverage ends is not known yet"
+    );
+    assert_eq!(
+        whole.next_start(
+            200_000,
+            10,
+            super::Direction::Forward,
+            super::Stretch::Empty
+        ),
+        Some(70_100)
+    );
+}
