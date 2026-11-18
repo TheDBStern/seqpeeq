@@ -3,16 +3,18 @@
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::layout::Size;
+use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
     Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
 };
 
+use crate::bam_view::{BamView, Loaded, Want};
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
     Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
@@ -21,6 +23,8 @@ use crate::tree_view::{TreeSearch, TreeView, common_ancestor};
 use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
+
+pub(crate) mod bam;
 
 pub enum Mode {
     Normal,
@@ -33,6 +37,8 @@ pub enum Mode {
     /// Waiting for `y` or anything else in answer to a question.
     Confirm(Confirm),
     Help,
+    /// `c` on a BAM tab: picking a contig.
+    Contigs(Box<crate::bam_view::ContigList>),
 }
 
 /// How typed characters go into a row.
@@ -111,6 +117,32 @@ pub enum Request {
         conserved: Conservation,
         progress: Arc<Progress>,
     },
+    /// Read the depth, and perhaps the reads, of one stretch of a BAM.
+    Window {
+        dataset: u64,
+        /// The view's [`BamView::generation`] when asked.
+        generation: u64,
+        source: BamSource,
+        want: Want,
+        progress: Arc<Progress>,
+    },
+    /// One pass over a contig's reads for its coverage.
+    Pass {
+        dataset: u64,
+        contig: usize,
+        source: BamSource,
+        progress: Arc<Progress>,
+    },
+    /// Find the next stretch of a kind by reading the BAM.
+    Jump {
+        dataset: u64,
+        contig: usize,
+        from: u64,
+        dir: Direction,
+        want: Stretch,
+        source: BamSource,
+        progress: Arc<Progress>,
+    },
 }
 
 /// Work that a worker thread has finished.
@@ -125,6 +157,31 @@ pub enum Done {
     Summary {
         dataset: u64,
         result: Option<Summary>,
+    },
+    /// A window of a BAM, read for the view whose generation it names.
+    Window {
+        dataset: u64,
+        generation: u64,
+        result: seqpeeq_core::Result<Loaded>,
+    },
+    /// A coverage pass so far (`finished` false), or how it ended.
+    Pass {
+        dataset: u64,
+        contig: usize,
+        coverage: seqpeeq_core::Result<Coverage>,
+        finished: bool,
+    },
+    /// Where a jump read from the BAM landed.
+    Jump {
+        dataset: u64,
+        contig: usize,
+        from: u64,
+        dir: Direction,
+        want: Stretch,
+        result: seqpeeq_core::Result<Option<u64>>,
+        /// The jump's own progress, which tells it from an identical one
+        /// asked again.
+        progress: Arc<Progress>,
     },
 }
 
@@ -179,6 +236,24 @@ pub struct App {
     /// The summary being made in the background: the dataset, the
     /// revision, and its progress.
     pub summarising: Option<(u64, u64, Arc<Progress>)>,
+    /// Where the user is in each open BAM, by [`Dataset::id`].
+    pub bams: HashMap<u64, BamView>,
+    /// Each contig's coverage, by dataset and contig: whole once its pass
+    /// has finished (kept for the session), partial while it runs.
+    pub passes: HashMap<(u64, usize), Coverage>,
+    /// The coverage pass running: dataset, contig and progress.
+    pub passing: Option<(u64, usize, Arc<Progress>)>,
+    /// Passes that failed, not to be tried again.
+    pub pass_failed: HashSet<(u64, usize)>,
+    /// The window being read for a BAM view.
+    pub reading: Option<bam::Reading>,
+    /// Where a drag across a BAM's reads started: the first and last
+    /// positions of its column, and its row of reads.
+    pub bam_drag: Option<((u64, u64), usize)>,
+    /// The jump reading the BAM.
+    pub jumping: Option<bam::Jumping>,
+    /// The last window that failed to read, not to be asked for again.
+    pub window_failed: Option<(u64, Want)>,
     /// Lines entered on the command line.
     history: History,
     /// Whether the left button went down on the grid and is still held, so
@@ -206,6 +281,14 @@ impl App {
             counting: None,
             summaries: HashMap::new(),
             summarising: None,
+            bams: HashMap::new(),
+            passes: HashMap::new(),
+            passing: None,
+            pass_failed: HashSet::new(),
+            reading: None,
+            jumping: None,
+            bam_drag: None,
+            window_failed: None,
             history: History::default(),
             dragging: false,
         }
@@ -451,6 +534,15 @@ impl App {
         for (_, _, progress) in [&self.counting, &self.summarising].into_iter().flatten() {
             progress.cancel();
         }
+        if let Some((_, _, progress)) = &self.passing {
+            progress.cancel();
+        }
+        if let Some(reading) = &self.reading {
+            reading.progress.cancel();
+        }
+        if let Some(jumping) = &self.jumping {
+            jumping.progress.cancel();
+        }
     }
 
     /// Take in work a thread has finished.
@@ -497,6 +589,26 @@ impl App {
                     self.conserved.insert(dataset, found);
                 }
             }
+            Done::Window {
+                dataset,
+                generation,
+                result,
+            } => self.window_done(dataset, generation, result),
+            Done::Pass {
+                dataset,
+                contig,
+                coverage,
+                finished,
+            } => self.pass_done(dataset, contig, coverage, finished),
+            Done::Jump {
+                dataset,
+                contig,
+                from,
+                dir,
+                want,
+                result,
+                progress,
+            } => self.jump_done(dataset, (contig, from, dir, want), result, &progress),
             Done::Summary { dataset, result } => {
                 let Some(summary) = result else {
                     return;
@@ -674,6 +786,7 @@ impl App {
         }
         self.views.retain(|id, _| open.contains(id));
         self.sync_trees();
+        self.sync_bams();
         self.conserved.retain(|id, _| open.contains(id));
         self.summaries.retain(|id, _| open.contains(id));
         for job in [&mut self.counting, &mut self.summarising] {
@@ -689,7 +802,12 @@ impl App {
     /// Background work is running, so the screen should be redrawn soon to
     /// show progress.
     pub fn wants_tick(&self) -> bool {
-        self.busy.is_some() || self.counting.is_some() || self.summarising.is_some()
+        self.busy.is_some()
+            || self.counting.is_some()
+            || self.summarising.is_some()
+            || self.passing.is_some()
+            || self.reading.is_some()
+            || self.jumping.is_some()
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -748,6 +866,13 @@ impl App {
                     } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
                     {
                         view.select = None;
+                    } else if let Some((_, view)) =
+                        self.bam_mut().filter(|(_, view)| !view.selected.is_empty())
+                    {
+                        view.selected.clear();
+                    } else if let Some(jumping) = &self.jumping {
+                        jumping.progress.cancel();
+                        self.status = "cancelling the jump…".to_string();
                     } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
                         self.status = "cancelling…".to_string();
@@ -760,6 +885,7 @@ impl App {
                 KeyCode::Tab => self.step_tab(1),
                 KeyCode::BackTab => self.step_tab(-1),
                 _ if self.tree().is_some() => self.tree_key(key),
+                _ if self.bam().is_some() => self.bam_key(key),
                 _ => self.grid_key(key),
             },
             Mode::Prompt(prompt) => match key.code {
@@ -807,6 +933,7 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Contigs(_) => self.contigs_key(key),
         }
     }
 
@@ -1509,6 +1636,7 @@ impl App {
                 self.history.push(prompt.line.text());
                 self.run_line(prompt.line.text());
             }
+            PromptKind::Goto if self.bam().is_some() => self.bam_go(prompt.line.text()),
             PromptKind::Goto => self.go_to(prompt.line.text()),
             PromptKind::Rename { row } => self.rename(row, prompt.line.text()),
             PromptKind::Search => self.search(prompt.line.text()),
@@ -1557,6 +1685,9 @@ impl App {
         }
         if self.tree().is_some() {
             return self.tree_mouse(mouse);
+        }
+        if self.bam().is_some() {
+            return self.bam_mouse(mouse);
         }
         self.wheel(mouse);
         self.grid_mouse(mouse);
@@ -2098,32 +2229,13 @@ mod tests {
     }
 
     /// Do, on this thread, the work the loop would hand to worker threads.
-    fn settle(app: &mut App) {
+    pub(super) fn settle(app: &mut App) {
         loop {
             app.pump();
             let Some(request) = app.outbox.pop() else {
                 break;
             };
-            match request {
-                Request::Run(job) => app.handle_done(Done::Command(job.run())),
-                Request::Conserve {
-                    dataset,
-                    view,
-                    progress,
-                } => {
-                    let result = view.conservation(&progress);
-                    app.handle_done(Done::Conservation { dataset, result });
-                }
-                Request::Summarise {
-                    dataset,
-                    view,
-                    conserved,
-                    progress,
-                } => {
-                    let result = view.summary(&conserved, &progress);
-                    app.handle_done(Done::Summary { dataset, result });
-                }
-            }
+            crate::worker::perform(request, &mut |done| app.handle_done(done));
         }
     }
 

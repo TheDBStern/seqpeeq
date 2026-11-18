@@ -34,9 +34,16 @@ struct Pty {
 impl Pty {
     /// Run `seqpeeq <args>` in a new temp dir that holds `a.fa`.
     fn start(args: &[&str]) -> Pty {
+        Pty::start_with(args, |_| {})
+    }
+
+    /// Run `seqpeeq <args>` in a new temp dir that holds `a.fa` and
+    /// whatever `prepare` puts there.
+    fn start_with(args: &[&str], prepare: impl FnOnce(&Path)) -> Pty {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.fa"), TRIO).unwrap();
         std::fs::write(dir.path().join("t.nwk"), TREE).unwrap();
+        prepare(dir.path());
         let size = PtySize {
             rows: 24,
             cols: 80,
@@ -200,4 +207,21 @@ fn a_tree_opens_and_is_drawn() {
     run.send("q");
     assert!(run.wait_exit().success());
     run.assert_terminal_restored("after q on a tree");
+}
+
+#[test]
+fn a_bam_opens_is_drawn_and_jumps() {
+    let mut run = Pty::start_with(&["--no-log", "reads.bam", "--ref", "ref.fa"], |dir| {
+        seqpeeq_core::bam::testing::fixture(dir);
+    });
+    run.wait_for("c1  1,000 bp");
+    run.send("g");
+    run.send("c1:101-160\r");
+    run.wait_for("c1:101  1 bp a column");
+    run.wait_for(&seqpeeq_core::bam::testing::ref_bases("c1", 101, 140));
+    run.send("]");
+    run.wait_for("c1:301 ");
+    run.send("q");
+    assert!(run.wait_exit().success());
+    run.assert_terminal_restored("after q on a BAM");
 }

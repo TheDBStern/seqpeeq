@@ -3,6 +3,7 @@
 //! This crate has no terminal dependencies. Interfaces build [`Command`]s and
 //! hand them to a session; they never change data directly.
 
+pub mod bam;
 pub mod command;
 pub mod error;
 pub mod log;
@@ -15,6 +16,7 @@ pub mod session;
 pub mod tree;
 mod write;
 
+pub use command::bam::BamCmd;
 pub use command::msa::{MsaCmd, RowSel};
 pub use command::tree::{NodeSel, TreeCmd};
 pub use command::{Command, Kind};

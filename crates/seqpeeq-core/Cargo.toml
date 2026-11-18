@@ -10,9 +10,14 @@ flate2.workspace = true
 jiff.workspace = true
 memchr.workspace = true
 memmap2.workspace = true
+noodles.workspace = true
 regex.workspace = true
 shlex.workspace = true
 thiserror.workspace = true
+
+[features]
+# The fixture BAM and its helpers, for the app's tests.
+testing = []
 
 [dev-dependencies]
 proptest.workspace = true

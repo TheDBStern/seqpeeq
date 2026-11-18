@@ -1,5 +1,6 @@
 //! Drawing. Reads the [`App`](crate::app::App) state and never changes it.
 
+pub mod bam;
 pub mod grid;
 pub mod overview;
 pub mod tree;
@@ -80,7 +81,12 @@ pub fn regions(app: &App, area: Rect) -> Regions {
             height: area.height - 1 - bottom,
             ..area
         };
-        let wanted = app.busy.is_some() || app.alignment().is_some() || app.tree().is_some();
+        let bam = app
+            .session
+            .datasets()
+            .get(app.active)
+            .is_some_and(|d| d.bam().is_some());
+        let wanted = app.busy.is_some() || app.alignment().is_some() || app.tree().is_some() || bam;
         let info = u16::from(wanted && middle.height >= 3);
         let log = if app.show_log && middle.height - info > LOG_HEIGHT {
             LOG_HEIGHT
@@ -161,6 +167,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
+    }
+    if let Mode::Contigs(list) = &app.mode
+        && !regions.body.is_empty()
+    {
+        bam::draw_contigs(frame, app, list, regions.body);
     }
 }
 
@@ -286,6 +297,10 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         tree::draw_tree(frame, doc, view, &header, area);
         return;
     }
+    if app.bam().is_some() {
+        bam::draw_bam(frame, app, area);
+        return;
+    }
     let lines = match app.session.datasets().get(app.active) {
         None => vec![Line::from(
             "No files open. :open <path> to open one, ? for help",
@@ -316,6 +331,30 @@ pub fn info_text(app: &App) -> (String, String) {
     }
     if let Some((_, _, progress)) = &app.summarising {
         right.push(job_text("summarising", progress.fraction()));
+    }
+    if let Some((_, _, progress)) = &app.passing {
+        right.push(job_text("coverage", progress.fraction()));
+    }
+    if let Some(reading) = &app.reading {
+        right.push(job_text("reading", reading.progress.fraction()));
+    }
+    if let Some(jumping) = &app.jumping {
+        right.push(job_text("jumping", jumping.progress.fraction()));
+    }
+    if let Some((_, doc, view)) = app.bam() {
+        let contig = &doc.source().contigs()[view.contig];
+        left = format!(
+            "{}:{}  {} bp a column",
+            contig.name, view.cursor, view.per_col
+        );
+        match view.selected.len() {
+            0 => {}
+            1 => left.push_str("  1 read selected"),
+            n => left.push_str(&format!("  {n} reads selected")),
+        }
+        if view.per_col == 1 && !bam::knows_reference(app) {
+            left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+        }
     }
     if let Some((alignment, view)) = app.alignment()
         && view.zoom > 0
@@ -560,6 +599,11 @@ const HELP: &[&str] = &[
     "          + - z zoom  b lengths  / n N find  v select",
     "          d prune  e extract  r rename  o re-root",
     "          s ladderize  u U undo redo  a to the alignment",
+    "BAM       g go to   ] [ covered   } { no coverage",
+    "          m mate   s other part   ' back   c contigs",
+    "          - + z zoom   F filtered   S clips",
+    "          click, drag select   Space add   Esc clear",
+    "          e export reads   E reference   to a file",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -660,7 +704,7 @@ pub fn tab_ranges(titles: &[String], width: u16, active: usize) -> Vec<Range<u16
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Done, Mode, Prompt, PromptKind, Request};
+    use crate::app::{Mode, Prompt, PromptKind};
     use crate::line::LineEdit;
     use crate::msa_view::{Cell, Colouring};
     use crate::palette;
@@ -683,39 +727,20 @@ mod tests {
         })
     }
 
-    fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    pub(super) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = terminal(width, height);
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
     }
 
     /// Do, on this thread, the work the loop would hand to worker threads.
-    fn settle(app: &mut App) {
+    pub(super) fn settle(app: &mut App) {
         loop {
             app.pump();
             let Some(request) = app.outbox.pop() else {
                 break;
             };
-            match request {
-                Request::Run(job) => app.handle_done(Done::Command(job.run())),
-                Request::Conserve {
-                    dataset,
-                    view,
-                    progress,
-                } => {
-                    let result = view.conservation(&progress);
-                    app.handle_done(Done::Conservation { dataset, result });
-                }
-                Request::Summarise {
-                    dataset,
-                    view,
-                    conserved,
-                    progress,
-                } => {
-                    let result = view.summary(&conserved, &progress);
-                    app.handle_done(Done::Summary { dataset, result });
-                }
-            }
+            crate::worker::perform(request, &mut |done| app.handle_done(done));
         }
     }
 
@@ -798,7 +823,7 @@ mod tests {
     }
 
     /// The text of each screen row, trailing spaces removed.
-    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    pub(super) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {
@@ -1529,6 +1554,26 @@ mod tests {
                 .modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn help_has_a_bam_section() {
+        let help = HELP.join("\n");
+        for text in [
+            "] [ covered",
+            "} { no coverage",
+            "m mate",
+            "s other part",
+            "' back",
+            "c contigs",
+            "F filtered",
+            "S clips",
+            "Space add",
+            "e export reads",
+            "E reference",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
     }
 
     #[test]

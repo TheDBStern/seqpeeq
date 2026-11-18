@@ -5,6 +5,7 @@
 //! the session log stores, what the in-app command line accepts and what
 //! `seqpeeq run` takes, so the three can never drift apart.
 
+pub mod bam;
 pub mod msa;
 pub mod tree;
 
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, ValueEnum};
 
 use crate::{Error, Result};
+use bam::BamCmd;
 use msa::MsaCmd;
 use tree::TreeCmd;
 
@@ -76,6 +78,9 @@ pub enum Command {
     /// Tree commands.
     #[command(subcommand)]
     Tree(TreeCmd),
+    /// BAM commands.
+    #[command(subcommand)]
+    Bam(BamCmd),
 }
 
 /// The words of a command's text form, before quoting.
@@ -159,6 +164,11 @@ impl Command {
                 cmd.write(&mut words)?;
                 words
             }
+            Command::Bam(cmd) => {
+                let mut words = Words::new("bam");
+                cmd.write(&mut words)?;
+                words
+            }
         };
         let Words {
             mut words,
@@ -214,7 +224,7 @@ fn describe(error: &clap::Error, words: &[String]) -> String {
 /// Quote a word for the text form only when it needs it. shlex alone would
 /// also quote `,` and `=`, turning `--rows 3-7,12` into `--rows '3-7,12'`;
 /// neither character means anything to the parser.
-fn quote(word: &str) -> Result<std::borrow::Cow<'_, str>> {
+pub fn quote(word: &str) -> Result<std::borrow::Cow<'_, str>> {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:,=+@%".contains(c);
     if !word.is_empty() && word.chars().all(plain) {
         return Ok(word.into());
@@ -230,6 +240,7 @@ fn path_word(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use crate::Error;
+    use crate::command::bam::BamCmd;
     use crate::command::msa::{MsaCmd, RowSel};
     use crate::command::tree::{NodeSel, TreeCmd};
     use crate::ranges::Ranges;
@@ -544,6 +555,36 @@ mod tests {
             Just(Command::Close),
             msa_cmd().prop_map(Command::Msa),
             tree_cmd().prop_map(Command::Tree),
+            bam_cmd().prop_map(Command::Bam),
+        ]
+    }
+
+    fn bam_cmd() -> impl Strategy<Value = BamCmd> {
+        let region = || "[^\\x00\\r\\n]{1,20}";
+        prop_oneof![
+            path().prop_map(|file| BamCmd::Ref { file }),
+            (region(), path()).prop_map(|(region, out)| BamCmd::ExportRegion { region, out }),
+            (region(), path()).prop_map(|(region, out)| BamCmd::ExportRef { region, out }),
+            (
+                region(),
+                proptest::collection::vec(text().prop_filter("a name", |t| !t.is_empty()), 0..3),
+                proptest::option::of(path()),
+                path(),
+                any::<bool>(),
+                any::<bool>(),
+            )
+                .prop_map(|(region, names, file, out, with_mates, clip)| {
+                    // --names-file and --name are never given together.
+                    let names_file = if names.is_empty() { file } else { None };
+                    BamCmd::ExportReads {
+                        region,
+                        names,
+                        names_file,
+                        out,
+                        with_mates,
+                        clip,
+                    }
+                }),
         ]
     }
 

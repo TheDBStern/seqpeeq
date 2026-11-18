@@ -14,6 +14,7 @@ unicode-width.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
+seqpeeq-core = { workspace = true, features = ["testing"] }
 flate2.workspace = true
 tempfile.workspace = true
 insta.workspace = true

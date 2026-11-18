@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use crate::app::{Done, Request};
+use crate::bam_view::{Loaded, PASS_BINS, READS_LIMIT};
 
 /// Runs each request on a thread of its own and collects the results.
 /// Requests are rare (one per slow command), so there is no pool.
@@ -11,6 +12,102 @@ pub struct Worker {
     results: Receiver<Done>,
     sender: Sender<Done>,
     threads: Vec<JoinHandle<()>>,
+}
+
+/// Do the work `request` asks for on this thread, handing each result to
+/// `send`. Most requests have one result; a coverage pass hands out
+/// partial ones as it goes.
+pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
+    match request {
+        Request::Run(job) => send(Done::Command(job.run())),
+        Request::Conserve {
+            dataset,
+            view,
+            progress,
+        } => send(Done::Conservation {
+            dataset,
+            result: view.conservation(&progress),
+        }),
+        Request::Summarise {
+            dataset,
+            view,
+            conserved,
+            progress,
+        } => send(Done::Summary {
+            dataset,
+            result: view.summary(&conserved, &progress),
+        }),
+        Request::Window {
+            dataset,
+            generation,
+            source,
+            want,
+            progress,
+        } => {
+            let (region, bin, reads) = want;
+            let limit = reads.then_some(READS_LIMIT);
+            let result = source.window(&region, bin, limit, &progress).map(|window| {
+                let name = &source.contigs()[region.contig].name;
+                let reference = source
+                    .reference()
+                    .filter(|_| reads)
+                    .and_then(|r| r.fetch(name, region.start, region.end).ok());
+                Loaded {
+                    window,
+                    asked_reads: reads,
+                    reference,
+                    with_reference: source.reference().is_some(),
+                }
+            });
+            send(Done::Window {
+                dataset,
+                generation,
+                result,
+            });
+        }
+        Request::Pass {
+            dataset,
+            contig,
+            source,
+            progress,
+        } => {
+            let length = source.contigs()[contig].length;
+            let bins = PASS_BINS.min(length).max(1) as usize;
+            let result = source.coverage(contig, bins, &progress, |so_far| {
+                if so_far.done_to < length {
+                    send(Done::Pass {
+                        dataset,
+                        contig,
+                        coverage: Ok(so_far.clone()),
+                        finished: false,
+                    });
+                }
+            });
+            send(Done::Pass {
+                dataset,
+                contig,
+                coverage: result,
+                finished: true,
+            });
+        }
+        Request::Jump {
+            dataset,
+            contig,
+            from,
+            dir,
+            want,
+            source,
+            progress,
+        } => send(Done::Jump {
+            dataset,
+            contig,
+            from,
+            dir,
+            want,
+            result: source.jump(contig, from, dir, want, &progress),
+            progress,
+        }),
+    }
 }
 
 impl Worker {
@@ -28,32 +125,12 @@ impl Worker {
         self.threads.retain(|thread| !thread.is_finished());
         let sender = self.sender.clone();
         self.threads.push(std::thread::spawn(move || {
-            let done = match request {
-                Request::Run(job) => Done::Command(job.run()),
-                Request::Conserve {
-                    dataset,
-                    view,
-                    progress,
-                } => Done::Conservation {
-                    dataset,
-                    result: view.conservation(&progress),
-                },
-                Request::Summarise {
-                    dataset,
-                    view,
-                    conserved,
-                    progress,
-                } => Done::Summary {
-                    dataset,
-                    result: view.summary(&conserved, &progress),
-                },
-            };
-            // The receiver is gone only when the interface is closing.
-            let _ = sender.send(done);
+            perform(request, &mut |done| {
+                let _ = sender.send(done);
+            });
         }));
     }
 
-    /// A finished piece of work, if one is waiting. Never blocks.
     pub fn poll(&self) -> Option<Done> {
         self.results.try_recv().ok()
     }

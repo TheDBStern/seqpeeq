@@ -760,7 +760,7 @@ struct SeqsOut {
 
 /// The full path, so the log says where a file went whatever the working
 /// directory was.
-fn full_path(out: &Path) -> PathBuf {
+pub(crate) fn full_path(out: &Path) -> PathBuf {
     std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf())
 }
 

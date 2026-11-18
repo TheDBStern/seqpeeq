@@ -1,0 +1,19 @@
+---
+source: crates/seqpeeq/src/ui/bam.rs
+assertion_line: 794
+expression: terminal.backend()
+---
+" reads.bam                                                  "
+"┌2 contigs (1 with no reads hidden; Ctrl-A shows them)─────┐"
+"│filter:                                                   │"
+"│name, by name (Tab: by reads)            length      reads│"
+"│c1                                        1,000          7│"
+"│c2                                          500          3│"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
+"c1:1  20 bp a column                                        "
+"                                                            "
