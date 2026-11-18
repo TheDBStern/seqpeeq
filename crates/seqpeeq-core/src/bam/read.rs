@@ -18,7 +18,7 @@ const XA: Tag = Tag::new(b'X', b'A');
 const XS: Tag = Tag::new(b'X', b'S');
 
 /// Records read between checks for cancelling.
-const BATCH: usize = 4096;
+pub(crate) const BATCH: usize = 4096;
 
 /// Where an alignment starts: a contig (by its place in the header), a
 /// 1-based position, and its strand.

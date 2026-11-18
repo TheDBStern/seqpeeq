@@ -1513,3 +1513,59 @@ fn unreadable_xa_entries_are_skipped_and_counted() {
     assert_eq!(q.alts.len(), 1);
     assert_eq!(q.alts_skipped, 4);
 }
+
+fn at(reads: &[super::Read]) -> Vec<(u16, usize, u64)> {
+    reads.iter().map(|r| (r.flags, r.contig, r.start)).collect()
+}
+
+#[test]
+fn gather_follows_the_mate_and_split_parts_through_the_index() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    let x1 = read_at(&source, "g1:101-101", "x1", 101);
+    assert_eq!(at(&source.gather(&x1, &p).unwrap()), [(147, 0, 401)]);
+    let z1 = read_at(&source, "g1:1001-1001", "z1", 1001);
+    assert_eq!(at(&source.gather(&z1, &p).unwrap()), [(2048, 1, 1501)]);
+    let z1s = read_at(&source, "g2:1501-1501", "z1", 1501);
+    assert_eq!(at(&source.gather(&z1s, &p).unwrap()), [(0, 0, 1001)]);
+    let p1 = read_at(&source, "g1:1201-1201", "p1", 1201);
+    assert_eq!(at(&source.gather(&p1, &p).unwrap()), [(129, 2, 801)]);
+    let y1 = read_at(&source, "g1:201-201", "y1", 201);
+    assert!(source.gather(&y1, &p).unwrap().is_empty());
+}
+
+#[test]
+fn a_name_search_reads_the_whole_file_unmapped_records_too() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    let names: std::collections::HashSet<String> =
+        ["y1", "u1", "nope"].iter().map(|s| s.to_string()).collect();
+    let found = source.search_names(&names, &p).unwrap();
+    assert_eq!(
+        at(&found),
+        [
+            (0, 0, 201),
+            (256, 1, 801),
+            (256, 2, 101),
+            (73, 2, 901),
+            (133, 2, 901)
+        ]
+    );
+    assert!(found[4].flags & 0x4 != 0, "the unmapped mate");
+    assert_eq!(p.fraction(), Some(1.0));
+}
+
+#[test]
+fn a_cancelled_search_stops() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    p.cancel();
+    let names = std::collections::HashSet::from(["y1".to_string()]);
+    assert!(matches!(
+        source.search_names(&names, &p),
+        Err(Error::Cancelled)
+    ));
+}

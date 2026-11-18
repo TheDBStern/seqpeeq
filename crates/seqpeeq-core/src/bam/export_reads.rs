@@ -109,7 +109,7 @@ struct Tally {
 /// it is not paired).
 type Key = (Vec<u8>, u8);
 
-fn name_of(record: &bam::Record) -> Vec<u8> {
+pub(crate) fn name_of(record: &bam::Record) -> Vec<u8> {
     record.name().map(|n| n.to_vec()).unwrap_or_default()
 }
 
@@ -129,7 +129,7 @@ fn key_of(record: &bam::Record) -> Key {
     (name_of(record), segment(record.flags().bits()))
 }
 
-fn start_of(record: &bam::Record) -> io::Result<Option<u64>> {
+pub(crate) fn start_of(record: &bam::Record) -> io::Result<Option<u64>> {
     Ok(record
         .alignment_start()
         .transpose()?
@@ -433,34 +433,6 @@ impl ReadsExport {
         }
     }
 
-    /// The first record placed at `contig:pos` that `want` accepts.
-    fn find_at(
-        &self,
-        contig: usize,
-        pos: u64,
-        progress: &Progress,
-        want: impl Fn(&bam::Record) -> bool,
-    ) -> Result<Option<bam::Record>> {
-        let length = self.source.contigs()[contig].length;
-        if pos == 0 || pos > length {
-            return Ok(None);
-        }
-        let region = Region {
-            contig,
-            start: pos,
-            end: pos,
-        };
-        let mut found = None;
-        self.source.scan(&region, progress, |record| {
-            if start_of(record)? == Some(pos) && want(record) {
-                found = Some(record.clone());
-                return Ok(false);
-            }
-            Ok(true)
-        })?;
-        Ok(found)
-    }
-
     /// Each selected record's mate and the other parts of its read, in the
     /// order found, looked for among the selected records first.
     fn mates_and_parts(
@@ -496,7 +468,7 @@ impl ReadsExport {
             if in_hand {
                 return Ok(());
             }
-            match self.find_at(contig, pos, progress, want)? {
+            match self.source.record_at(contig, pos, progress, want)? {
                 Some(record) => {
                     at.entry((contig, pos))
                         .or_default()
@@ -670,8 +642,9 @@ impl ReadsExport {
         let Some(first) = parts.first() else {
             return Ok(None);
         };
-        self.find_at(first.place.contig, first.place.pos, progress, |r| {
-            r.flags().bits() & (SECONDARY | SUPPLEMENTARY) == 0 && &key_of(r) == key
-        })
+        self.source
+            .record_at(first.place.contig, first.place.pos, progress, |r| {
+                r.flags().bits() & (SECONDARY | SUPPLEMENTARY) == 0 && &key_of(r) == key
+            })
     }
 }

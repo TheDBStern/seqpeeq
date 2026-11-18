@@ -4,6 +4,7 @@ mod axis;
 mod coverage;
 mod export;
 mod export_reads;
+mod gather;
 mod index;
 mod pieces;
 mod read;

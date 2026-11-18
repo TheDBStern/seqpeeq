@@ -54,6 +54,9 @@ pub fn read_span(cigar: &[(char, u32)], reverse: bool) -> Option<(u64, u64, u64)
 /// Which read of a pair a record is: 1, 2, or 0 for a read that is not one
 /// of a pair.
 pub fn segment(flags: u16) -> u8 {
+    if flags & 0x1 == 0 {
+        return 0;
+    }
     match (flags & 0x40 != 0, flags & 0x80 != 0) {
         (true, false) => 1,
         (false, true) => 2,
