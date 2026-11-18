@@ -1,8 +1,10 @@
 //! Mapped reads: sorted BAM files, read by region through their index.
 
+mod axis;
 mod coverage;
 mod export;
 mod export_reads;
+mod gather;
 mod index;
 mod pieces;
 mod read;
@@ -26,10 +28,11 @@ use noodles::sam;
 use crate::progress::Progress;
 use crate::{Error, Result};
 
+pub use axis::{parse_cigar, read_span, segment};
 pub use coverage::Coverage;
 pub(crate) use export::BamExport;
 pub use pieces::Piece;
-pub use read::{Part, Place, Read};
+pub use read::{Alt, Part, Place, Read};
 pub use reference::Reference;
 pub use region::{Region, parse_region};
 pub use stretch::{Direction, Stretch, next_start};

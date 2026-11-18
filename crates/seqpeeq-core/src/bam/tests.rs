@@ -342,7 +342,8 @@ fn reads_carry_what_the_view_needs() {
                 reverse: false
             },
             cigar: "10M40H".to_string(),
-            mapq: 60
+            mapq: 60,
+            nm: Some(0)
         }]
     );
     assert_eq!(r2.cigar[0], ('S', 10));
@@ -1411,4 +1412,308 @@ fn a_jump_reports_progress() {
         .jump(0, 1000, Direction::Back, Stretch::Covered, &progress)
         .unwrap();
     assert!(progress.fraction().is_some(), "a jump back");
+}
+
+fn multi_source(data: &Path, cache: &Path) -> super::BamSource {
+    let bam = super::testing::multi(data);
+    super::BamDoc::open(&bam, cache, &crate::Progress::new())
+        .unwrap()
+        .source()
+        .clone()
+}
+
+/// The mapped reads of `source` overlapping `text`, by name and start.
+fn read_at(source: &super::BamSource, text: &str, name: &str, start: u64) -> super::Read {
+    let region = super::parse_region(text, source.contigs(), "multi.bam")
+        .unwrap()
+        .0;
+    source
+        .reads(&region, &crate::Progress::new())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == name && r.start == start)
+        .unwrap()
+}
+
+#[test]
+fn read_coordinates_flip_for_the_reverse_strand_and_count_clips() {
+    use super::{parse_cigar, read_span, segment};
+    let c = parse_cigar("10S30M5D10M").unwrap();
+    assert_eq!(read_span(&c, false), Some((11, 50, 50)));
+    assert_eq!(read_span(&c, true), Some((1, 40, 50)));
+    let h = parse_cigar("60H40M").unwrap();
+    assert_eq!(read_span(&h, false), Some((61, 100, 100)));
+    assert_eq!(read_span(&h, true), Some((1, 40, 100)));
+    assert_eq!(
+        read_span(&parse_cigar("5M2I3M").unwrap(), false),
+        Some((1, 10, 10))
+    );
+    assert_eq!(parse_cigar("*"), None);
+    assert_eq!(parse_cigar("10Q"), None);
+    assert_eq!(parse_cigar(""), None);
+    assert_eq!(read_span(&parse_cigar("20S").unwrap(), false), None);
+    assert_eq!(
+        (segment(99), segment(147), segment(0), segment(2048)),
+        (1, 2, 0, 0)
+    );
+}
+
+#[test]
+fn a_read_carries_its_tags_and_alternatives() {
+    use super::{Alt, Place};
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let x1 = read_at(&source, "g1:101-101", "x1", 101);
+    assert_eq!(
+        (x1.nm, x1.score, x1.suboptimal),
+        (Some(0), Some(50), Some(50))
+    );
+    assert_eq!(
+        x1.alts,
+        [
+            Alt {
+                place: Place {
+                    contig: 1,
+                    pos: 301,
+                    reverse: false
+                },
+                cigar: "50M".to_string(),
+                nm: Some(1),
+            },
+            Alt {
+                place: Place {
+                    contig: 2,
+                    pos: 501,
+                    reverse: true
+                },
+                cigar: "50M".to_string(),
+                nm: Some(2),
+            },
+        ]
+    );
+    assert_eq!(x1.alts_skipped, 0);
+    let z1 = read_at(&source, "g1:1001-1001", "z1", 1001);
+    assert_eq!(z1.parts[0].nm, Some(1));
+    let y1 = read_at(&source, "g1:201-201", "y1", 201);
+    assert!(y1.alts.is_empty());
+    assert_eq!((y1.nm, y1.score, y1.suboptimal), (None, None, None));
+}
+
+#[test]
+fn unreadable_xa_entries_are_skipped_and_counted() {
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:g1\tLN:2000\n@SQ\tSN:g2\tLN:2000\n\
+               q\t0\tg1\t1\t0\t50M\t*\t0\t0\t*\t*\tXA:Z:g2,+301,50M,1;bad;zz,+1,50M,0;g2,301,50M,1;g2,+5,5Q,0;\n";
+    let bam = bam_from_sam(data.path(), "q.bam", sam);
+    let source = super::BamDoc::open(&bam, cache.path(), &crate::Progress::new())
+        .unwrap()
+        .source()
+        .clone();
+    let q = read_at(&source, "g1:1-1", "q", 1);
+    assert_eq!(q.alts.len(), 1);
+    assert_eq!(q.alts_skipped, 4);
+}
+
+fn at(reads: &[super::Read]) -> Vec<(u16, usize, u64)> {
+    reads.iter().map(|r| (r.flags, r.contig, r.start)).collect()
+}
+
+#[test]
+fn gather_follows_the_mate_and_split_parts_through_the_index() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    let x1 = read_at(&source, "g1:101-101", "x1", 101);
+    assert_eq!(at(&source.gather(&x1, &p).unwrap()), [(147, 0, 401)]);
+    let z1 = read_at(&source, "g1:1001-1001", "z1", 1001);
+    assert_eq!(at(&source.gather(&z1, &p).unwrap()), [(2048, 1, 1501)]);
+    let z1s = read_at(&source, "g2:1501-1501", "z1", 1501);
+    assert_eq!(at(&source.gather(&z1s, &p).unwrap()), [(0, 0, 1001)]);
+    let p1 = read_at(&source, "g1:1201-1201", "p1", 1201);
+    assert_eq!(at(&source.gather(&p1, &p).unwrap()), [(129, 2, 801)]);
+    let y1 = read_at(&source, "g1:201-201", "y1", 201);
+    assert!(source.gather(&y1, &p).unwrap().is_empty());
+}
+
+#[test]
+fn a_name_search_reads_the_whole_file_unmapped_records_too() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    let names: std::collections::HashSet<String> =
+        ["y1", "u1", "nope"].iter().map(|s| s.to_string()).collect();
+    let found = source.search_names(&names, &p).unwrap();
+    assert_eq!(
+        at(&found),
+        [
+            (0, 0, 201),
+            (256, 1, 801),
+            (256, 2, 101),
+            (73, 2, 901),
+            (133, 2, 901)
+        ]
+    );
+    assert!(found[4].flags & 0x4 != 0, "the unmapped mate");
+    assert_eq!(p.fraction(), Some(1.0));
+}
+
+#[test]
+fn a_cancelled_search_stops() {
+    let (data, cache) = dirs();
+    let source = multi_source(data.path(), cache.path());
+    let p = crate::Progress::new();
+    p.cancel();
+    let names = std::collections::HashSet::from(["y1".to_string()]);
+    assert!(matches!(
+        source.search_names(&names, &p),
+        Err(Error::Cancelled)
+    ));
+}
+
+#[test]
+fn everywhere_exports_every_record_of_the_names() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = |name: &str| out.path().join(name);
+    let mut s = session(cache.path());
+    open(&mut s, &super::testing::multi(data.path())).unwrap();
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name y1 --everywhere --out {}",
+            o("y.bam").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 3 records"),
+        "{}",
+        done.message
+    );
+    let flags: Vec<u16> = bam_records(&o("y.bam")).1.iter().map(|(_, f)| *f).collect();
+    assert_eq!(flags, [0, 256, 256]);
+
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name r2 --everywhere --out {}",
+            o("r2.bam").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 2 records"),
+        "{}",
+        done.message
+    );
+    assert_eq!(
+        bam_records(&o("r2.bam")).1,
+        [("r2".to_string(), 0), ("r2".to_string(), 2048)]
+    );
+    let done = ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name r2 --everywhere --out {}",
+            o("r2.fa").display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        done.message.starts_with("wrote 1 read to r2.fa"),
+        "{}",
+        done.message
+    );
+    assert_eq!(
+        fs::read_to_string(o("r2.fa")).unwrap().matches('>').count(),
+        1
+    );
+}
+
+#[test]
+fn everywhere_is_refused_without_names_or_with_a_region_or_mates() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = |name: &str| out.path().join(name).display().to_string();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let mut err = |line: String| match ex(&mut s, &line) {
+        Err(e) => e.to_string(),
+        Ok(done) => panic!("{line} ran: {}", done.message),
+    };
+    assert!(
+        err(format!(
+            "bam export-reads --everywhere --out {}",
+            o("a.bam")
+        ))
+        .contains("--everywhere needs --name or --names-file")
+    );
+    assert!(
+        err(format!(
+            "bam export-reads --name r1 --everywhere --with-mates --out {}",
+            o("b.bam")
+        ))
+        .contains("--with-mates")
+    );
+    assert!(
+        err(format!(
+            "bam export-reads --name r1 --everywhere --clip --out {}",
+            o("c.fa")
+        ))
+        .contains("--clip")
+    );
+    assert!(
+        Command::parse_line(&format!(
+            "bam export-reads --region c1 --name r1 --everywhere --out {}",
+            o("d.bam")
+        ))
+        .is_err()
+    );
+    assert!(
+        Command::parse_line(&format!("bam export-reads --name r1 --out {}", o("e.bam"))).is_err()
+    );
+    let line = format!(
+        "bam export-reads --name r1 --everywhere --out {}",
+        o("f.bam")
+    );
+    let parsed = Command::parse_line(&line).unwrap();
+    assert_eq!(parsed.to_line().unwrap(), line);
+}
+
+#[test]
+fn everywhere_writes_unmapped_records_too() {
+    let (data, cache) = dirs();
+    let out = tempfile::tempdir().unwrap();
+    let o = out.path().join("u.bam");
+    let mut s = session(cache.path());
+    open(&mut s, &super::testing::multi(data.path())).unwrap();
+    ex(
+        &mut s,
+        &format!(
+            "bam export-reads --name u1 --everywhere --out {}",
+            o.display()
+        ),
+    )
+    .unwrap();
+    let flags: Vec<u16> = bam_records(&o).1.iter().map(|(_, f)| *f).collect();
+    assert_eq!(flags, [73, 133], "the unmapped mate as well");
+}
+
+#[test]
+fn an_xa_entry_whose_nm_is_not_a_number_is_skipped() {
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:g1\tLN:2000\n@SQ\tSN:g2\tLN:2000\n\
+               q\t0\tg1\t1\t0\t50M\t*\t0\t0\t*\t*\tXA:Z:g2,+301,50M,x;g2,+401,50M,;g2,+501,50M,2;\n";
+    let bam = bam_from_sam(data.path(), "q.bam", sam);
+    let source = super::BamDoc::open(&bam, cache.path(), &crate::Progress::new())
+        .unwrap()
+        .source()
+        .clone();
+    let q = read_at(&source, "g1:1-1", "q", 1);
+    assert_eq!(q.alts.len(), 1);
+    assert_eq!(q.alts[0].place.pos, 501);
+    assert_eq!(q.alts_skipped, 2);
 }

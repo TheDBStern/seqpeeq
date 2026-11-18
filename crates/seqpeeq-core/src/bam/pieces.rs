@@ -241,6 +241,7 @@ mod tests {
             md: (!md.is_empty()).then(|| md.to_string()),
             mate: None,
             parts: Vec::new(),
+            ..Read::default()
         }
     }
 

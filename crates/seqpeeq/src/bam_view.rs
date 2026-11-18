@@ -2,6 +2,8 @@
 //! shows: zoom levels, positions and columns, packing, and how a read is
 //! described and coloured. Nothing here reads the BAM.
 
+use crate::elsewhere::ElsewhereList;
+use crate::read_axis::AxisView;
 use std::cmp::{Ordering, Reverse};
 
 use seqpeeq_core::bam::{Contig, Place, Read, Region, Window};
@@ -263,7 +265,7 @@ fn natural(a: &str, b: &str) -> Ordering {
 }
 
 /// Whether `name` holds `needle`, which is in lower case, in any case.
-fn holds(name: &str, needle: &str) -> bool {
+pub(crate) fn holds(name: &str, needle: &str) -> bool {
     if name.is_ascii() && needle.is_ascii() {
         let (name, needle) = (name.as_bytes(), needle.as_bytes());
         return name.len() >= needle.len()
@@ -324,6 +326,29 @@ pub struct Loaded {
     pub with_reference: bool,
 }
 
+/// A view opened over the reference view, drawn in its place.
+#[derive(Debug, Clone)]
+pub enum Over {
+    /// `A`: the reads in view aligning elsewhere.
+    List(ElsewhereList),
+    /// `a`: one read's placements along its own bases.
+    Axis(AxisView),
+}
+
+/// The reference view as `g` from the axis view left it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parked {
+    pub contig: usize,
+    pub left: u64,
+    pub per_col: u64,
+    pub cursor: u64,
+    pub row: usize,
+    pub top: usize,
+    pub before_whole: Option<(u64, u64)>,
+    /// How long `back` was.
+    pub back: usize,
+}
+
 /// Where the user is in one BAM.
 #[derive(Debug, Clone)]
 pub struct BamView {
@@ -360,6 +385,12 @@ pub struct BamView {
     pub generation: u64,
     /// The loaded reads that are shown, stacked; indexes into its reads.
     pub packed: Packed,
+    /// Views opened over this one, the last on top.
+    pub over: Vec<Over>,
+    /// Views put aside by `g` from the axis view, for `'` to bring back,
+    /// with the reference view as it was then.
+    pub parked: Vec<Over>,
+    pub parked_from: Option<Parked>,
 }
 
 impl BamView {
@@ -385,6 +416,9 @@ impl BamView {
             loaded: None,
             generation: 0,
             packed: Packed::default(),
+            over: Vec::new(),
+            parked: Vec::new(),
+            parked_from: None,
         }
     }
 
@@ -909,6 +943,7 @@ pub(crate) mod tests {
             },
             cigar: String::new(),
             mapq: 0,
+            nm: None,
         };
 
         let mut v = BamView::new(0, 1000, 80);

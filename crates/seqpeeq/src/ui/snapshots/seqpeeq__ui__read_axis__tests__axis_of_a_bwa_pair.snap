@@ -1,0 +1,19 @@
+---
+source: crates/seqpeeq/src/ui/read_axis.rs
+assertion_line: 537
+expression: terminal.backend()
+---
+" multi.bam                                                                      "
+"x1 · pair · read 1 50 bp, read 2 50 bp · 4 alignments · secondaries not searched"
+"read 1                        1        10        20        30        40         "
+"g1:101 (+)  MAPQ 0   primary  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▸"
+"g2:301 (+)  MAPQ —   XA       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▸"
+"g3:501 (−)  MAPQ —   XA       ◂━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+"read 2                        1        10        20        30        40         "
+"g1:401 (−)  MAPQ 60  primary  ◂━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"primary · g1:101 (+) · 50M · NM 0 · AS 50 · XS 50 · record                      "
+"g1:101  1 bp a column  no reference: mismatches not shown (bam ref FILE)        "
+"                                                                                "

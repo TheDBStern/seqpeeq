@@ -74,7 +74,8 @@ fn read_names(file: &Path) -> Result<Vec<String>> {
 
 /// The arguments of `bam export-reads`, as the command gives them.
 pub(crate) struct ReadsArgs<'a> {
-    pub region: &'a str,
+    pub region: Option<&'a str>,
+    pub everywhere: bool,
     pub names: &'a [String],
     pub names_file: Option<&'a Path>,
     pub out: &'a Path,
@@ -85,7 +86,8 @@ pub(crate) struct ReadsArgs<'a> {
 /// `bam export-reads`, checked and ready to write.
 pub(crate) struct ReadsExport {
     source: BamSource,
-    region: Region,
+    /// `None` with `--everywhere`: the whole file is read.
+    region: Option<Region>,
     cut: Option<String>,
     /// Only these names; `None` for every read.
     names: Option<Vec<String>>,
@@ -109,7 +111,7 @@ struct Tally {
 /// it is not paired).
 type Key = (Vec<u8>, u8);
 
-fn name_of(record: &bam::Record) -> Vec<u8> {
+pub(crate) fn name_of(record: &bam::Record) -> Vec<u8> {
     record.name().map(|n| n.to_vec()).unwrap_or_default()
 }
 
@@ -129,7 +131,7 @@ fn key_of(record: &bam::Record) -> Key {
     (name_of(record), segment(record.flags().bits()))
 }
 
-fn start_of(record: &bam::Record) -> io::Result<Option<u64>> {
+pub(crate) fn start_of(record: &bam::Record) -> io::Result<Option<u64>> {
     Ok(record
         .alignment_start()
         .transpose()?
@@ -234,7 +236,31 @@ impl ReadsExport {
             None if args.names.is_empty() => None,
             None => Some(args.names.to_vec()),
         };
-        let (region, cut) = parse_region(args.region, source.contigs(), &source.file_name())?;
+        if args.everywhere {
+            if names.is_none() {
+                return Err(Error::Invalid(
+                    "--everywhere needs --name or --names-file".to_string(),
+                ));
+            }
+            if args.with_mates {
+                return Err(Error::Invalid(
+                    "--everywhere already writes every record of the names, so it cannot take --with-mates"
+                        .to_string(),
+                ));
+            }
+            if args.clip {
+                return Err(Error::Invalid(
+                    "--everywhere reads no region, so it cannot take --clip".to_string(),
+                ));
+            }
+        }
+        let (region, cut) = match args.region {
+            Some(text) if !args.everywhere => {
+                let (region, cut) = parse_region(text, source.contigs(), &source.file_name())?;
+                (Some(region), cut)
+            }
+            _ => (None, None),
+        };
         refuse_taken(args.out)?;
         if format == Format::Bam {
             refuse_taken(&with_suffix(args.out, ".bai"))?;
@@ -252,6 +278,19 @@ impl ReadsExport {
         })
     }
 
+    /// Hand each record of the region, or of the whole file with
+    /// `--everywhere`, to `each`, until it says to stop.
+    fn walk(
+        &self,
+        progress: &Progress,
+        each: impl FnMut(&bam::Record) -> io::Result<bool>,
+    ) -> Result<()> {
+        match &self.region {
+            Some(region) => self.source.scan(region, progress, each),
+            None => self.source.each_record(progress, each),
+        }
+    }
+
     pub(crate) fn out(&self) -> &Path {
         &self.out
     }
@@ -263,10 +302,11 @@ impl ReadsExport {
             .map(|names| names.iter().map(|n| n.as_bytes()).collect());
         let mut matched: HashSet<Vec<u8>> = HashSet::new();
         let mut tally = Tally::default();
-        // Is this record one of the selection? Mapped, and named if names
-        // were given.
+        // Is this record one of the selection? Named if names were given,
+        // and mapped unless the whole file is read for the names.
+        let everywhere = self.region.is_none();
         let mut select = |record: &bam::Record| -> bool {
-            if record.flags().bits() & UNMAPPED != 0 {
+            if record.flags().bits() & UNMAPPED != 0 && !everywhere {
                 return false;
             }
             match &wanted {
@@ -284,7 +324,7 @@ impl ReadsExport {
 
         let mut applied = if self.with_mates {
             let mut selected = Vec::new();
-            self.source.scan(&self.region, progress, |record| {
+            self.walk(progress, |record| {
                 if select(record) {
                     selected.push(record.clone());
                 }
@@ -335,7 +375,7 @@ impl ReadsExport {
         } else {
             match self.format {
                 Format::Bam => write_bam(&self.source, &self.out, progress, |put| {
-                    self.source.scan(&self.region, progress, |record| {
+                    self.walk(progress, |record| {
                         if select(record) {
                             put(record)?;
                         }
@@ -346,7 +386,7 @@ impl ReadsExport {
                     // Reading stops at the first failure to write, which is
                     // kept whole.
                     let mut failed = None;
-                    self.source.scan(&self.region, progress, |record| {
+                    self.walk(progress, |record| {
                         if !select(record) {
                             return Ok(true);
                         }
@@ -433,34 +473,6 @@ impl ReadsExport {
         }
     }
 
-    /// The first record placed at `contig:pos` that `want` accepts.
-    fn find_at(
-        &self,
-        contig: usize,
-        pos: u64,
-        progress: &Progress,
-        want: impl Fn(&bam::Record) -> bool,
-    ) -> Result<Option<bam::Record>> {
-        let length = self.source.contigs()[contig].length;
-        if pos == 0 || pos > length {
-            return Ok(None);
-        }
-        let region = Region {
-            contig,
-            start: pos,
-            end: pos,
-        };
-        let mut found = None;
-        self.source.scan(&region, progress, |record| {
-            if start_of(record)? == Some(pos) && want(record) {
-                found = Some(record.clone());
-                return Ok(false);
-            }
-            Ok(true)
-        })?;
-        Ok(found)
-    }
-
     /// Each selected record's mate and the other parts of its read, in the
     /// order found, looked for among the selected records first.
     fn mates_and_parts(
@@ -496,7 +508,7 @@ impl ReadsExport {
             if in_hand {
                 return Ok(());
             }
-            match self.find_at(contig, pos, progress, want)? {
+            match self.source.record_at(contig, pos, progress, want)? {
                 Some(record) => {
                     at.entry((contig, pos))
                         .or_default()
@@ -608,8 +620,10 @@ impl ReadsExport {
         }
         let (bases, qualities) = if self.clip {
             let (bases, qualities) = bases_and_qualities(record);
-            let inside = clipped(record, self.region.start, self.region.end)
-                .map_err(|e| self.read_error(e))?;
+            // --clip is refused with --everywhere, so a region is there.
+            let region = self.region.expect("--clip reads a region");
+            let inside =
+                clipped(record, region.start, region.end).map_err(|e| self.read_error(e))?;
             let Some((kept, a, b)) = inside else {
                 tally.no_base += 1;
                 return Ok(());
@@ -670,8 +684,9 @@ impl ReadsExport {
         let Some(first) = parts.first() else {
             return Ok(None);
         };
-        self.find_at(first.place.contig, first.place.pos, progress, |r| {
-            r.flags().bits() & (SECONDARY | SUPPLEMENTARY) == 0 && &key_of(r) == key
-        })
+        self.source
+            .record_at(first.place.contig, first.place.pos, progress, |r| {
+                r.flags().bits() & (SECONDARY | SUPPLEMENTARY) == 0 && &key_of(r) == key
+            })
     }
 }

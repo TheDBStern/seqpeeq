@@ -135,6 +135,36 @@ pub fn fixture(dir: &Path) -> Fixture {
     Fixture { bam, reference }
 }
 
+/// The read-as-axis fixture: alignments to several places (see the phase 5
+/// plan's table). SEQ and QUAL are `*` throughout.
+pub fn multi_sam() -> String {
+    let rows = [
+        "x1\t99\tg1\t101\t0\t50M\t=\t401\t350\t*\t*\tNM:i:0\tAS:i:50\tXS:i:50\tXA:Z:g2,+301,50M,1;g3,-501,50M,2;",
+        "y1\t0\tg1\t201\t0\t100M\t*\t0\t0\t*\t*",
+        "x1\t147\tg1\t401\t60\t50M\t=\t101\t-350\t*\t*\tNM:i:0\tAS:i:50",
+        "z1\t0\tg1\t1001\t60\t60M40S\t*\t0\t0\t*\t*\tSA:Z:g2,1501,+,60S40M,60,1;",
+        "p1\t65\tg1\t1201\t60\t50M\tg3\t801\t0\t*\t*",
+        "y1\t256\tg2\t801\t0\t100M\t*\t0\t0\t*\t*",
+        "z1\t2048\tg2\t1501\t60\t60H40M\t*\t0\t0\t*\t*\tSA:Z:g1,1001,+,60M40S,60,0;",
+        "y1\t256\tg3\t101\t0\t100M\t*\t0\t0\t*\t*",
+        "p1\t129\tg3\t801\t60\t50M\tg1\t1201\t0\t*\t*",
+        "u1\t73\tg3\t901\t60\t50M\t=\t901\t0\t*\t*",
+        "u1\t133\tg3\t901\t0\t*\t=\t901\t0\t*\t*",
+    ];
+    let mut sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:g1\tLN:2000\n@SQ\tSN:g2\tLN:2000\n@SQ\tSN:g3\tLN:1000\n"
+        .to_string();
+    for row in rows {
+        sam.push_str(row);
+        sam.push('\n');
+    }
+    sam
+}
+
+/// Write the read-as-axis fixture as `dir/multi.bam`.
+pub fn multi(dir: &Path) -> PathBuf {
+    bam_from_sam(dir, "multi.bam", &multi_sam())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,9 +2,11 @@
 
 mod app;
 mod bam_view;
+mod elsewhere;
 mod line;
 mod msa_view;
 mod palette;
+mod read_axis;
 mod term;
 mod tree_view;
 mod ui;

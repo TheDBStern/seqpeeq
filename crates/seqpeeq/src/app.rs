@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::layout::Size;
-use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Stretch};
+use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Read, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
     Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
@@ -24,6 +24,7 @@ use crate::ui;
 use crate::ui::grid::{self, Hit};
 use crate::zoom::{self, Scale};
 
+mod axis;
 pub(crate) mod bam;
 
 pub enum Mode {
@@ -133,6 +134,20 @@ pub enum Request {
         source: BamSource,
         progress: Arc<Progress>,
     },
+    /// Fetch a read's mate and split parts through the index.
+    Gather {
+        dataset: u64,
+        read: Read,
+        source: BamSource,
+        progress: Arc<Progress>,
+    },
+    /// Read the whole BAM for every record of some names.
+    Search {
+        dataset: u64,
+        names: Vec<String>,
+        source: BamSource,
+        progress: Arc<Progress>,
+    },
     /// Find the next stretch of a kind by reading the BAM.
     Jump {
         dataset: u64,
@@ -170,6 +185,20 @@ pub enum Done {
         contig: usize,
         coverage: seqpeeq_core::Result<Coverage>,
         finished: bool,
+    },
+    /// A read's mate and parts, fetched for the axis views of its name.
+    Gather {
+        dataset: u64,
+        name: String,
+        result: seqpeeq_core::Result<Vec<Read>>,
+    },
+    /// The records of the names searched for.
+    Search {
+        dataset: u64,
+        names: Vec<String>,
+        result: seqpeeq_core::Result<Vec<Read>>,
+        /// The search's own progress, which tells it from a later one.
+        progress: Arc<Progress>,
     },
     /// Where a jump read from the BAM landed.
     Jump {
@@ -254,6 +283,10 @@ pub struct App {
     pub jumping: Option<bam::Jumping>,
     /// The last window that failed to read, not to be asked for again.
     pub window_failed: Option<(u64, Want)>,
+    /// What each open BAM has been searched for, by [`Dataset::id`].
+    pub searches: HashMap<u64, axis::Searches>,
+    /// Gathers running: the dataset, the read's name and the progress.
+    pub gathering: Vec<(u64, String, Arc<Progress>)>,
     /// Lines entered on the command line.
     history: History,
     /// Whether the left button went down on the grid and is still held, so
@@ -289,6 +322,8 @@ impl App {
             jumping: None,
             bam_drag: None,
             window_failed: None,
+            searches: HashMap::new(),
+            gathering: Vec::new(),
             history: History::default(),
             dragging: false,
         }
@@ -543,6 +578,12 @@ impl App {
         if let Some(jumping) = &self.jumping {
             jumping.progress.cancel();
         }
+        for (_, _, progress) in &self.gathering {
+            progress.cancel();
+        }
+        for (_, progress) in self.searches.values().filter_map(|s| s.running.as_ref()) {
+            progress.cancel();
+        }
     }
 
     /// Take in work a thread has finished.
@@ -609,6 +650,17 @@ impl App {
                 result,
                 progress,
             } => self.jump_done(dataset, (contig, from, dir, want), result, &progress),
+            Done::Gather {
+                dataset,
+                name,
+                result,
+            } => self.gather_done(dataset, &name, result),
+            Done::Search {
+                dataset,
+                names,
+                result,
+                progress,
+            } => self.search_done(dataset, names, result, &progress),
             Done::Summary { dataset, result } => {
                 let Some(summary) = result else {
                     return;
@@ -808,6 +860,8 @@ impl App {
             || self.passing.is_some()
             || self.reading.is_some()
             || self.jumping.is_some()
+            || !self.gathering.is_empty()
+            || self.searches.values().any(|s| s.running.is_some())
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -853,12 +907,20 @@ impl App {
             self.quit = true;
             return;
         }
+        // The filter of the list of reads aligning elsewhere takes every
+        // key while it is typed.
+        if matches!(self.mode, Mode::Normal) && !ctrl && self.typing_filter() {
+            return self.list_key(key);
+        }
         match &mut self.mode {
             Mode::Normal if ctrl => {}
             Mode::Normal => match key.code {
                 // Esc lets go of the selection if there is one; otherwise it
                 // stops the work running in the background.
                 KeyCode::Esc => {
+                    if self.bam_esc() {
+                        return;
+                    }
                     if let Some((_, view)) = self.tree_view_mut()
                         && view.select.is_some()
                     {
@@ -873,6 +935,8 @@ impl App {
                     } else if let Some(jumping) = &self.jumping {
                         jumping.progress.cancel();
                         self.status = "cancelling the jump…".to_string();
+                    } else if self.cancel_search() {
+                        // Said so on the status line.
                     } else if let Some(busy) = &self.busy {
                         busy.progress.cancel();
                         self.status = "cancelling…".to_string();

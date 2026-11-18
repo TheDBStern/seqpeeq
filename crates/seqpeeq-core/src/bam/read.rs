@@ -13,8 +13,12 @@ use crate::bam::{BamSource, Region};
 use crate::progress::Progress;
 use crate::{Error, Result};
 
+/// bwa's tags for alternative hits and the best other score.
+const XA: Tag = Tag::new(b'X', b'A');
+const XS: Tag = Tag::new(b'X', b'S');
+
 /// Records read between checks for cancelling.
-const BATCH: usize = 4096;
+pub(crate) const BATCH: usize = 4096;
 
 /// Where an alignment starts: a contig (by its place in the header), a
 /// 1-based position, and its strand.
@@ -31,10 +35,20 @@ pub struct Part {
     pub place: Place,
     pub cigar: String,
     pub mapq: u8,
+    /// The edit distance the SA entry gives, when it gives one.
+    pub nm: Option<u32>,
+}
+
+/// An alternative placement from bwa's XA tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alt {
+    pub place: Place,
+    pub cigar: String,
+    pub nm: Option<u32>,
 }
 
 /// One mapped alignment.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Read {
     pub name: String,
     pub flags: u16,
@@ -50,6 +64,14 @@ pub struct Read {
     /// Where the mate is, when it is mapped.
     pub mate: Option<Place>,
     pub parts: Vec<Part>,
+    /// The NM, AS and XS tags, when present.
+    pub nm: Option<u32>,
+    pub score: Option<i64>,
+    pub suboptimal: Option<i64>,
+    /// Alternative placements from the XA tag, on contigs this BAM names.
+    pub alts: Vec<Alt>,
+    /// XA entries left out: unreadable, or on a contig the header lacks.
+    pub alts_skipped: usize,
 }
 
 const UNMAPPED: u16 = 0x4;
@@ -211,6 +233,13 @@ impl BamSource {
             _ => None,
         };
         let parts = self.sa_parts(record)?;
+        let int = |tag: Tag| -> io::Result<Option<i64>> {
+            Ok(data.get(&tag).transpose()?.and_then(|v| v.as_int()))
+        };
+        let (alts, alts_skipped) = match text(XA)? {
+            Some(xa) => self.parse_xa(&xa),
+            None => (Vec::new(), 0),
+        };
         Ok(Read {
             name: record.name().map(|n| n.to_string()).unwrap_or_default(),
             flags: flags.bits(),
@@ -223,7 +252,50 @@ impl BamSource {
             md: text(Tag::MISMATCHED_POSITIONS)?,
             mate,
             parts,
+            nm: int(Tag::EDIT_DISTANCE)?.and_then(|n| u32::try_from(n).ok()),
+            score: int(Tag::ALIGNMENT_SCORE)?,
+            suboptimal: int(XS)?,
+            alts,
+            alts_skipped,
         })
+    }
+
+    /// The placements an XA tag lists, and how many entries were left out.
+    fn parse_xa(&self, xa: &str) -> (Vec<Alt>, usize) {
+        let mut alts = Vec::new();
+        let mut skipped = 0;
+        for entry in xa.split(';').filter(|e| !e.is_empty()) {
+            let alt = (|| {
+                let [name, pos, cigar, nm, ..] = entry.split(',').collect::<Vec<_>>()[..] else {
+                    return None;
+                };
+                let reverse = match pos.chars().next()? {
+                    '+' => false,
+                    '-' => true,
+                    _ => return None,
+                };
+                let pos: u64 = pos[1..].parse().ok().filter(|&p| p > 0)?;
+                crate::bam::parse_cigar(cigar)?;
+                let contig = self
+                    .header
+                    .reference_sequences()
+                    .get_index_of(name.as_bytes())?;
+                Some(Alt {
+                    place: Place {
+                        contig,
+                        pos,
+                        reverse,
+                    },
+                    cigar: cigar.to_string(),
+                    nm: Some(nm.parse().ok()?),
+                })
+            })();
+            match alt {
+                Some(alt) => alts.push(alt),
+                None => skipped += 1,
+            }
+        }
+        (alts, skipped)
     }
 
     /// The other parts of a split read, from its SA tag, leaving out any on
@@ -258,6 +330,7 @@ impl BamSource {
                     },
                     cigar: (*cigar).to_string(),
                     mapq: mapq.parse().ok()?,
+                    nm: fields.get(5).and_then(|n| n.parse().ok()),
                 })
             })
             .collect()

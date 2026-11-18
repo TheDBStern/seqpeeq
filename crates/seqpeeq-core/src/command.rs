@@ -572,19 +572,25 @@ mod tests {
                 path(),
                 any::<bool>(),
                 any::<bool>(),
+                any::<bool>(),
             )
-                .prop_map(|(region, names, file, out, with_mates, clip)| {
-                    // --names-file and --name are never given together.
-                    let names_file = if names.is_empty() { file } else { None };
-                    BamCmd::ExportReads {
-                        region,
-                        names,
-                        names_file,
-                        out,
-                        with_mates,
-                        clip,
+                .prop_map(
+                    |(region, names, file, out, with_mates, clip, everywhere)| {
+                        // --names-file and --name are never given together.
+                        let names_file = if names.is_empty() { file } else { None };
+                        // --everywhere takes the place of --region.
+                        let region = (!everywhere).then_some(region);
+                        BamCmd::ExportReads {
+                            region,
+                            names,
+                            names_file,
+                            out,
+                            with_mates,
+                            clip,
+                            everywhere,
+                        }
                     }
-                }),
+                ),
         ]
     }
 

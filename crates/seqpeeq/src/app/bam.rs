@@ -94,6 +94,20 @@ impl App {
         if let Some(jumping) = self.jumping.take_if(|j| !open.contains(&j.dataset)) {
             jumping.progress.cancel();
         }
+        self.searches.retain(|id, s| {
+            let keep = open.contains(id);
+            if let (false, Some((_, progress))) = (keep, &s.running) {
+                progress.cancel();
+            }
+            keep
+        });
+        self.gathering.retain(|(id, _, progress)| {
+            let keep = open.contains(id);
+            if !keep {
+                progress.cancel();
+            }
+            keep
+        });
         let body = self.bam_body();
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
@@ -107,6 +121,12 @@ impl App {
                     .unwrap_or(0);
                 BamView::new(first, contigs[first].length, body.width as usize)
             });
+            for over in view.over.iter_mut().chain(view.parked.iter_mut()) {
+                if let crate::bam_view::Over::Axis(axis) = over {
+                    let layout = ui::read_axis::axis_layout(body, axis, contigs);
+                    axis.resize(layout.bars.width as usize, layout.bars.height as usize);
+                }
+            }
             let length = contigs[view.contig].length;
             let reads = ui::bam::bam_layout(body, view).reads;
             let (width, height) = (reads.width as usize, reads.height as usize);
@@ -253,7 +273,14 @@ impl App {
     pub(super) fn bam_key(&mut self, key: &KeyEvent) {
         use Direction::{Back, Forward};
         use Stretch::{Covered, Empty};
+        match self.bam().and_then(|(_, _, view)| view.over.last()) {
+            Some(crate::bam_view::Over::List(_)) => return self.list_key(key),
+            Some(crate::bam_view::Over::Axis(_)) => return self.axis_key(key),
+            None => {}
+        }
         match key.code {
+            KeyCode::Char('a') => return self.bam_axis(),
+            KeyCode::Char('A') => return self.bam_elsewhere(),
             KeyCode::Char('g') => return self.open_prompt(PromptKind::Goto, ""),
             KeyCode::Char(']') => return self.bam_jump(Forward, Covered),
             KeyCode::Char('[') => return self.bam_jump(Back, Covered),
@@ -612,6 +639,19 @@ impl App {
     /// the ruler or strip; a click on the strip goes there; clicks and
     /// drags on the reads select them.
     pub(super) fn bam_mouse(&mut self, mouse: &MouseEvent) {
+        // A view open over the reference view takes the wheel, as Up and
+        // Down; nothing else reaches the reference view under it.
+        if self.bam().is_some_and(|(_, _, view)| !view.over.is_empty()) {
+            let code = match mouse.kind {
+                MouseEventKind::ScrollUp => KeyCode::Up,
+                MouseEventKind::ScrollDown => KeyCode::Down,
+                _ => return,
+            };
+            if !self.typing_filter() {
+                self.bam_key(&KeyEvent::new(code, KeyModifiers::NONE));
+            }
+            return;
+        }
         let body = self.bam_body();
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
@@ -741,6 +781,19 @@ impl App {
         let Some((source, view)) = self.bam_mut() else {
             return;
         };
+        if let Some(was) = view.parked_from.take() {
+            view.over = std::mem::take(&mut view.parked);
+            view.back.truncate(was.back);
+            view.place(was.contig, was.cursor, source.contigs()[was.contig].length);
+            view.focus = None;
+            view.per_col = was.per_col;
+            view.left = was.left;
+            view.before_whole = was.before_whole;
+            view.row = was.row;
+            view.top = was.top;
+            view.repack();
+            return;
+        }
         match view.back.pop() {
             Some((contig, pos)) => view.place(contig, pos, source.contigs()[contig].length),
             None => self.status = "nothing to go back to".to_string(),
@@ -977,7 +1030,7 @@ pub(crate) mod tests {
 
     use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    fn press(app: &mut App, code: KeyCode) {
+    pub(crate) fn press(app: &mut App, code: KeyCode) {
         app.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
@@ -986,7 +1039,7 @@ pub(crate) mod tests {
     }
 
     /// Press each character of `keys`, then let the work finish.
-    fn keys(app: &mut App, keys: &str) {
+    pub(crate) fn keys(app: &mut App, keys: &str) {
         for c in keys.chars() {
             press(app, KeyCode::Char(c));
         }
@@ -1005,7 +1058,7 @@ pub(crate) mod tests {
     }
 
     /// The fixture at a base a column, cursor at `pos` on its contig.
-    fn at_base_level(app: &mut App, contig: usize, pos: u64, row: usize) {
+    pub(crate) fn at_base_level(app: &mut App, contig: usize, pos: u64, row: usize) {
         let id = id(app);
         let length = app.bam().unwrap().1.source().contigs()[contig].length;
         let view = app.bams.get_mut(&id).unwrap();
@@ -1736,6 +1789,426 @@ pub(crate) mod tests {
             "assembly: c and a filter {:?}, {} shown",
             started.elapsed(),
             listed(&app).len()
+        );
+    }
+
+    #[test]
+    #[ignore = "timing on testdata/; run with: cargo test --release -p seqpeeq -- --ignored timings_on"]
+    fn timings_on_a_search() {
+        use std::time::Instant;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        open(&mut app, data.join("deep.bam"));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 2_000_000, 0);
+        let name = view(&app).reads()[0].name.clone();
+        let started = Instant::now();
+        app.bam_search(vec![name.clone()]);
+        settle(&mut app);
+        let s = &app.searches[&id(&app)];
+        assert!(s.searched.contains(&name), "{}", app.status);
+        eprintln!(
+            "deep: a search for one name {:?}, {} records found",
+            started.elapsed(),
+            s.found.get(&name).map_or(0, Vec::len)
+        );
+        let started = Instant::now();
+        press(&mut app, KeyCode::Char('A'));
+        settle(&mut app);
+        eprintln!(
+            "deep: A at base level {:?}, {}",
+            started.elapsed(),
+            match view(&app).over.last() {
+                Some(Over::List(l)) => format!("{} groups", l.groups.len()),
+                _ => app.status.clone(),
+            }
+        );
+    }
+
+    // The read-as-axis view and the reads aligning elsewhere (phase 5).
+
+    use crate::bam_view::Over;
+    use crate::elsewhere::ElsewhereList;
+    use crate::read_axis::{AxisView, Found, Kind};
+
+    /// An app showing `multi.bam`, everything read.
+    pub(crate) fn with_multi() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let bam = seqpeeq_core::bam::testing::multi(dir.path());
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        (app, dir)
+    }
+
+    fn top(app: &App) -> Option<&Over> {
+        view(app).over.last()
+    }
+
+    fn axis(app: &App) -> &AxisView {
+        match top(app) {
+            Some(Over::Axis(a)) => a,
+            other => panic!("not the axis view: {other:?}"),
+        }
+    }
+
+    fn list(app: &App) -> &ElsewhereList {
+        match top(app) {
+            Some(Over::List(l)) => l,
+            other => panic!("not the list: {other:?}"),
+        }
+    }
+
+    fn requests(app: &mut App) -> Vec<Request> {
+        std::mem::take(&mut app.outbox)
+    }
+
+    fn deliver(app: &mut App, held: Vec<Request>) {
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        settle(app);
+    }
+
+    #[test]
+    fn a_opens_the_axis_view_and_the_mate_fills_in() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        assert_eq!(held.len(), 1);
+        assert!(matches!(&held[0], Request::Gather { read, .. } if read.name == "x1"));
+        assert_eq!(axis(&app).name, "x1");
+        assert_eq!(axis(&app).segments.len(), 1, "read 2 waits for the gather");
+        assert!(app.wants_tick());
+        deliver(&mut app, held);
+        let segs = &axis(&app).segments;
+        assert_eq!(segs.len(), 2);
+        let p = &segs[1].placements[0];
+        assert_eq!(
+            (segs[1].number, p.kind, p.contig, p.pos),
+            (2, Kind::Primary, 0, 401)
+        );
+        assert!(app.gathering.is_empty() && !app.wants_tick());
+
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        at_base_level(&mut app, 0, 500, 0);
+        keys(&mut app, "a");
+        assert_eq!(app.status, "no read under the cursor");
+        assert!(view(&app).over.is_empty());
+    }
+
+    #[test]
+    fn capital_a_lists_and_enter_opens_a_read_and_esc_steps_back() {
+        let (mut app, _dir) = with_multi();
+        let before = (view(&app).contig, view(&app).left, view(&app).per_col);
+        keys(&mut app, "A");
+        assert_eq!(list(&app).groups.len(), 3);
+        assert_eq!(list(&app).rows(), [0, 1, 2]);
+        keys(&mut app, "/p");
+        assert_eq!(list(&app).rows(), [1], "typing filters");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).rows(), [0, 1, 2], "Esc clears the filter");
+        assert!(matches!(top(&app), Some(Over::List(_))));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(list(&app).open, Some(0));
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!(axis(&app).name, "x1");
+        assert_eq!(view(&app).over.len(), 2);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).open, Some(0));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(list(&app).open, None);
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        assert_eq!(
+            (view(&app).contig, view(&app).left, view(&app).per_col),
+            before
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:big\tLN:1000000\n\
+                   a\t0\tbig\t1\t60\t10M\t*\t0\t0\t*\t*\n";
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam_from_sam(dir.path(), "big.bam", sam));
+        settle(&mut app);
+        keys(&mut app, "A");
+        assert_eq!(app.status, "zoom in to list the reads in view");
+        assert!(view(&app).over.is_empty());
+    }
+
+    #[test]
+    fn s_searches_once_for_every_name_in_question() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        press(&mut app, KeyCode::Char('S'));
+        let held = requests(&mut app);
+        assert_eq!(held.len(), 1);
+        assert!(matches!(&held[0], Request::Search { names, .. } if names == &["y1"]));
+        assert!(app.wants_tick());
+        deliver(&mut app, held);
+        let groups = &list(&app).groups;
+        assert!(groups.iter().all(|g| g.contig.is_some()), "no ? group");
+        assert_eq!(groups[0].reads.len(), 3);
+        assert_eq!(groups[0].contig, Some(1));
+        assert!(!app.wants_tick());
+
+        press(&mut app, KeyCode::Char('S'));
+        assert!(requests(&mut app).is_empty());
+        assert_eq!(app.status, "nothing left to search");
+
+        press(&mut app, KeyCode::Esc);
+        at_base_level(&mut app, 0, 201, 0);
+        keys(&mut app, "a");
+        assert_eq!(axis(&app).name, "y1");
+        assert!(axis(&app).searched);
+        let found: Vec<Found> = axis(&app).segments[0]
+            .placements
+            .iter()
+            .map(|p| p.found)
+            .collect();
+        assert_eq!(found, [Found::Record, Found::Search, Found::Search]);
+        press(&mut app, KeyCode::Char('S'));
+        assert!(requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn asking_to_search_while_one_runs_waits_for_it() {
+        let (mut app, _dir) = with_multi();
+        app.bam_search(vec!["y1".to_string()]);
+        let first = requests(&mut app);
+        app.bam_search(vec!["y1".to_string(), "p1".to_string()]);
+        assert!(requests(&mut app).is_empty());
+        assert_eq!(app.searches[&id(&app)].waiting, ["p1"]);
+        deliver(&mut app, first);
+        let s = &app.searches[&id(&app)];
+        assert!(s.searched.contains("y1") && s.searched.contains("p1"));
+        assert_eq!(s.found["p1"].len(), 2, "the queued search ran after");
+    }
+
+    #[test]
+    fn esc_cancels_a_search_before_stepping_back() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        press(&mut app, KeyCode::Char('S'));
+        let held = requests(&mut app);
+        let Some(Request::Search { progress, .. }) = held.first() else {
+            panic!("no search");
+        };
+        let progress = progress.clone();
+        press(&mut app, KeyCode::Esc);
+        assert!(progress.is_cancelled());
+        assert_eq!(app.status, "search cancelled");
+        assert!(matches!(top(&app), Some(Over::List(_))), "the list stays");
+        deliver(&mut app, held);
+        assert_eq!(
+            list(&app).pending_names(),
+            ["y1"],
+            "the late end changes nothing"
+        );
+        assert!(app.searches[&id(&app)].searched.is_empty());
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(requests(&mut app).len(), 1, "a new search");
+    }
+
+    #[test]
+    fn g_from_the_axis_goes_there_and_quote_comes_back() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        let picked = axis(&app).current().map(|(_, p)| (p.contig, p.pos));
+        assert_eq!(picked, Some((1, 301)));
+        keys(&mut app, "g");
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 301));
+        assert_eq!(
+            view(&app).focus,
+            None,
+            "an XA entry has no record to follow"
+        );
+        assert!(view(&app).over.is_empty());
+        assert!(!view(&app).parked.is_empty());
+        keys(&mut app, "'");
+        assert_eq!(axis(&app).picked, 1, "the axis view, as it was");
+        assert_eq!(
+            (view(&app).contig, view(&app).cursor),
+            (0, 101),
+            "and the reference view where it was opened"
+        );
+        assert!(view(&app).parked.is_empty());
+    }
+
+    #[test]
+    fn e_fills_the_everywhere_export() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        keys(&mut app, "ae");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --name x1 --everywhere --out "
+        );
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(view(&app).over.is_empty());
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('A'));
+        assert_eq!(app.status, "the reads in view are still being read");
+        assert!(view(&app).over.is_empty());
+        settle(&mut app);
+        keys(&mut app, "Ae");
+        assert_eq!(
+            line_of(&app),
+            "bam export-reads --name x1 --name z1 --everywhere --out "
+        );
+    }
+
+    #[test]
+    fn a_search_or_gather_for_a_closed_bam_is_ignored() {
+        let (mut app, _dir) = with_multi();
+        let multi = id(&app);
+        app.bam_search(vec!["y1".to_string()]);
+        let held = requests(&mut app);
+        app.run_line("close");
+        settle(&mut app);
+        assert!(app.session.datasets().is_empty());
+        deliver(&mut app, held);
+        assert!(!app.searches.contains_key(&multi));
+
+        let (mut app, dir) = with_multi();
+        let multi = id(&app);
+        open(&mut app, fixture(dir.path()).bam);
+        settle(&mut app);
+        assert_ne!(id(&app), multi);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(id(&app), multi);
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(id(&app), multi);
+        deliver(&mut app, held);
+        let Some(Over::Axis(a)) = app.bams[&multi].over.last() else {
+            panic!("no axis view");
+        };
+        assert_eq!(a.segments.len(), 2, "the mate arrived");
+    }
+
+    // Fixes from the phase 5 review.
+
+    #[test]
+    fn the_mouse_leaves_the_reference_view_alone_under_a_view() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        let before = {
+            let v = view(&app);
+            (
+                v.contig,
+                v.left,
+                v.cursor,
+                v.row,
+                v.top,
+                v.selected.clone(),
+                v.back.len(),
+            )
+        };
+        let layout = layout_of(&mut app);
+        let (x, y) = (layout.reads.x + 3, layout.reads.y);
+        mouse(&mut app, MouseEventKind::ScrollDown, (x, y), false);
+        assert_eq!(list(&app).cursor, 1, "the wheel moves through the list");
+        click(&mut app, (x, y));
+        click(&mut app, (layout.strip.x + 40, layout.strip.y));
+        settle(&mut app);
+        press(&mut app, KeyCode::Esc);
+        let v = view(&app);
+        assert_eq!(
+            (
+                v.contig,
+                v.left,
+                v.cursor,
+                v.row,
+                v.top,
+                v.selected.clone(),
+                v.back.len()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn g_from_the_axis_puts_the_row_on_the_read() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 1001, 0);
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(
+            view(&app).focus,
+            Some(("z1".to_string(), 1501)),
+            "the row follows the read once it is read, as m does"
+        );
+        settle(&mut app);
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 1501));
+        assert_eq!(view(&app).cursor_read().map(|r| r.flags), Some(2048));
+    }
+
+    #[test]
+    fn a_says_only_what_is_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n\
+                   r\t0\tc\t5\t60\t10M\t*\t0\t0\t*\t*\n";
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam_from_sam(dir.path(), "plain.bam", sam));
+        settle(&mut app);
+        keys(&mut app, "A");
+        assert_eq!(app.status, "no read in view is known to align elsewhere");
+    }
+
+    #[test]
+    fn searching_for_a_crowd_of_names_is_quick() {
+        let (mut app, _dir) = with_multi();
+        let names: Vec<String> = (0..20_000).map(|i| format!("read{i}")).collect();
+        let started = std::time::Instant::now();
+        app.bam_search(names.clone());
+        app.bam_search(
+            names
+                .iter()
+                .rev()
+                .cloned()
+                .chain(["more".to_string()])
+                .collect(),
+        );
+        assert!(
+            started.elapsed().as_millis() < 500,
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(app.searches[&id(&app)].waiting, ["more"]);
+    }
+
+    #[test]
+    fn quote_after_g_puts_the_reference_view_back_as_it_was() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 101, 0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().left = 81;
+        settle(&mut app);
+        let before = {
+            let v = view(&app);
+            (v.contig, v.left, v.per_col, v.cursor, v.row, v.top)
+        };
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        keys(&mut app, "g");
+        assert_eq!(view(&app).contig, 1);
+        keys(&mut app, "'");
+        let v = view(&app);
+        assert_eq!(
+            (v.contig, v.left, v.per_col, v.cursor, v.row, v.top),
+            before
         );
     }
 }
