@@ -1,6 +1,7 @@
 //! Mapped reads: sorted BAM files, read by region through their index.
 
 mod index;
+mod read;
 mod region;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -17,6 +18,7 @@ use noodles::sam;
 use crate::progress::Progress;
 use crate::{Error, Result};
 
+pub use read::{Part, Place, Read};
 pub use region::{Region, parse_region};
 
 /// A reference sequence named in a BAM's header, with the read counts its
@@ -54,9 +56,7 @@ pub struct BamDoc {
 #[derive(Debug, Clone)]
 pub struct BamSource {
     path: PathBuf,
-    #[allow(dead_code)] // TEMP phase 4a: read from Task 3
     header: Arc<sam::Header>,
-    #[allow(dead_code)] // TEMP phase 4a: read from Task 3
     index: Arc<bam::Index>,
     contigs: Arc<[Contig]>,
     /// Reads placed nowhere, from the index; `None` when it keeps no count.

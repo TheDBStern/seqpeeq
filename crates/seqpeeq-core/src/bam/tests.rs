@@ -294,3 +294,99 @@ fn cancelling_an_index_build_leaves_nothing() {
     assert!(!data.path().join("reads.bam.bai").exists());
     assert!(s.datasets().is_empty());
 }
+
+/// The fixture opened directly, with its index built in `data`.
+fn fixture_source(data: &Path, cache: &Path) -> super::BamSource {
+    let f = fixture(data);
+    super::BamDoc::open(&f.bam, cache, &crate::Progress::new())
+        .unwrap()
+        .source()
+        .clone()
+}
+
+fn region(source: &super::BamSource, text: &str) -> super::Region {
+    super::parse_region(text, source.contigs(), "reads.bam")
+        .unwrap()
+        .0
+}
+
+#[test]
+fn reads_carry_what_the_view_needs() {
+    use super::{Part, Place};
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    let reads = |text: &str| source.reads(&region(&source, text), &progress).unwrap();
+    let names = |rs: &[super::Read]| rs.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+
+    let rs = reads("c1:101-160");
+    assert_eq!(names(&rs), ["r1", "r2"]);
+    let (r1, r2) = (&rs[0], &rs[1]);
+    assert_eq!(
+        r1.mate,
+        Some(Place {
+            contig: 0,
+            pos: 301,
+            reverse: true
+        })
+    );
+    assert_eq!(r1.md.as_deref(), Some("9C40"));
+    assert_eq!((r1.start, r1.end, r1.contig, r1.mapq), (101, 150, 0, 60));
+    assert_eq!(r2.blocks(), [(121, 150), (156, 165)]);
+    assert_eq!(
+        r2.parts,
+        [Part {
+            place: Place {
+                contig: 1,
+                pos: 51,
+                reverse: false
+            },
+            cigar: "10M40H".to_string(),
+            mapq: 60
+        }]
+    );
+    assert_eq!(r2.cigar[0], ('S', 10));
+    assert_eq!(r2.seq.len(), 50);
+    assert!(!r2.reverse());
+
+    let rs = reads("c1:701-760");
+    assert_eq!(names(&rs), ["r3", "r4", "r5"]);
+    assert_eq!(
+        rs.iter().map(|r| r.counts()).collect::<Vec<_>>(),
+        [true, false, false]
+    );
+    assert!(rs[1].seq.is_empty(), "SEQ * reads as no bases");
+
+    let r6 = &reads("c1:901-950")[0];
+    assert_eq!(
+        r6.mate,
+        Some(Place {
+            contig: 1,
+            pos: 201,
+            reverse: true
+        })
+    );
+    assert!(reads("c2:201-250")[0].reverse());
+
+    let rs = reads("c2:301-350");
+    assert_eq!(names(&rs), ["r7"]);
+    assert_eq!(rs[0].flags, 73, "the placed unmapped mate is skipped");
+    assert!(reads("c3").is_empty());
+}
+
+#[test]
+fn split_parts_on_unknown_contigs_are_dropped() {
+    let (data, cache) = dirs();
+    let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c1\tLN:1000\n\
+               r1\t0\tc1\t5\t60\t4M\t*\t0\t0\tACGT\t*\tSA:Z:nowhere,9,-,4M,60,0;c1,50,-,4M,30,0;\n";
+    let path = bam_from_sam(data.path(), "s.bam", sam);
+    let doc = super::BamDoc::open(&path, cache.path(), &crate::Progress::new()).unwrap();
+    let source = doc.source();
+    let reads = source
+        .reads(&region(source, "c1"), &crate::Progress::new())
+        .unwrap();
+    assert_eq!(reads[0].parts.len(), 1);
+    assert_eq!(reads[0].parts[0].place.pos, 50);
+    assert!(reads[0].parts[0].place.reverse);
+    assert_eq!(reads[0].parts[0].mapq, 30);
+}
