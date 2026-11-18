@@ -3,6 +3,7 @@
 mod index;
 mod read;
 mod region;
+mod stretch;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
@@ -20,6 +21,7 @@ use crate::{Error, Result};
 
 pub use read::{Part, Place, Read};
 pub use region::{Region, parse_region};
+pub use stretch::{Direction, Stretch, next_start};
 
 /// A reference sequence named in a BAM's header, with the read counts its
 /// index holds (`None` when the index keeps no counts).

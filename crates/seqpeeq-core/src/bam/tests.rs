@@ -390,3 +390,48 @@ fn split_parts_on_unknown_contigs_are_dropped() {
     assert!(reads[0].parts[0].place.reverse);
     assert_eq!(reads[0].parts[0].mapq, 30);
 }
+
+#[test]
+fn jumps_read_the_bam_and_agree_with_next_start() {
+    use super::{Direction, Stretch, next_start};
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    type Contig = (usize, u64, Vec<(u64, u64)>);
+    let covered: [Contig; 3] = [
+        (
+            0,
+            1000,
+            vec![(101, 150), (156, 165), (301, 350), (701, 740), (901, 950)],
+        ),
+        (1, 500, vec![(51, 60), (201, 250), (301, 350)]),
+        (2, 300, vec![]),
+    ];
+    for (contig, length, stretches) in &covered {
+        for from in 1..=*length {
+            for dir in [Direction::Forward, Direction::Back] {
+                for want in [Stretch::Covered, Stretch::Empty] {
+                    let expected = next_start(stretches, *length, from, dir, want);
+                    let got = source.jump(*contig, from, dir, want, &progress).unwrap();
+                    assert_eq!(
+                        got, expected,
+                        "contig {contig} from {from} {dir:?} {want:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_cancelled_jump_stops() {
+    use super::{Direction, Stretch};
+    let (data, cache) = dirs();
+    let source = fixture_source(data.path(), cache.path());
+    let progress = crate::Progress::new();
+    progress.cancel();
+    let err = source
+        .jump(0, 1, Direction::Forward, Stretch::Covered, &progress)
+        .unwrap_err();
+    assert!(matches!(err, Error::Cancelled), "{err}");
+}

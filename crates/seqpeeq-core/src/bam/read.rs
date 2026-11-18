@@ -116,10 +116,29 @@ impl BamSource {
     /// Every record noodles' query returns for `region`, mapped or not, in
     /// file order.
     pub(crate) fn records(&self, region: &Region, progress: &Progress) -> Result<Vec<bam::Record>> {
+        let mut records = Vec::new();
+        self.scan(region, progress, |record| {
+            records.push(record.clone());
+            Ok(true)
+        })?;
+        Ok(records)
+    }
+
+    /// Hand each record noodles' query returns for `region` to `each`, in
+    /// file order, until `each` says to stop by returning `false`.
+    pub(crate) fn scan(
+        &self,
+        region: &Region,
+        progress: &Progress,
+        mut each: impl FnMut(&bam::Record) -> io::Result<bool>,
+    ) -> Result<()> {
         let failed = |cause: io::Error| Error::Io {
             path: self.path.clone(),
             cause,
         };
+        if progress.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         let mut reader = File::open(&self.path)
             .map(bam::io::Reader::new)
             .map_err(failed)?;
@@ -130,14 +149,15 @@ impl BamSource {
         let query = reader
             .query(&self.header, &*self.index, &core)
             .map_err(failed)?;
-        let mut records = Vec::new();
         for (i, record) in query.records().enumerate() {
             if i % BATCH == BATCH - 1 && progress.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            records.push(record.map_err(failed)?);
+            if !each(&record.map_err(failed)?).map_err(failed)? {
+                break;
+            }
         }
-        Ok(records)
+        Ok(())
     }
 
     /// The mapped alignments overlapping `region`, in file order.
@@ -233,4 +253,26 @@ impl BamSource {
             })
             .collect()
     }
+}
+
+/// Inclusive reference stretches, in order.
+pub(crate) type Blocks = Vec<(u64, u64)>;
+
+/// The start and covered stretches of a record that counts towards
+/// coverage; `None` for one that does not.
+pub(crate) fn counted_blocks(record: &bam::Record) -> io::Result<Option<(u64, Blocks)>> {
+    let flags = record.flags().bits();
+    if flags & (UNMAPPED | SECONDARY | QC_FAIL | DUPLICATE) != 0 {
+        return Ok(None);
+    }
+    let Some(start) = record.alignment_start().transpose()? else {
+        return Ok(None);
+    };
+    let start = start.get() as u64;
+    let cigar = record
+        .cigar()
+        .iter()
+        .map(|op| op.map(|op| (op_char(op.kind()), op.len() as u32)))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(Some((start, blocks(start, &cigar))))
 }
