@@ -790,6 +790,12 @@ impl App {
                 let mut view = TreeView::new(doc.tree());
                 view.revision = doc.revision();
                 self.trees.insert(id, view);
+            } else if let Some(view) = self.trees.get_mut(&id)
+                && view.revision != doc.revision()
+            {
+                // Follow the edit before measuring: the layout reads the
+                // rows, which may hold nodes the edit removed.
+                view.repair(doc.tree(), doc.facts(), doc.revision());
             }
             let height = self.tree_height(id).unwrap_or(1);
             let doc = self.session.datasets().iter().find(|d| d.id == id);
@@ -807,9 +813,6 @@ impl App {
                     view.cursor = first.node;
                 }
                 view.refit(tree, facts, height);
-            } else if view.revision != doc.revision() {
-                view.height = height;
-                view.repair(tree, facts, doc.revision());
             } else if view.height != height {
                 view.refit(tree, facts, height);
             }

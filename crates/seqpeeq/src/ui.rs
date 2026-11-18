@@ -1731,4 +1731,43 @@ pub(crate) mod tests {
         let screen = help_screen(&mut bam, 30, 8);
         assert!(screen.contains("help: B"), "{screen}");
     }
+
+    /// A balanced tree of `2^depth` tips named t0, t1, ….
+    fn balanced(depth: u32) -> String {
+        fn clade(depth: u32, next: &mut u32) -> String {
+            if depth == 0 {
+                *next += 1;
+                return format!("t{}", *next - 1);
+            }
+            format!("({},{})", clade(depth - 1, next), clade(depth - 1, next))
+        }
+        format!("{};", clade(depth, &mut 0))
+    }
+
+    #[test]
+    fn pruning_again_and_again_on_a_short_screen_does_not_crash() {
+        // Issue 6: a collapsed row of a node a prune had removed was laid
+        // out before the view followed the edit.
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nwk");
+        std::fs::write(&path, balanced(6)).unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.resize(ratatui::layout::Size::new(80, 12));
+        settle(&mut app);
+        let key = |app: &mut App, c: char| {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        };
+        for _ in 0..20 {
+            key(&mut app, 'j');
+            key(&mut app, 'd');
+            settle(&mut app);
+            render(&app, 80, 12);
+        }
+        let tips = app.tree().unwrap().1.tree().tips().len();
+        assert!(tips < 64, "the prunes ran: {tips} tips left");
+    }
 }
