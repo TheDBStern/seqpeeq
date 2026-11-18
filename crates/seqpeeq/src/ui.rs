@@ -660,7 +660,7 @@ pub fn tab_ranges(titles: &[String], width: u16, active: usize) -> Vec<Range<u16
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Done, Mode, Prompt, PromptKind, Request};
+    use crate::app::{Mode, Prompt, PromptKind};
     use crate::line::LineEdit;
     use crate::msa_view::{Cell, Colouring};
     use crate::palette;
@@ -696,26 +696,7 @@ mod tests {
             let Some(request) = app.outbox.pop() else {
                 break;
             };
-            match request {
-                Request::Run(job) => app.handle_done(Done::Command(job.run())),
-                Request::Conserve {
-                    dataset,
-                    view,
-                    progress,
-                } => {
-                    let result = view.conservation(&progress);
-                    app.handle_done(Done::Conservation { dataset, result });
-                }
-                Request::Summarise {
-                    dataset,
-                    view,
-                    conserved,
-                    progress,
-                } => {
-                    let result = view.summary(&conserved, &progress);
-                    app.handle_done(Done::Summary { dataset, result });
-                }
-            }
+            crate::worker::perform(request, &mut |done| app.handle_done(done));
         }
     }
 

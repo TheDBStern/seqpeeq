@@ -16,6 +16,21 @@ pub const MAX_ROWS: usize = 1_000;
 /// Bins in a contig's coverage pass (fewer for a shorter contig).
 pub const PASS_BINS: u64 = 4_096;
 
+/// What to read for a view: a region, bases per bin, and whether to read
+/// the reads too.
+pub type Want = (Region, u64, bool);
+
+/// Whether what `have` read serves a view showing `shown` that wants
+/// `want`.
+pub fn serves(have: &Want, shown: &Region, want: &Want) -> bool {
+    let (region, bin, reads) = have;
+    region.contig == shown.contig
+        && region.start <= shown.start
+        && region.end >= shown.end
+        && *bin == want.1
+        && *reads == want.2
+}
+
 /// The bases each bin of `length`'s coverage pass covers, at least 1.
 pub fn pass_bin(length: u64) -> u64 {
     length.div_ceil(PASS_BINS.min(length).max(1)).max(1)
@@ -174,6 +189,8 @@ pub struct Loaded {
     /// The [`BamView::generation`] it was asked for under.
     pub generation: u64,
     pub window: Window,
+    /// Whether reads were asked for (they are `None` past the limit).
+    pub asked_reads: bool,
     /// The reference across the window's region, when one is attached and
     /// reads were read.
     pub reference: Option<Vec<u8>>,
@@ -375,7 +392,7 @@ impl BamView {
     /// width each side), the bin size, and whether to read reads. `None`
     /// when the coverage pass (bins of `pass_bin` bases) or the sketch can
     /// draw it alone.
-    pub fn wanted(&self, length: u64, pass_bin: u64) -> Option<(Region, u64, bool)> {
+    pub fn wanted(&self, length: u64, pass_bin: u64) -> Option<Want> {
         let shown = self.cols() * self.per_col;
         let reads = shown < READS_WIDTH;
         if !reads && self.per_col >= pass_bin {
@@ -427,6 +444,7 @@ impl BamView {
         }
         self.packed = packed;
         self.row = self.row.min(self.packed.rows.len().saturating_sub(1));
+        self.top = self.top.min(self.packed.rows.len().saturating_sub(1));
     }
 
     /// The loaded reads, if they were read.
@@ -669,6 +687,7 @@ pub(crate) mod tests {
                 reads: Some(reads),
                 count,
             },
+            asked_reads: true,
             reference: None,
         });
     }
