@@ -359,7 +359,11 @@ pub fn info_text(app: &App) -> (String, String) {
             "{}:{}{depth}  {} bp a column",
             contig.name, view.cursor, view.per_col
         );
-        if let Some((a, b)) = view.stretch() {
+        if !view.over.is_empty() {
+            // The keys below describe the reference view, which a read-axis
+            // view hides; what it offers here is the way back.
+            left = "Esc back".to_string();
+        } else if let Some((a, b)) = view.stretch() {
             let tail = if view.marking.is_some() {
                 "v ends the stretch  Esc clear"
             } else {
@@ -377,7 +381,7 @@ pub fn info_text(app: &App) -> (String, String) {
                 n => left.push_str(&format!("  {n} reads selected  e export  Esc clear")),
             }
             if view.per_col == 1 && !bam::knows_reference(app) {
-                left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+                left.push_str("  no reference (bam ref FILE)");
             }
         }
     }
@@ -761,7 +765,7 @@ pub fn tab_ranges(titles: &[String], width: u16, active: usize) -> Vec<Range<u16
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::{Mode, Prompt, PromptKind};
     use crate::line::LineEdit;
@@ -786,7 +790,7 @@ mod tests {
         })
     }
 
-    pub(super) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    pub(crate) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = terminal(width, height);
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
@@ -882,7 +886,7 @@ mod tests {
     }
 
     /// The text of each screen row, trailing spaces removed.
-    pub(super) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    pub(crate) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {

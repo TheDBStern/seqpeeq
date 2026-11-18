@@ -2388,14 +2388,26 @@ pub(crate) mod tests {
 
     #[test]
     fn a_stretch_dragged_past_the_end_stops_at_the_contig_end() {
-        let (mut app, _dir) = with_bam();
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:997\n\
+                   r\t0\tc\t5\t60\t10M\t*\t0\t0\t*\t*\n";
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam_from_sam(dir.path(), "ragged.bam", sam));
+        settle(&mut app);
         let layout = layout_of(&mut app);
         let id = id(&app);
         let v = app.bams.get_mut(&id).unwrap();
-        v.per_col = 20;
-        v.place(0, 1000, 1000);
+        v.per_col = 10;
+        v.place(0, 997, 997);
+        v.left = 701;
         settle(&mut app);
-        let last = view(&app).col_of(1000).unwrap() as u16;
+        let last = view(&app).col_of(997).unwrap();
+        assert_eq!(
+            view(&app).span_of(last).1,
+            1000,
+            "the last column runs past the end"
+        );
+        let last = last as u16;
         let (x, y) = (layout.ruler.x, layout.ruler.y);
         mouse(
             &mut app,
@@ -2409,9 +2421,18 @@ pub(crate) mod tests {
             (x + last, y),
             false,
         );
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (x + last + 3, y),
+            false,
+        );
         let (a, b) = view(&app).marked.unwrap();
-        assert_eq!(b, 1000);
+        assert_eq!(b, 997);
         assert!(a >= 1 && a < b);
+        let buf = crate::ui::tests::render(&app, 80, 14);
+        let cell = &buf.backend().buffer()[(x + last + 1, y)];
+        assert_ne!(cell.bg, crate::palette::STRETCH.bg.unwrap());
     }
 
     #[test]
@@ -2494,5 +2515,23 @@ pub(crate) mod tests {
         click(&mut app, at);
         assert_eq!(the_list(&app).cursor, 0);
         assert_eq!(view(&app).contig, 0);
+    }
+
+    #[test]
+    fn under_the_read_axis_views_the_bottom_row_says_esc_back() {
+        let (mut app, _dir) = with_multi();
+        app.resize(Size::new(80, 14));
+        at_base_level(&mut app, 0, 1001, 0);
+        keys(&mut app, "vv");
+        keys(&mut app, "a");
+        app.status.clear();
+        let screen = crate::ui::tests::rows(&crate::ui::tests::render(&app, 80, 14));
+        assert_eq!(screen[12], "Esc back", "{screen:#?}");
+        press(&mut app, KeyCode::Esc);
+        keys(&mut app, " ");
+        keys(&mut app, "A");
+        app.status.clear();
+        let screen = crate::ui::tests::rows(&crate::ui::tests::render(&app, 80, 14));
+        assert_eq!(screen[12], "Esc back", "{screen:#?}");
     }
 }

@@ -873,7 +873,7 @@ mod tests {
         base_level_at(&mut app, 1);
         let screen = rows(&render(&app, 80, 14));
         assert!(
-            screen[12].contains("no reference: mismatches not shown (bam ref FILE)"),
+            screen[12].contains("no reference (bam ref FILE)"),
             "{}",
             screen[12]
         );
@@ -1066,5 +1066,15 @@ mod tests {
         assert_eq!(depth_text(view, 500), None);
         let screen = rows(&render(&app, 80, 14));
         assert!(!screen[12].contains("depth"), "{}", screen[12]);
+    }
+
+    #[test]
+    fn the_no_reference_note_keeps_its_advice_on_80_columns() {
+        let (mut app, _dir) = crate::app::bam::tests::with_multi();
+        sized(&mut app, 80, 14);
+        crate::app::bam::tests::at_base_level(&mut app, 0, 101, 0);
+        app.status.clear();
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[12].ends_with("(bam ref FILE)"), "{}", screen[12]);
     }
 }
