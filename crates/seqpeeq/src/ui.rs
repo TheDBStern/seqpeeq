@@ -352,17 +352,37 @@ pub fn info_text(app: &App) -> (String, String) {
     }
     if let Some((_, doc, view)) = app.bam() {
         let contig = &doc.source().contigs()[view.contig];
+        let depth = bam::depth_text(view, contig.length)
+            .map(|d| format!("  {d}"))
+            .unwrap_or_default();
         left = format!(
-            "{}:{}  {} bp a column",
+            "{}:{}{depth}  {} bp a column",
             contig.name, view.cursor, view.per_col
         );
-        match view.selected.len() {
-            0 => {}
-            1 => left.push_str("  1 read selected"),
-            n => left.push_str(&format!("  {n} reads selected")),
-        }
-        if view.per_col == 1 && !bam::knows_reference(app) {
-            left.push_str("  no reference: mismatches not shown (bam ref FILE)");
+        if !view.over.is_empty() {
+            // The keys below describe the reference view, which a read-axis
+            // view hides; what it offers here is the way back.
+            left = "Esc back".to_string();
+        } else if let Some((a, b)) = view.stretch() {
+            let tail = if view.marking.is_some() {
+                "v ends the stretch  Esc clear"
+            } else {
+                "E reference  e reads over it  Esc clear"
+            };
+            left = format!(
+                "{}:{a}-{b}  {} bp  {tail}",
+                contig.name,
+                seqpeeq_core::bam::grouped(b - a + 1)
+            );
+        } else {
+            match view.selected.len() {
+                0 => {}
+                1 => left.push_str("  1 read selected  e export  Esc clear"),
+                n => left.push_str(&format!("  {n} reads selected  e export  Esc clear")),
+            }
+            if view.per_col == 1 && !bam::knows_reference(app) {
+                left.push_str("  no reference (bam ref FILE)");
+            }
         }
     }
     if let Some((alignment, view)) = app.alignment()
@@ -589,7 +609,8 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
 
 /// What the help screen says, above the line about the log. No line is
 /// wider than 56 columns, so the box fits a 60-column terminal.
-const HELP: &[&str] = &[
+/// The keys of an alignment tab.
+const HELP_ALIGNMENT: &[&str] = &[
     "Move      arrows hjkl   Shift+arrows a screen",
     "          PgUp PgDn   Home End   g go to",
     "          / search names   n N next, previous",
@@ -598,33 +619,64 @@ const HELP: &[&str] = &[
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z whole alignment and back",
     "          u U undo redo   e extract to a file",
-    "View      c colours   [ ] name width   Tab next file",
-    "          L log   ? help   q quit",
-    "Commands  :  open FILE   close   use N   undo   redo",
+    "          c colours   [ ] name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
-    "          :rescue FILE if the log has failed",
+];
+
+/// The keys of a tree tab.
+const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
     "          d prune  e extract  r rename  o re-root",
     "          s ladderize  u U undo redo  a to the alignment",
+];
+
+/// The keys of a BAM tab.
+const HELP_BAM: &[&str] = &[
+    "Move      arrows hjkl   Shift+arrows a screen",
+    "          PgUp PgDn   Home End",
     "BAM       g go to   ] [ covered   } { no coverage",
     "          m mate   s other part   ' back   c contigs",
     "          - + z zoom   F filtered   S clips",
-    "          click, drag select   Space add   Esc clear",
+    "          click, drag select   Esc clear",
+    "          Space add the read under the cursor",
+    "                to the selection",
+    "          drag the column numbers, v v  a stretch",
     "          e export reads   E reference   to a file",
     "          a read's places   A reads aligning elsewhere",
     "          in those: S search the BAM   g go   / filter",
+];
+
+/// The keys every tab has, after its own.
+const HELP_SHARED: &[&str] = &[
+    "View      Tab next file   L log   ? help   q quit",
+    "Commands  :  open FILE   close   use N   undo   redo",
+    "          :rescue FILE if the log has failed",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
     "          in tmux: set -g mouse on",
 ];
 
+/// The help for the tab in view: its title and lines, its file type's
+/// keys first, then the shared ones.
+pub fn help_page(app: &App) -> (&'static str, Vec<&'static str>) {
+    let dataset = app.session.datasets().get(app.active);
+    let (title, own): (&str, &[&str]) = match dataset {
+        Some(d) if d.msa().is_some() => ("help: alignment", HELP_ALIGNMENT),
+        Some(d) if d.tree().is_some() => ("help: tree", HELP_TREE),
+        Some(d) if d.bam().is_some() => ("help: BAM", HELP_BAM),
+        _ => ("help", &[]),
+    };
+    (title, own.iter().chain(HELP_SHARED).copied().collect())
+}
+
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     // Content plus a border and one column of padding each side.
     let room = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line> = HELP.iter().map(|line| Line::from(*line)).collect();
+    let (title, page) = help_page(app);
+    let mut lines: Vec<Line> = page.into_iter().map(Line::from).collect();
     if let Some(path) = app.session.log_path() {
         // The end of a path says which file it is; show that if the whole
         // does not fit.
@@ -657,7 +709,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         height,
     };
     let block = Block::bordered()
-        .title("help")
+        .title(title)
         .padding(Padding::horizontal(1));
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
@@ -713,7 +765,7 @@ pub fn tab_ranges(titles: &[String], width: u16, active: usize) -> Vec<Range<u16
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::{Mode, Prompt, PromptKind};
     use crate::line::LineEdit;
@@ -738,7 +790,7 @@ mod tests {
         })
     }
 
-    pub(super) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    pub(crate) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = terminal(width, height);
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
@@ -834,7 +886,7 @@ mod tests {
     }
 
     /// The text of each screen row, trailing spaces removed.
-    pub(super) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    pub(crate) fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {
@@ -1427,7 +1479,7 @@ mod tests {
     fn help_names_every_key_and_command() {
         let mut app = with_file("tests/data/grid.fa");
         app.mode = Mode::Help;
-        let screen = rows(&render(&app, 100, 32)).join("\n");
+        let screen = rows(&render(&app, 80, 24)).join("\n");
         for needle in [
             "hjkl",
             "PgUp",
@@ -1488,7 +1540,12 @@ mod tests {
 
     #[test]
     fn every_help_line_fits_a_60_column_terminal() {
-        for line in HELP {
+        for line in HELP_ALIGNMENT
+            .iter()
+            .chain(HELP_TREE)
+            .chain(HELP_BAM)
+            .chain(HELP_SHARED)
+        {
             assert!(line.width() <= 56, "{} columns: {line:?}", line.width());
         }
     }
@@ -1503,7 +1560,7 @@ mod tests {
             .join("session-END.log");
         let mut app = App::new(Session::new(Some(SessionLog::new(log))));
         app.mode = Mode::Help;
-        let screen = rows(&render(&app, 60, 32)).join("\n");
+        let screen = rows(&render(&app, 60, 24)).join("\n");
         assert!(screen.contains("log: …"), "{screen}");
         assert!(screen.contains("session-END.log"), "{screen}");
     }
@@ -1569,7 +1626,7 @@ mod tests {
 
     #[test]
     fn help_has_a_bam_section() {
-        let help = HELP.join("\n");
+        let help = HELP_BAM.join("\n");
         for text in [
             "] [ covered",
             "} { no coverage",
@@ -1579,7 +1636,9 @@ mod tests {
             "c contigs",
             "F filtered",
             "S clips",
-            "Space add",
+            "Space add the read under the cursor",
+            "                to the selection",
+            "v v  a stretch",
             "e export reads",
             "E reference",
         ] {
@@ -1589,7 +1648,7 @@ mod tests {
 
     #[test]
     fn help_has_a_read_axis_section() {
-        let help = HELP.join("\n");
+        let help = HELP_BAM.join("\n");
         for text in [
             "a read's places",
             "A reads aligning elsewhere",
@@ -1601,7 +1660,7 @@ mod tests {
 
     #[test]
     fn help_has_a_tree_section() {
-        let help = HELP.join("\n");
+        let help = HELP_TREE.join("\n");
         for text in [
             "Enter open/close",
             "b lengths",
@@ -1610,5 +1669,66 @@ mod tests {
         ] {
             assert!(help.contains(text), "{text}");
         }
+    }
+
+    fn with_tree() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let nwk = dir.path().join("t.nwk");
+        std::fs::write(&nwk, "((a,b),c);").unwrap();
+        (with_file(nwk.to_str().unwrap()), dir)
+    }
+
+    fn help_screen(app: &mut App, width: u16, height: u16) -> String {
+        app.mode = Mode::Help;
+        rows(&render(app, width, height)).join("\n")
+    }
+
+    #[test]
+    fn help_is_for_the_tab_in_view() {
+        let (mut bam, _dir) = crate::app::bam::tests::with_bam();
+        let screen = help_screen(&mut bam, 80, 24);
+        assert!(screen.contains("help: BAM"), "{screen}");
+        for has in ["m mate", "q quit"] {
+            assert!(screen.contains(has), "{has}\n{screen}");
+        }
+        for lacks in ["msa delete-rows", "b lengths"] {
+            assert!(!screen.contains(lacks), "{lacks}\n{screen}");
+        }
+        let mut aln = with_file("tests/data/grid.fa");
+        let screen = help_screen(&mut aln, 80, 24);
+        assert!(screen.contains("help: alignment"), "{screen}");
+        assert!(screen.contains("msa delete-rows"));
+        assert!(!screen.contains("m mate"));
+        let (mut tree, _tdir) = with_tree();
+        let screen = help_screen(&mut tree, 80, 24);
+        assert!(screen.contains("help: tree"), "{screen}");
+        assert!(screen.contains("o re-root"));
+        assert!(!screen.contains("m mate"));
+        let mut none = App::new(Session::new(None));
+        let screen = help_screen(&mut none, 80, 24);
+        assert!(screen.contains("┌help─"), "{screen}");
+        assert!(screen.contains("open FILE"));
+        for lacks in ["m mate", "msa delete-rows", "o re-root"] {
+            assert!(!screen.contains(lacks), "{lacks}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn each_help_page_fits_80_by_24() {
+        let (mut bam, _dir) = crate::app::bam::tests::with_bam();
+        let (mut tree, _tdir) = with_tree();
+        let mut aln = with_file("tests/data/grid.fa");
+        for app in [&mut bam, &mut tree, &mut aln] {
+            let screen = help_screen(app, 80, 24);
+            assert!(screen.contains("in tmux: set -g mouse on"), "{screen}");
+            assert!(screen.contains('└') && screen.contains('┘'), "{screen}");
+        }
+    }
+
+    #[test]
+    fn help_on_a_tiny_terminal_draws() {
+        let (mut bam, _dir) = crate::app::bam::tests::with_bam();
+        let screen = help_screen(&mut bam, 30, 8);
+        assert!(screen.contains("help: B"), "{screen}");
     }
 }

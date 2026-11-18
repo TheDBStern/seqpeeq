@@ -7,6 +7,9 @@ use seqpeeq_core::{Alphabet, Tally};
 /// Cells that carry their column's conserved residue.
 pub const SHADE: Style = Style::new().bg(Color::Indexed(24)).fg(Color::Indexed(255));
 
+/// A stretch of reference marked with `v` or a drag on the ruler.
+pub const STRETCH: Style = Style::new().bg(Color::Indexed(23)).fg(Color::Indexed(255));
+
 /// Selected cells, names and ruler columns.
 pub const SELECTED: Style = Style::new().bg(Color::Indexed(240)).fg(Color::Indexed(255));
 

@@ -1,15 +1,15 @@
 ---
 source: crates/seqpeeq/src/ui/read_axis.rs
-assertion_line: 570
+assertion_line: 620
 expression: terminal.backend()
 ---
 " multi.bam                                                                      "
-"reads in view aligning elsewhere                                               4"
+"reads in view aligning elsewhere                                     4  Esc back"
 "  g2:301-1,501    2 reads   1 split · 1 XA                                      "
 "  g3:501-801      2 reads   1 mate · 1 XA                                       "
 "  ?                1 read   not yet found · S searches the BAM                  "
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"g1:1  50 bp a column                                                            "
+"Esc back                                                                        "
 "                                                                                "

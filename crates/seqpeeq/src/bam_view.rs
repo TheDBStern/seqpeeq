@@ -372,6 +372,10 @@ pub struct BamView {
     /// `S`: hide clipped ends.
     pub hide_clips: bool,
     pub selected: Vec<ReadId>,
+    /// A finished stretch of reference on this contig, `start <= end`.
+    pub marked: Option<(u64, u64)>,
+    /// The end a first `v` set, waiting for the second.
+    pub marking: Option<u64>,
     /// Where each jump started, for `'`.
     pub back: Vec<(usize, u64)>,
     /// A read to put the cursor's row on once it is loaded: its name and
@@ -410,6 +414,8 @@ impl BamView {
             show_filtered: false,
             hide_clips: false,
             selected: Vec::new(),
+            marked: None,
+            marking: None,
             back: Vec::new(),
             focus: None,
             before_whole: None,
@@ -528,6 +534,7 @@ impl BamView {
                 self.per_col = *levels.last().expect("a level");
             }
             self.before_whole = None;
+            self.clear_stretch();
             self.loaded = None;
             self.packed = Packed::default();
             self.row = 0;
@@ -600,8 +607,45 @@ impl BamView {
         self.top = self.top.saturating_add_signed(by).min(most);
     }
 
+    /// The stretch of reference marked, or from the first `v` to the
+    /// cursor while marking; `start <= end`.
+    pub fn stretch(&self) -> Option<(u64, u64)> {
+        self.marked.or_else(|| {
+            self.marking
+                .map(|at| (at.min(self.cursor), at.max(self.cursor)))
+        })
+    }
+
+    /// `v`: start a stretch at the cursor, or finish it there. A stretch
+    /// replaces the selected reads.
+    pub fn mark(&mut self) {
+        match self.marking.take() {
+            Some(at) => self.marked = Some((at.min(self.cursor), at.max(self.cursor))),
+            None => {
+                self.marking = Some(self.cursor);
+                self.marked = None;
+                self.selected.clear();
+            }
+        }
+    }
+
+    /// Mark `a..=b` (either order), kept within the contig.
+    pub fn set_stretch(&mut self, a: u64, b: u64, length: u64) {
+        let length = length.max(1);
+        let (a, b) = (a.min(b).clamp(1, length), a.max(b).clamp(1, length));
+        self.marked = Some((a, b));
+        self.marking = None;
+        self.selected.clear();
+    }
+
+    pub fn clear_stretch(&mut self) {
+        self.marked = None;
+        self.marking = None;
+    }
+
     /// Add `read` to the selection, once.
     pub fn select(&mut self, read: ReadId) {
+        self.clear_stretch();
         if !self.selected.contains(&read) {
             self.selected.push(read);
         }

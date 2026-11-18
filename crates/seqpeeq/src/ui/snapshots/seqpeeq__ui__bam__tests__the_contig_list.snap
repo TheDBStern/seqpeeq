@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui/bam.rs
-assertion_line: 794
+assertion_line: 891
 expression: terminal.backend()
 ---
 " reads.bam                                                  "
@@ -15,5 +15,5 @@ expression: terminal.backend()
 "│                                                          │"
 "│                                                          │"
 "└──────────────────────────────────────────────────────────┘"
-"c1:1  20 bp a column                                        "
+"c1:1  mean depth 0.0  20 bp a column                        "
 "                                                            "

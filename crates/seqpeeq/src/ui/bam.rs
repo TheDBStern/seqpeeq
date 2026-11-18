@@ -204,6 +204,49 @@ pub fn contig_list_rows(app: &App) -> usize {
         .saturating_sub(4) as usize
 }
 
+/// Where a click lands in the contig list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContigHit {
+    /// On a contig: its index into `ContigList::rows`.
+    Row(usize),
+    Heading,
+    /// Anywhere else in the box, its border too.
+    Inside,
+    Outside,
+}
+
+/// What is at `column`, `row` in the contig list, as `draw_contigs` lays
+/// it out over the body.
+pub fn contig_hit(app: &App, list: &ContigList, column: u16, row: u16) -> ContigHit {
+    use ratatui::widgets::Block;
+    let screen = Rect::new(0, 0, app.screen.width, app.screen.height);
+    let area = crate::ui::regions(app, screen).body;
+    let at = Position::new(column, row);
+    if !area.contains(at) {
+        return ContigHit::Outside;
+    }
+    let inner = Block::bordered().inner(area);
+    if !inner.contains(at) {
+        return ContigHit::Inside;
+    }
+    if row == inner.y + 1 {
+        return ContigHit::Heading;
+    }
+    let Some(line) = (row - inner.y).checked_sub(2) else {
+        return ContigHit::Inside;
+    };
+    let shown = app
+        .bam()
+        .filter(|(d, _, _)| d.id == list.dataset)
+        .map_or(0, |(_, doc, _)| list.rows(doc.source().contigs()).len());
+    let i = list.top + line as usize;
+    if i < shown {
+        ContigHit::Row(i)
+    } else {
+        ContigHit::Inside
+    }
+}
+
 /// `c`: the contig list over the body.
 pub fn draw_contigs(frame: &mut Frame, app: &App, list: &ContigList, area: Rect) {
     use ratatui::widgets::{Block, Clear};
@@ -363,6 +406,8 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    highlight_stretch(buf, layout.reference, view);
+
     if layout.coverage.height > 0 {
         let depths = column_depths(view, length, pass, source);
         let most = depths.iter().copied().fold(0.0, f32::max);
@@ -449,6 +494,7 @@ fn draw_ruler(buf: &mut Buffer, area: Rect, view: &BamView, length: u64) {
         buf.set_string(area.x + col, area.y, &text, Style::new());
         free = col + text.len() as u16 + 1;
     }
+    highlight_stretch(buf, area, view);
     if let Some(col) = view
         .col_of(view.cursor)
         .filter(|&c| (c as u16) < area.width)
@@ -456,6 +502,58 @@ fn draw_ruler(buf: &mut Buffer, area: Rect, view: &BamView, length: u64) {
     {
         cell.set_style(palette::SELECTED);
     }
+}
+
+/// Patch the stretch's style onto the columns of `area` it meets.
+fn highlight_stretch(buf: &mut Buffer, area: Rect, view: &BamView) {
+    let Some((a, b)) = view.stretch() else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+    for col in 0..area.width {
+        let (start, end) = view.span_of(col as usize);
+        if start <= b
+            && end >= a
+            && let Some(cell) = buf.cell_mut(Position::new(area.x + col, area.y))
+        {
+            cell.set_style(palette::STRETCH);
+        }
+    }
+}
+
+/// The mean depth under each column in view, when the loaded window was
+/// read at this zoom and covers the view.
+fn window_depths(view: &BamView, length: u64) -> Option<Vec<f32>> {
+    let end = view.end(length);
+    let w = &view.loaded.as_ref()?.window;
+    let serves = w.region.contig == view.contig
+        && w.bin == view.per_col
+        && w.region.start <= view.left
+        && w.region.end >= end;
+    serves.then(|| {
+        (0..view.width)
+            .map(|c| view.span_of(c).0)
+            .take_while(|&a| a <= end)
+            .map(|a| {
+                let i = ((a - w.region.start) / w.bin) as usize;
+                w.depth.get(i).copied().unwrap_or(0.0)
+            })
+            .collect()
+    })
+}
+
+/// The depth under the cursor, `depth 7` a base a column or `mean depth
+/// 7.3` zoomed out; nothing until the reads in view are read.
+pub fn depth_text(view: &BamView, length: u64) -> Option<String> {
+    let col = view.col_of(view.cursor)?;
+    let depth = *window_depths(view, length)?.get(col)?;
+    Some(if view.per_col == 1 {
+        format!("depth {}", depth.round() as u64)
+    } else {
+        format!("mean depth {depth:.1}")
+    })
 }
 
 /// The mean depth under each column in view: from the window when it was
@@ -472,21 +570,8 @@ fn column_depths(
         .take_while(|&(a, _)| a <= end)
         .map(|(a, b)| (a, b.min(length)))
         .collect();
-    if let Some(loaded) = &view.loaded {
-        let w = &loaded.window;
-        if w.region.contig == view.contig
-            && w.bin == view.per_col
-            && w.region.start <= view.left
-            && w.region.end >= end
-        {
-            return cols
-                .iter()
-                .map(|&(a, _)| {
-                    let i = ((a - w.region.start) / w.bin) as usize;
-                    w.depth.get(i).copied().unwrap_or(0.0)
-                })
-                .collect();
-        }
+    if let Some(depths) = window_depths(view, length) {
+        return depths;
     }
     // A pass still running has zeros past its front; the sketch stands
     // in until it is done.
@@ -788,7 +873,7 @@ mod tests {
         base_level_at(&mut app, 1);
         let screen = rows(&render(&app, 80, 14));
         assert!(
-            screen[12].contains("no reference: mismatches not shown (bam ref FILE)"),
+            screen[12].contains("no reference (bam ref FILE)"),
             "{}",
             screen[12]
         );
@@ -869,5 +954,127 @@ mod tests {
         let sketched = column_depths(&view, 1000, None, source);
         assert!(sketched.iter().any(|&d| d > 0.0));
         assert_eq!(column_depths(&view, 1000, Some(&partial), source), sketched);
+    }
+
+    #[test]
+    fn a_stretch_is_highlighted_and_named_on_the_bottom_row() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.cursor = 120;
+        v.marked = Some((113, 131));
+        let terminal = render(&app, 80, 14);
+        let buf = terminal.backend().buffer();
+        for y in [2u16, 3] {
+            for x in 0..40u16 {
+                let bg = buf[(x, y)].bg;
+                if x == 19 && y == 2 {
+                    assert_eq!(bg, palette::SELECTED.bg.unwrap(), "the cursor wins");
+                } else if (12..=30).contains(&x) {
+                    assert_eq!(bg, palette::STRETCH.bg.unwrap(), "{x},{y}");
+                } else {
+                    assert_ne!(bg, palette::STRETCH.bg.unwrap(), "{x},{y}");
+                }
+            }
+        }
+        let screen = rows(&terminal);
+        assert_eq!(
+            screen[12].trim_end(),
+            "c1:113-131  19 bp  E reference  e reads over it  Esc clear"
+        );
+        let v = app.bams.get_mut(&id).unwrap();
+        v.marked = None;
+        v.marking = Some(113);
+        let screen = rows(&render(&app, 80, 14));
+        assert_eq!(
+            screen[12].trim_end(),
+            "c1:113-120  8 bp  v ends the stretch  Esc clear"
+        );
+    }
+
+    fn length_of(app: &App) -> u64 {
+        let (_, doc, view) = app.bam().unwrap();
+        doc.source().contigs()[view.contig].length
+    }
+
+    #[test]
+    fn depth_under_the_cursor_is_a_number() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        for (pos, depth) in [(101, "depth 1"), (125, "depth 2"), (153, "depth 0")] {
+            app.bams.get_mut(&id).unwrap().cursor = pos;
+            let (_, _, view) = app.bam().unwrap();
+            assert_eq!(
+                depth_text(view, length_of(&app)).as_deref(),
+                Some(depth),
+                "{pos}"
+            );
+        }
+        app.bams.get_mut(&id).unwrap().cursor = 125;
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen[12].starts_with("c1:125  depth 2  1 bp a column"),
+            "{}",
+            screen[12]
+        );
+    }
+
+    #[test]
+    fn zoomed_out_the_depth_is_a_mean() {
+        let (mut app, _dir) = with_bam();
+        sized(&mut app, 80, 14);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 10;
+        v.place(0, 125, 1000);
+        settle(&mut app);
+        let (_, _, view) = app.bam().unwrap();
+        let text = depth_text(view, length_of(&app)).unwrap();
+        let number = text.strip_prefix("mean depth ").expect(&text);
+        assert_eq!(number.split('.').nth(1).map(str::len), Some(1), "{text}");
+    }
+
+    #[test]
+    fn selected_reads_say_what_to_do_with_them() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        let r = app.bams[&id].reads().to_vec();
+        let v = app.bams.get_mut(&id).unwrap();
+        v.select(crate::bam_view::ReadId::of(&r[0]));
+        let screen = rows(&render(&app, 120, 14));
+        assert!(
+            screen[12].contains("1 read selected  e export  Esc clear"),
+            "{}",
+            screen[12]
+        );
+        let v = app.bams.get_mut(&id).unwrap();
+        v.select(crate::bam_view::ReadId::of(&r[1]));
+        let screen = rows(&render(&app, 120, 14));
+        assert!(
+            screen[12].contains("2 reads selected  e export  Esc clear"),
+            "{}",
+            screen[12]
+        );
+    }
+
+    #[test]
+    fn no_depth_is_shown_until_the_reads_are_read() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().place(1, 1, 500);
+        let (_, _, view) = app.bam().unwrap();
+        assert_eq!(depth_text(view, 500), None);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(!screen[12].contains("depth"), "{}", screen[12]);
+    }
+
+    #[test]
+    fn the_no_reference_note_keeps_its_advice_on_80_columns() {
+        let (mut app, _dir) = crate::app::bam::tests::with_multi();
+        sized(&mut app, 80, 14);
+        crate::app::bam::tests::at_base_level(&mut app, 0, 101, 0);
+        app.status.clear();
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[12].ends_with("(bam ref FILE)"), "{}", screen[12]);
     }
 }

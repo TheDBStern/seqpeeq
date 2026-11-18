@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui/read_axis.rs
-assertion_line: 537
+assertion_line: 571
 expression: terminal.backend()
 ---
 " multi.bam                                                                      "
@@ -15,5 +15,5 @@ expression: terminal.backend()
 "                                                                                "
 "                                                                                "
 "primary · g1:101 (+) · 50M · NM 0 · AS 50 · XS 50 · record                      "
-"g1:101  1 bp a column  no reference: mismatches not shown (bam ref FILE)        "
+"Esc back                                                                        "
 "                                                                                "
