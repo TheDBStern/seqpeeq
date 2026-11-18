@@ -480,6 +480,39 @@ fn highlight_stretch(buf: &mut Buffer, area: Rect, view: &BamView) {
     }
 }
 
+/// The mean depth under each column in view, when the loaded window was
+/// read at this zoom and covers the view.
+fn window_depths(view: &BamView, length: u64) -> Option<Vec<f32>> {
+    let end = view.end(length);
+    let w = &view.loaded.as_ref()?.window;
+    let serves = w.region.contig == view.contig
+        && w.bin == view.per_col
+        && w.region.start <= view.left
+        && w.region.end >= end;
+    serves.then(|| {
+        (0..view.width)
+            .map(|c| view.span_of(c).0)
+            .take_while(|&a| a <= end)
+            .map(|a| {
+                let i = ((a - w.region.start) / w.bin) as usize;
+                w.depth.get(i).copied().unwrap_or(0.0)
+            })
+            .collect()
+    })
+}
+
+/// The depth under the cursor, `depth 7` a base a column or `mean depth
+/// 7.3` zoomed out; nothing until the reads in view are read.
+pub fn depth_text(view: &BamView, length: u64) -> Option<String> {
+    let col = view.col_of(view.cursor)?;
+    let depth = *window_depths(view, length)?.get(col)?;
+    Some(if view.per_col == 1 {
+        format!("depth {}", depth.round() as u64)
+    } else {
+        format!("mean depth {depth:.1}")
+    })
+}
+
 /// The mean depth under each column in view: from the window when it was
 /// read at this zoom, else from the coverage pass, else from the sketch.
 fn column_depths(
@@ -494,21 +527,8 @@ fn column_depths(
         .take_while(|&(a, _)| a <= end)
         .map(|(a, b)| (a, b.min(length)))
         .collect();
-    if let Some(loaded) = &view.loaded {
-        let w = &loaded.window;
-        if w.region.contig == view.contig
-            && w.bin == view.per_col
-            && w.region.start <= view.left
-            && w.region.end >= end
-        {
-            return cols
-                .iter()
-                .map(|&(a, _)| {
-                    let i = ((a - w.region.start) / w.bin) as usize;
-                    w.depth.get(i).copied().unwrap_or(0.0)
-                })
-                .collect();
-        }
+    if let Some(depths) = window_depths(view, length) {
+        return depths;
     }
     // A pass still running has zeros past its front; the sketch stands
     // in until it is done.
@@ -927,5 +947,81 @@ mod tests {
             screen[12].trim_end(),
             "c1:113-120  8 bp  v ends the stretch  Esc clear"
         );
+    }
+
+    fn length_of(app: &App) -> u64 {
+        let (_, doc, view) = app.bam().unwrap();
+        doc.source().contigs()[view.contig].length
+    }
+
+    #[test]
+    fn depth_under_the_cursor_is_a_number() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        for (pos, depth) in [(101, "depth 1"), (125, "depth 2"), (153, "depth 0")] {
+            app.bams.get_mut(&id).unwrap().cursor = pos;
+            let (_, _, view) = app.bam().unwrap();
+            assert_eq!(
+                depth_text(view, length_of(&app)).as_deref(),
+                Some(depth),
+                "{pos}"
+            );
+        }
+        app.bams.get_mut(&id).unwrap().cursor = 125;
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen[12].starts_with("c1:125  depth 2  1 bp a column"),
+            "{}",
+            screen[12]
+        );
+    }
+
+    #[test]
+    fn zoomed_out_the_depth_is_a_mean() {
+        let (mut app, _dir) = with_bam();
+        sized(&mut app, 80, 14);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 10;
+        v.place(0, 125, 1000);
+        settle(&mut app);
+        let (_, _, view) = app.bam().unwrap();
+        let text = depth_text(view, length_of(&app)).unwrap();
+        let number = text.strip_prefix("mean depth ").expect(&text);
+        assert_eq!(number.split('.').nth(1).map(str::len), Some(1), "{text}");
+    }
+
+    #[test]
+    fn selected_reads_say_what_to_do_with_them() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        let r = app.bams[&id].reads().to_vec();
+        let v = app.bams.get_mut(&id).unwrap();
+        v.select(crate::bam_view::ReadId::of(&r[0]));
+        let screen = rows(&render(&app, 120, 14));
+        assert!(
+            screen[12].contains("1 read selected  e export  Esc clear"),
+            "{}",
+            screen[12]
+        );
+        let v = app.bams.get_mut(&id).unwrap();
+        v.select(crate::bam_view::ReadId::of(&r[1]));
+        let screen = rows(&render(&app, 120, 14));
+        assert!(
+            screen[12].contains("2 reads selected  e export  Esc clear"),
+            "{}",
+            screen[12]
+        );
+    }
+
+    #[test]
+    fn no_depth_is_shown_until_the_reads_are_read() {
+        let (mut app, _dir) = bam_at(101, true);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().place(1, 1, 500);
+        let (_, _, view) = app.bam().unwrap();
+        assert_eq!(depth_text(view, 500), None);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(!screen[12].contains("depth"), "{}", screen[12]);
     }
 }

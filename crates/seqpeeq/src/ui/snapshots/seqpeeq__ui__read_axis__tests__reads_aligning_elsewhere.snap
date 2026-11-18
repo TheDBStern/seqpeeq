@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui/read_axis.rs
-assertion_line: 570
+assertion_line: 603
 expression: terminal.backend()
 ---
 " multi.bam                                                                      "
@@ -11,5 +11,5 @@ expression: terminal.backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"g1:1  50 bp a column                                                            "
+"g1:1  mean depth 0.0  50 bp a column                                            "
 "                                                                                "

@@ -352,8 +352,11 @@ pub fn info_text(app: &App) -> (String, String) {
     }
     if let Some((_, doc, view)) = app.bam() {
         let contig = &doc.source().contigs()[view.contig];
+        let depth = bam::depth_text(view, contig.length)
+            .map(|d| format!("  {d}"))
+            .unwrap_or_default();
         left = format!(
-            "{}:{}  {} bp a column",
+            "{}:{}{depth}  {} bp a column",
             contig.name, view.cursor, view.per_col
         );
         if let Some((a, b)) = view.stretch() {
@@ -370,8 +373,8 @@ pub fn info_text(app: &App) -> (String, String) {
         } else {
             match view.selected.len() {
                 0 => {}
-                1 => left.push_str("  1 read selected"),
-                n => left.push_str(&format!("  {n} reads selected")),
+                1 => left.push_str("  1 read selected  e export  Esc clear"),
+                n => left.push_str(&format!("  {n} reads selected  e export  Esc clear")),
             }
             if view.per_col == 1 && !bam::knows_reference(app) {
                 left.push_str("  no reference: mismatches not shown (bam ref FILE)");
