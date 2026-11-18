@@ -645,6 +645,34 @@ impl App {
         }
     }
 
+    /// The mouse while the contig list is open: the wheel moves through it;
+    /// a click on a contig goes there, on the heading switches the sort,
+    /// and outside the list closes it.
+    pub(super) fn contigs_mouse(&mut self, mouse: &MouseEvent) {
+        let Mode::Contigs(list) = &self.mode else {
+            return;
+        };
+        let code = match mouse.kind {
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::bam::contig_hit(self, list, mouse.column, mouse.row) {
+                    ui::bam::ContigHit::Row(i) => {
+                        if let Mode::Contigs(list) = &mut self.mode {
+                            list.cursor = i;
+                        }
+                        KeyCode::Enter
+                    }
+                    ui::bam::ContigHit::Heading => KeyCode::Tab,
+                    ui::bam::ContigHit::Outside => KeyCode::Esc,
+                    ui::bam::ContigHit::Inside => return,
+                }
+            }
+            _ => return,
+        };
+        self.contigs_key(&KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
     /// The mouse on the BAM tab: the wheel scrolls rows, or sideways over
     /// the ruler or strip; a click on the strip goes there; clicks and
     /// drags on the reads select them.
@@ -2397,5 +2425,74 @@ pub(crate) mod tests {
         settle(&mut app);
         keys(&mut app, "+");
         assert_eq!(view(&app).marked, Some((113, 131)));
+    }
+
+    // The mouse in the contig list.
+
+    fn contig_list(app: &mut App) -> Rect {
+        app.resize(Size::new(80, 14));
+        settle(app);
+        keys(app, "c");
+        assert!(matches!(app.mode, Mode::Contigs(_)));
+        crate::ui::regions(app, Rect::new(0, 0, 80, 14)).body
+    }
+
+    fn the_list(app: &App) -> &ContigList {
+        match &app.mode {
+            Mode::Contigs(list) => list,
+            _ => panic!("the contig list is closed"),
+        }
+    }
+
+    #[test]
+    fn the_wheel_moves_through_the_contig_list() {
+        let (mut app, _dir) = with_multi();
+        let body = contig_list(&mut app);
+        let at = (body.x + 5, body.y + 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, at, false);
+        mouse(&mut app, MouseEventKind::ScrollDown, at, false);
+        assert_eq!(the_list(&app).cursor, 2);
+        mouse(&mut app, MouseEventKind::ScrollUp, at, false);
+        assert_eq!(the_list(&app).cursor, 1);
+    }
+
+    #[test]
+    fn a_click_on_a_contig_goes_there() {
+        let (mut app, _dir) = with_multi();
+        let body = contig_list(&mut app);
+        click(&mut app, (body.x + 5, body.y + 3 + 1));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(view(&app).contig, 1);
+    }
+
+    #[test]
+    fn a_click_on_the_heading_switches_the_sort() {
+        let (mut app, _dir) = with_multi();
+        let body = contig_list(&mut app);
+        click(&mut app, (body.x + 5, body.y + 2));
+        assert_eq!(the_list(&app).sort, ContigSort::Reads);
+    }
+
+    #[test]
+    fn a_click_outside_the_list_closes_it_and_inside_does_nothing() {
+        let (mut app, _dir) = with_multi();
+        let body = contig_list(&mut app);
+        click(&mut app, (body.x + 5, body.y + 3 + 5));
+        assert!(matches!(app.mode, Mode::Contigs(_)), "an empty row");
+        click(&mut app, (5, 13));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(view(&app).contig, 0);
+    }
+
+    #[test]
+    fn the_mouse_in_an_empty_contig_list_does_nothing() {
+        let (mut app, _dir) = with_multi();
+        let body = contig_list(&mut app);
+        keys(&mut app, "zzz");
+        let at = (body.x + 5, body.y + 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, at, false);
+        click(&mut app, at);
+        assert_eq!(the_list(&app).cursor, 0);
+        assert_eq!(view(&app).contig, 0);
     }
 }

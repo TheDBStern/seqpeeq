@@ -204,6 +204,49 @@ pub fn contig_list_rows(app: &App) -> usize {
         .saturating_sub(4) as usize
 }
 
+/// Where a click lands in the contig list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContigHit {
+    /// On a contig: its index into `ContigList::rows`.
+    Row(usize),
+    Heading,
+    /// Anywhere else in the box, its border too.
+    Inside,
+    Outside,
+}
+
+/// What is at `column`, `row` in the contig list, as `draw_contigs` lays
+/// it out over the body.
+pub fn contig_hit(app: &App, list: &ContigList, column: u16, row: u16) -> ContigHit {
+    use ratatui::widgets::Block;
+    let screen = Rect::new(0, 0, app.screen.width, app.screen.height);
+    let area = crate::ui::regions(app, screen).body;
+    let at = Position::new(column, row);
+    if !area.contains(at) {
+        return ContigHit::Outside;
+    }
+    let inner = Block::bordered().inner(area);
+    if !inner.contains(at) {
+        return ContigHit::Inside;
+    }
+    if row == inner.y + 1 {
+        return ContigHit::Heading;
+    }
+    let Some(line) = (row - inner.y).checked_sub(2) else {
+        return ContigHit::Inside;
+    };
+    let shown = app
+        .bam()
+        .filter(|(d, _, _)| d.id == list.dataset)
+        .map_or(0, |(_, doc, _)| list.rows(doc.source().contigs()).len());
+    let i = list.top + line as usize;
+    if i < shown {
+        ContigHit::Row(i)
+    } else {
+        ContigHit::Inside
+    }
+}
+
 /// `c`: the contig list over the body.
 pub fn draw_contigs(frame: &mut Frame, app: &App, list: &ContigList, area: Rect) {
     use ratatui::widgets::{Block, Clear};

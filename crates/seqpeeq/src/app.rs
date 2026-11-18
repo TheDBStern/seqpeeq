@@ -1742,6 +1742,9 @@ impl App {
             }
             return;
         }
+        if matches!(self.mode, Mode::Contigs(_)) {
+            return self.contigs_mouse(mouse);
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
