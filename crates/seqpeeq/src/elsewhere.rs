@@ -90,6 +90,7 @@ pub fn groups(
 ) -> Vec<Group> {
     let mut by_contig: HashMap<usize, Group> = HashMap::new();
     let mut question = Group::new(None);
+    let mut pending: HashSet<&str> = HashSet::new();
     let away = |contig: usize, start: u64, end: u64| {
         contig != window.contig || end < window.start || start > window.end
     };
@@ -134,7 +135,7 @@ pub fn groups(
                 question.none_found += 1;
             } else {
                 question.pending += 1;
-                if !question.pending_names.contains(&read.name) {
+                if pending.insert(&read.name) {
                     question.pending_names.push(read.name.clone());
                 }
             }
@@ -189,6 +190,14 @@ pub struct ElsewhereList {
     /// The row picked, among `rows()`, and the first row shown.
     pub cursor: usize,
     pub top: usize,
+    /// How many reads are in the groups, each once.
+    pub read_count: usize,
+}
+
+/// How many reads `groups` hold, each once.
+fn count_reads(groups: &[Group]) -> usize {
+    let all: HashSet<&ReadId> = groups.iter().flat_map(|g| &g.reads).collect();
+    all.len()
 }
 
 impl ElsewhereList {
@@ -196,11 +205,12 @@ impl ElsewhereList {
         ElsewhereList {
             basis: None,
             typing: false,
-            groups,
             open: None,
             filter: LineEdit::new(""),
             cursor: 0,
             top: 0,
+            read_count: count_reads(&groups),
+            groups,
         }
     }
 
@@ -244,6 +254,7 @@ impl ElsewhereList {
         };
         let open = self.open.and_then(|i| self.groups.get(i)).map(|g| g.contig);
         self.groups = groups(&basis.reads, &basis.view, &basis.window, found, searched);
+        self.read_count = count_reads(&self.groups);
         self.open = open.and_then(|c| self.groups.iter().position(|g| g.contig == c));
         if open.is_some() && self.open.is_none() {
             self.cursor = 0;
@@ -269,9 +280,10 @@ impl ElsewhereList {
                 .get(self.cursor)
                 .and_then(|&i| self.groups.get(i)),
         };
+        let mut seen: HashSet<&str> = HashSet::new();
         let mut out: Vec<String> = Vec::new();
         for r in group.map(|g| g.reads.as_slice()).unwrap_or_default() {
-            if !out.contains(&r.name) {
+            if seen.insert(&r.name) {
                 out.push(r.name.clone());
             }
         }
@@ -429,5 +441,37 @@ mod tests {
         assert_eq!(list.rows(), [0, 1]);
         list.filter.set("z");
         assert_eq!(list.rows(), [1]);
+    }
+
+    fn crowd(n: u64) -> Vec<Read> {
+        (0..n)
+            .map(|i| Read {
+                name: format!("HWI-ST1234:8:1101:{i}:{}", i * 7),
+                flags: 0,
+                contig: 0,
+                start: 1 + i % 1000,
+                end: 100 + i % 1000,
+                mapq: 0,
+                ..Read::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_crowd_in_question_groups_quickly() {
+        let r = Region {
+            contig: 0,
+            start: 1,
+            end: 2000,
+        };
+        let started = std::time::Instant::now();
+        let list = ElsewhereList::build(crowd(20_000), r, r, &HashMap::new(), &HashSet::new());
+        assert_eq!(list.pending_names().len(), 20_000);
+        assert_eq!(list.names().len(), 20_000);
+        assert!(
+            started.elapsed().as_millis() < 1000,
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

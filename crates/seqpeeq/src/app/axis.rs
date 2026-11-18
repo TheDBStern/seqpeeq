@@ -5,7 +5,7 @@
 use super::*;
 use crate::bam_view::{Over, READS_WIDTH};
 use crate::elsewhere::ElsewhereList;
-use crate::read_axis::{AxisView, assemble};
+use crate::read_axis::{AxisView, Found, Kind, assemble};
 
 /// More names than this go to a names file beside the log.
 const NAMES_ON_THE_LINE: usize = 20;
@@ -126,7 +126,7 @@ impl App {
         let s = self.searches.get(&id).unwrap_or(&none);
         let list = ElsewhereList::build(reads, shown, window, &s.found, &s.searched);
         if list.groups.is_empty() {
-            self.status = "no read in view aligns elsewhere".to_string();
+            self.status = "no read in view is known to align elsewhere".to_string();
             return;
         }
         let view = self.bams.get_mut(&id).expect("the view just read");
@@ -290,12 +290,20 @@ impl App {
                     return;
                 };
                 let (contig, pos) = (p.contig, p.pos);
+                // An XA entry or an unmapped record has no read there to
+                // put the row on.
+                let follow = !matches!(p.found, Found::Xa) && p.kind != Kind::Unmapped;
+                let name = axis.name.clone();
                 let Some(length) = source.contigs().get(contig).map(|c| c.length) else {
                     return;
                 };
                 view.parked_from = Some((view.contig, view.cursor, view.back.len()));
                 view.parked = std::mem::take(&mut view.over);
                 view.go(contig, pos, length);
+                if follow {
+                    view.focus = Some((name, pos));
+                    view.apply_focus(length);
+                }
             }
             KeyCode::Char('e') => {
                 let names = vec![axis.name.clone()];
@@ -347,13 +355,13 @@ impl App {
             return;
         };
         let s = self.searches.entry(id).or_default();
+        let mut asked: HashSet<String> = s.waiting.iter().cloned().collect();
+        if let Some((running, _)) = &s.running {
+            asked.extend(running.iter().cloned());
+        }
         let mut new: Vec<String> = Vec::new();
         for name in names {
-            let asked = s.searched.contains(&name)
-                || s.waiting.contains(&name)
-                || s.running.as_ref().is_some_and(|(r, _)| r.contains(&name))
-                || new.contains(&name);
-            if !asked {
+            if !s.searched.contains(&name) && asked.insert(name.clone()) {
                 new.push(name);
             }
         }

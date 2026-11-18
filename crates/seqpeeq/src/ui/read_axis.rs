@@ -394,9 +394,8 @@ fn whereto(list: &ElsewhereList, group: &Group, contigs: &[Contig]) -> String {
     text
 }
 
-/// The text of each row the list shows.
-fn list_rows(list: &ElsewhereList, contigs: &[Contig]) -> Vec<String> {
-    let rows = list.rows();
+/// The text of the `rows` the list shows (indexes as `rows()` gives).
+fn list_rows(list: &ElsewhereList, contigs: &[Contig], rows: &[usize]) -> Vec<String> {
     match list.open.and_then(|i| list.groups.get(i)) {
         None => {
             let wheres: Vec<String> = rows
@@ -414,7 +413,7 @@ fn list_rows(list: &ElsewhereList, contigs: &[Contig]) -> Vec<String> {
                         let end = if g.pending > 0 {
                             "not yet found · S searches the BAM"
                         } else {
-                            "no other placement found"
+                            "no other placement found outside this stretch"
                         };
                         if !tail.is_empty() {
                             tail.push_str(" · ");
@@ -454,7 +453,7 @@ fn list_rows(list: &ElsewhereList, contigs: &[Contig]) -> Vec<String> {
                         None if group.pending_names.contains(&r.name) => {
                             "? not yet found".to_string()
                         }
-                        None => "? no other placement found".to_string(),
+                        None => "? no other placement found outside this stretch".to_string(),
                     };
                     format!("  {}  {here}  → {there}", fit(&r.name, nw))
                 })
@@ -474,9 +473,6 @@ pub fn draw_elsewhere(frame: &mut Frame, app: &App, list: &ElsewhereList, area: 
     let contigs = doc.source().contigs();
     let width = area.width as usize;
     let buf = frame.buffer_mut();
-    let mut reads: Vec<_> = list.groups.iter().flat_map(|g| &g.reads).collect();
-    reads.sort_by(|a, b| (&a.name, a.flags, a.start).cmp(&(&b.name, b.flags, b.start)));
-    reads.dedup();
     let mut title = match list.open.and_then(|i| list.groups.get(i)) {
         Some(g) => format!(
             "reads in view aligning elsewhere › {}",
@@ -484,7 +480,7 @@ pub fn draw_elsewhere(frame: &mut Frame, app: &App, list: &ElsewhereList, area: 
         ),
         None => "reads in view aligning elsewhere".to_string(),
     };
-    let count = grouped(reads.len() as u64);
+    let count = grouped(list.read_count as u64);
     let gap = width.saturating_sub(title.width() + count.len());
     title.push_str(&" ".repeat(gap.max(1)));
     title.push_str(&count);
@@ -517,13 +513,10 @@ pub fn draw_elsewhere(frame: &mut Frame, app: &App, list: &ElsewhereList, area: 
     if list.cursor >= top + height {
         top = list.cursor + 1 - height;
     }
-    for (i, text) in list_rows(list, contigs)
-        .iter()
-        .enumerate()
-        .skip(top)
-        .take(height)
-    {
-        let style = if i == list.cursor {
+    let rows = list.rows();
+    let shown = &rows[top.min(rows.len())..(top + height).min(rows.len())];
+    for (i, text) in list_rows(list, contigs, shown).iter().enumerate() {
+        let style = if top + i == list.cursor {
             palette::SELECTED
         } else {
             Style::new()
@@ -676,5 +669,46 @@ mod tests {
             sized(&mut app, w, h);
             render(&app, w, h);
         }
+    }
+
+    #[test]
+    fn a_crowded_list_draws_quickly_and_says_what_was_searched() {
+        use crate::elsewhere::ElsewhereList;
+        use seqpeeq_core::bam::Region;
+        use std::collections::{HashMap, HashSet};
+        let (mut app, _dir) = with_multi();
+        sized(&mut app, 80, 10);
+        let r = Region {
+            contig: 0,
+            start: 1,
+            end: 2000,
+        };
+        let reads: Vec<Read> = (0..100_000u64)
+            .map(|i| Read {
+                name: format!("q{i}"),
+                start: 1 + i % 1000,
+                end: 100 + i % 1000,
+                ..Read::default()
+            })
+            .collect();
+        let searched: HashSet<String> = HashSet::from(["q1".to_string()]);
+        let mut list = ElsewhereList::build(reads, r, r, &HashMap::new(), &searched);
+        list.open = Some(0);
+        let id = id(&app);
+        app.bams.get_mut(&id).unwrap().over.push(Over::List(list));
+        render(&app, 80, 10);
+        let started = std::time::Instant::now();
+        let screen = rows(&render(&app, 80, 10));
+        assert!(
+            started.elapsed().as_millis() < 100,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(screen[1].trim_end().ends_with("100,000"), "{}", screen[1]);
+        let q1 = screen.iter().find(|r| r.contains("q1 ")).unwrap();
+        assert!(
+            q1.contains("no other placement found outside this stretch"),
+            "{q1}"
+        );
     }
 }

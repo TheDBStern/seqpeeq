@@ -639,6 +639,19 @@ impl App {
     /// the ruler or strip; a click on the strip goes there; clicks and
     /// drags on the reads select them.
     pub(super) fn bam_mouse(&mut self, mouse: &MouseEvent) {
+        // A view open over the reference view takes the wheel, as Up and
+        // Down; nothing else reaches the reference view under it.
+        if self.bam().is_some_and(|(_, _, view)| !view.over.is_empty()) {
+            let code = match mouse.kind {
+                MouseEventKind::ScrollUp => KeyCode::Up,
+                MouseEventKind::ScrollDown => KeyCode::Down,
+                _ => return,
+            };
+            if !self.typing_filter() {
+                self.bam_key(&KeyEvent::new(code, KeyModifiers::NONE));
+            }
+            return;
+        }
         let body = self.bam_body();
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
@@ -2005,6 +2018,11 @@ pub(crate) mod tests {
         assert_eq!(picked, Some((1, 301)));
         keys(&mut app, "g");
         assert_eq!((view(&app).contig, view(&app).cursor), (1, 301));
+        assert_eq!(
+            view(&app).focus,
+            None,
+            "an XA entry has no record to follow"
+        );
         assert!(view(&app).over.is_empty());
         assert!(!view(&app).parked.is_empty());
         keys(&mut app, "'");
@@ -2070,5 +2088,97 @@ pub(crate) mod tests {
             panic!("no axis view");
         };
         assert_eq!(a.segments.len(), 2, "the mate arrived");
+    }
+
+    // Fixes from the phase 5 review.
+
+    #[test]
+    fn the_mouse_leaves_the_reference_view_alone_under_a_view() {
+        let (mut app, _dir) = with_multi();
+        keys(&mut app, "A");
+        let before = {
+            let v = view(&app);
+            (
+                v.contig,
+                v.left,
+                v.cursor,
+                v.row,
+                v.top,
+                v.selected.clone(),
+                v.back.len(),
+            )
+        };
+        let layout = layout_of(&mut app);
+        let (x, y) = (layout.reads.x + 3, layout.reads.y);
+        mouse(&mut app, MouseEventKind::ScrollDown, (x, y), false);
+        assert_eq!(list(&app).cursor, 1, "the wheel moves through the list");
+        click(&mut app, (x, y));
+        click(&mut app, (layout.strip.x + 40, layout.strip.y));
+        settle(&mut app);
+        press(&mut app, KeyCode::Esc);
+        let v = view(&app);
+        assert_eq!(
+            (
+                v.contig,
+                v.left,
+                v.cursor,
+                v.row,
+                v.top,
+                v.selected.clone(),
+                v.back.len()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn g_from_the_axis_puts_the_row_on_the_read() {
+        let (mut app, _dir) = with_multi();
+        at_base_level(&mut app, 0, 1001, 0);
+        keys(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(
+            view(&app).focus,
+            Some(("z1".to_string(), 1501)),
+            "the row follows the read once it is read, as m does"
+        );
+        settle(&mut app);
+        assert_eq!((view(&app).contig, view(&app).cursor), (1, 1501));
+        assert_eq!(view(&app).cursor_read().map(|r| r.flags), Some(2048));
+    }
+
+    #[test]
+    fn a_says_only_what_is_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n\
+                   r\t0\tc\t5\t60\t10M\t*\t0\t0\t*\t*\n";
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam_from_sam(dir.path(), "plain.bam", sam));
+        settle(&mut app);
+        keys(&mut app, "A");
+        assert_eq!(app.status, "no read in view is known to align elsewhere");
+    }
+
+    #[test]
+    fn searching_for_a_crowd_of_names_is_quick() {
+        let (mut app, _dir) = with_multi();
+        let names: Vec<String> = (0..20_000).map(|i| format!("read{i}")).collect();
+        let started = std::time::Instant::now();
+        app.bam_search(names.clone());
+        app.bam_search(
+            names
+                .iter()
+                .rev()
+                .cloned()
+                .chain(["more".to_string()])
+                .collect(),
+        );
+        assert!(
+            started.elapsed().as_millis() < 500,
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(app.searches[&id(&app)].waiting, ["more"]);
     }
 }
