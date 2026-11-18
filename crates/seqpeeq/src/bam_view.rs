@@ -263,7 +263,7 @@ fn natural(a: &str, b: &str) -> Ordering {
 }
 
 /// Whether `name` holds `needle`, which is in lower case, in any case.
-fn holds(name: &str, needle: &str) -> bool {
+pub(crate) fn holds(name: &str, needle: &str) -> bool {
     if name.is_ascii() && needle.is_ascii() {
         let (name, needle) = (name.as_bytes(), needle.as_bytes());
         return name.len() >= needle.len()

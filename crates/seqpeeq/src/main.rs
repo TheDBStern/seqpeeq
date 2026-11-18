@@ -2,6 +2,8 @@
 
 mod app;
 mod bam_view;
+#[allow(dead_code)] // wired up in the read-axis keys (phase 5, task 6)
+mod elsewhere;
 mod line;
 mod msa_view;
 mod palette;
