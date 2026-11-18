@@ -29,7 +29,6 @@ pub enum Via {
 }
 
 impl Via {
-    #[allow(dead_code)] // drawn in phase 5 task 7
     pub const ALL: [Via; 5] = [
         Via::Split,
         Via::Mate,
@@ -48,6 +47,8 @@ pub struct Group {
     pub span: (u64, u64),
     /// In the order of the reads in view.
     pub reads: Vec<ReadId>,
+    /// Where on the group's contig each read goes, and how; empty in `?`.
+    pub whither: Vec<Vec<(u64, Via)>>,
     /// Reads counted by how they get there, indexed by `Via as usize`.
     pub vias: [usize; 5],
     /// In `?`: reads not yet searched for, and reads searched for with
@@ -64,6 +65,7 @@ impl Group {
             contig,
             span: (u64::MAX, 0),
             reads: Vec::new(),
+            whither: Vec::new(),
             vias: [0; 5],
             pending: 0,
             none_found: 0,
@@ -145,6 +147,11 @@ pub fn groups(
             group.span = (group.span.0.min(pos), group.span.1.max(pos));
             if group.reads.last() != Some(&id) {
                 group.reads.push(id.clone());
+                group.whither.push(Vec::new());
+            }
+            let whither = group.whither.last_mut().expect("just pushed");
+            if !whither.contains(&(pos, via)) {
+                whither.push((pos, via));
             }
             if counted.insert((contig, via as usize)) {
                 group.vias[via as usize] += 1;

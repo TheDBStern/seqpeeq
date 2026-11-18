@@ -1,0 +1,15 @@
+---
+source: crates/seqpeeq/src/ui/read_axis.rs
+assertion_line: 559
+expression: terminal.backend()
+---
+" multi.bam                                                                      "
+"z1 · 100 bp · 2 alignments · secondaries not searched · S searches the BAM      "
+"read                                  1        50        100                    "
+"g1:1,001 (+)  MAPQ 60  primary        ━━━━━━━━━━━▸                              "
+"g2:1,501 (+)  MAPQ 60  supplementary              ━━━━━━━▸                      "
+"                                                                                "
+"                                                                                "
+"primary · g1:1,001 (+) · 60M40S · record                                        "
+"g1:1001  1 bp a column  no reference: mismatches not shown (bam ref FILE)       "
+"                                                                                "

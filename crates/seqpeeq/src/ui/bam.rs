@@ -409,7 +409,7 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The tick spacing for the ruler: 1, 2 or 5 times a power of ten, at
 /// least `n`.
-fn nice(n: u64) -> u64 {
+pub(crate) fn nice(n: u64) -> u64 {
     let mut decade = 1u64;
     loop {
         for step in [1, 2, 5] {

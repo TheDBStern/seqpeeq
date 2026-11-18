@@ -49,6 +49,9 @@ pub const INSERTION: Style = Style::new().bg(Color::Indexed(93)).fg(Color::Index
 /// The part of the whole-contig strip that the view shows.
 pub const IN_VIEW: Style = Style::new().bg(Color::Indexed(238));
 
+/// Stretches of a read that no placement covers, on its axis.
+pub const UNALIGNED: Style = Style::new().bg(Color::Indexed(236));
+
 /// The coverage row's bars.
 pub const DEPTH: Style = Style::new().fg(Color::Indexed(68));
 

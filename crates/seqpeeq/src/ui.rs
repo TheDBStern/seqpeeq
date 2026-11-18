@@ -3,8 +3,10 @@
 pub mod bam;
 pub mod grid;
 pub mod overview;
+pub mod read_axis;
 pub mod tree;
 
+use crate::bam_view::Over;
 use std::ops::Range;
 
 use ratatui::Frame;
@@ -297,8 +299,12 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         tree::draw_tree(frame, doc, view, &header, area);
         return;
     }
-    if app.bam().is_some() {
-        bam::draw_bam(frame, app, area);
+    if let Some((_, _, view)) = app.bam() {
+        match view.over.last() {
+            Some(Over::Axis(axis)) => read_axis::draw_axis(frame, app, axis, area),
+            Some(Over::List(list)) => read_axis::draw_elsewhere(frame, app, list, area),
+            None => bam::draw_bam(frame, app, area),
+        }
         return;
     }
     let lines = match app.session.datasets().get(app.active) {

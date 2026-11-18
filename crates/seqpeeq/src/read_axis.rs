@@ -25,7 +25,6 @@ pub enum Kind {
 
 impl Kind {
     /// The word the view shows.
-    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn word(self) -> &'static str {
         match self {
             Kind::Primary => "primary",
@@ -85,7 +84,6 @@ pub struct Segment {
 
 impl Segment {
     /// Stretches of the read no placement covers.
-    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn uncovered(&self) -> Vec<(u64, u64)> {
         let mut spans: Vec<(u64, u64)> = self.placements.iter().filter_map(|p| p.span).collect();
         spans.sort_unstable();
@@ -248,6 +246,16 @@ pub fn assemble(records: &[&Read], found_by_search: &[&Read]) -> Vec<Segment> {
         .collect()
 }
 
+/// One line of the axis view below its header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisLine {
+    /// A segment's axis, by its index in `segments`.
+    Axis(usize),
+    /// A placement: its segment's index, its index in that segment, and
+    /// its index in drawing order.
+    Placement(usize, usize, usize),
+}
+
 /// The read-as-axis view: the read's bases across, one bar per placement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AxisView {
@@ -259,9 +267,10 @@ pub struct AxisView {
     pub left: u64,
     /// The picked placement, in drawing order.
     pub picked: usize,
-    /// The first placement row shown.
+    /// The first line shown (see [`AxisView::lines`]).
     pub top: usize,
-    /// Columns for the bars, and rows for placements; set when drawn.
+    /// Columns for the bars, and lines below the header; set to fit the
+    /// screen.
     pub width: usize,
     pub height: usize,
     /// Whether the BAM has been searched for this name.
@@ -334,15 +343,62 @@ impl AxisView {
         self.placements().get(self.picked).copied()
     }
 
-    /// Pick the placement `by` rows on, stopping at either end.
+    /// Each segment's axis followed by its placements.
+    pub fn lines(&self) -> Vec<AxisLine> {
+        let mut out = Vec::new();
+        let mut n = 0;
+        for (s, segment) in self.segments.iter().enumerate() {
+            out.push(AxisLine::Axis(s));
+            for p in 0..segment.placements.len() {
+                out.push(AxisLine::Placement(s, p, n));
+                n += 1;
+            }
+        }
+        out
+    }
+
+    /// Pick the placement `by` rows on, stopping at either end, and
+    /// scroll the lines to show it (with its axis, for a segment's first).
     pub fn pick(&mut self, by: isize) {
         let last = self.placements().len().saturating_sub(1);
         self.picked = self.picked.saturating_add_signed(by).min(last);
-        if self.picked < self.top {
-            self.top = self.picked;
-        } else if self.height > 0 && self.picked >= self.top + self.height {
-            self.top = self.picked + 1 - self.height;
+        self.reveal();
+    }
+
+    /// Scroll the lines to show the picked placement.
+    fn reveal(&mut self) {
+        let lines = self.lines();
+        let Some(at) = lines
+            .iter()
+            .position(|l| matches!(l, AxisLine::Placement(_, _, n) if *n == self.picked))
+        else {
+            return;
+        };
+        let first = match at.checked_sub(1).map(|i| lines[i]) {
+            Some(AxisLine::Axis(_)) => at - 1,
+            _ => at,
+        };
+        if first < self.top {
+            self.top = first;
+        } else if self.height > 0 && at >= self.top + self.height {
+            self.top = at + 1 - self.height;
         }
+        let most = lines.len().saturating_sub(self.height.max(1));
+        self.top = self.top.min(most);
+    }
+
+    /// Fit `width` columns of bars and `height` lines.
+    pub fn resize(&mut self, width: usize, height: usize) {
+        if (self.width, self.height) == (width.max(1), height) {
+            return;
+        }
+        let whole = self.per_col == self.whole();
+        self.width = width.max(1);
+        self.height = height;
+        let most = self.whole();
+        self.per_col = if whole { most } else { self.per_col.min(most) };
+        self.clamp();
+        self.reveal();
     }
 
     /// `+` zooms in, `-` out, `z` shows the whole read or goes back.
@@ -392,7 +448,6 @@ impl AxisView {
     }
 
     /// The column showing read base `pos`, if one does.
-    #[allow(dead_code)] // drawn in phase 5 task 7
     pub fn col_of(&self, pos: u64) -> Option<usize> {
         let col = pos.checked_sub(self.left)? / self.per_col;
         (col < self.width as u64).then_some(col as usize)

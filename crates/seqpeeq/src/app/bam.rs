@@ -121,6 +121,12 @@ impl App {
                     .unwrap_or(0);
                 BamView::new(first, contigs[first].length, body.width as usize)
             });
+            for over in view.over.iter_mut().chain(view.parked.iter_mut()) {
+                if let crate::bam_view::Over::Axis(axis) = over {
+                    let layout = ui::read_axis::axis_layout(body, axis, contigs);
+                    axis.resize(layout.bars.width as usize, layout.bars.height as usize);
+                }
+            }
             let length = contigs[view.contig].length;
             let reads = ui::bam::bam_layout(body, view).reads;
             let (width, height) = (reads.width as usize, reads.height as usize);
@@ -1004,7 +1010,7 @@ pub(crate) mod tests {
 
     use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    fn press(app: &mut App, code: KeyCode) {
+    pub(crate) fn press(app: &mut App, code: KeyCode) {
         app.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
@@ -1013,7 +1019,7 @@ pub(crate) mod tests {
     }
 
     /// Press each character of `keys`, then let the work finish.
-    fn keys(app: &mut App, keys: &str) {
+    pub(crate) fn keys(app: &mut App, keys: &str) {
         for c in keys.chars() {
             press(app, KeyCode::Char(c));
         }
@@ -1032,7 +1038,7 @@ pub(crate) mod tests {
     }
 
     /// The fixture at a base a column, cursor at `pos` on its contig.
-    fn at_base_level(app: &mut App, contig: usize, pos: u64, row: usize) {
+    pub(crate) fn at_base_level(app: &mut App, contig: usize, pos: u64, row: usize) {
         let id = id(app);
         let length = app.bam().unwrap().1.source().contigs()[contig].length;
         let view = app.bams.get_mut(&id).unwrap();
@@ -1773,7 +1779,7 @@ pub(crate) mod tests {
     use crate::read_axis::{AxisView, Found, Kind};
 
     /// An app showing `multi.bam`, everything read.
-    fn with_multi() -> (App, TempDir) {
+    pub(crate) fn with_multi() -> (App, TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let bam = seqpeeq_core::bam::testing::multi(dir.path());
         let mut app = App::new(Session::new(None));
