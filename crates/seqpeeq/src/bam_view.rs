@@ -909,6 +909,7 @@ pub(crate) mod tests {
             },
             cigar: String::new(),
             mapq: 0,
+            nm: None,
         };
 
         let mut v = BamView::new(0, 1000, 80);
