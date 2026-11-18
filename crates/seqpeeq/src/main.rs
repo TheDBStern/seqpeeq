@@ -1,6 +1,7 @@
 //! The `seqpeeq` command: interactive viewer, `replay` and `run`.
 
 mod app;
+mod bam_view;
 mod line;
 mod msa_view;
 mod palette;
