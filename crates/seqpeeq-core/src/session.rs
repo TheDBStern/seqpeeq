@@ -785,6 +785,8 @@ impl Session {
         }
         // (tree, alignment, tips with a sequence, tips) for each candidate.
         let mut pairs = Vec::new();
+        // (alignment, its tree) for full matches already linked to a tree.
+        let mut taken = Vec::new();
         for other in &self.datasets {
             let (tree, alignment) = if tree_opened {
                 (new, other)
@@ -803,6 +805,18 @@ impl Session {
                 .iter()
                 .filter(|&&n| doc.tree().label(n).is_some_and(|l| names.contains(l)))
                 .count();
+            // An alignment that already has a tree is not linked to a
+            // second by itself: `msa rename --tree` needs exactly one.
+            let linked_to = self.trees_linked_to(alignment.id);
+            if tree_opened && shared == tips.len() && !linked_to.is_empty() {
+                let to = self
+                    .datasets
+                    .iter()
+                    .find(|d| d.id == linked_to[0])
+                    .map_or_else(String::new, Dataset::file_name);
+                taken.push((alignment.file_name(), to));
+                continue;
+            }
             if shared > 0 {
                 pairs.push((tree, alignment, shared, tips.len()));
             }
@@ -822,8 +836,13 @@ impl Session {
                 self.links.insert(tree, alignment);
                 format!("; linked to {name}")
             }
-            [] => match pairs.as_slice() {
-                [one] => {
+            [] => match (taken.as_slice(), pairs.as_slice()) {
+                ([(alignment, tree)], _) => {
+                    format!(
+                        "; {alignment} has every tip but is linked to {tree}: :tree link {alignment}"
+                    )
+                }
+                ([], [one]) => {
                     let (shared, tips) = (one.2, one.3);
                     let command = format!(":tree link {}", one.1.file_name());
                     let from = if tree_opened { "" } else { " from its tab" };
@@ -3274,5 +3293,24 @@ mod tests {
         crate::replay(&text, &mut again).unwrap();
         let a = again.datasets()[0].id;
         assert_eq!(links(&again), vec![None, Some(a), Some(a)]);
+    }
+
+    #[test]
+    fn a_second_tree_does_not_link_to_a_linked_alignment() {
+        // Two trees linked to one alignment make `msa rename --tree`
+        // refuse, so only the first links by itself.
+        let (_keep, dir) = trees();
+        fs::write(dir.join("t2.nwk"), "(A,(B,C));").unwrap();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        let out = s.execute(open(&dir.join("t2.nwk"))).unwrap();
+        assert!(
+            out.message
+                .ends_with("; a.fa has every tip but is linked to t.nwk: :tree link a.fa"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[2].id), None);
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa rename --rows 1 --to Q --tree").unwrap();
     }
 }
