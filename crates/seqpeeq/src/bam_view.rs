@@ -1118,7 +1118,7 @@ pub(crate) mod tests {
         let start = std::time::Instant::now();
         let rows = list.rows(&contigs);
         assert!(
-            start.elapsed().as_secs_f64() < 0.05,
+            start.elapsed() < crate::time_budget(50),
             "{:?}",
             start.elapsed()
         );

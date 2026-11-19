@@ -630,7 +630,11 @@ mod tests {
         let refs: Vec<&Read> = others.iter().collect();
         let start = std::time::Instant::now();
         let segs = assemble(&[&primary], &refs);
-        assert!(start.elapsed().as_millis() < 50, "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < crate::time_budget(50),
+            "{:?}",
+            start.elapsed()
+        );
         assert_eq!(segs[0].placements.len(), 501);
         assert_eq!(segs[0].placements[0].kind, Primary);
     }

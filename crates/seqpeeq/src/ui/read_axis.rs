@@ -717,7 +717,7 @@ mod tests {
         let started = std::time::Instant::now();
         let screen = rows(&render(&app, 80, 10));
         assert!(
-            started.elapsed().as_millis() < 100,
+            started.elapsed() < crate::time_budget(100),
             "{:?}",
             started.elapsed()
         );
