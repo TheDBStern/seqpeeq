@@ -28,6 +28,20 @@ class Measure(unittest.TestCase):
         left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
         self.assertEqual(left.stdout.strip(), "", "a child of the timed-out run is still alive")
 
+    def test_leftover_processes_are_a_failure(self):
+        # A launcher that starts the real program and exits would
+        # otherwise be timed instead of the program.
+        marker = "sleep 31.7"
+        got = run.measure(["/bin/sh", "-c", f"{marker} & exit 0"], timeout=5)
+        self.assertEqual(got.outcome, "failed")
+        self.assertIn("still running", got.detail)
+        for _ in range(100):
+            left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+            if not left.stdout.strip():
+                break
+            time.sleep(0.02)
+        self.assertEqual(left.stdout.strip(), "", "the process left behind was not killed")
+
     def test_out_of_memory_is_recorded(self):
         got = run.measure(["/bin/sh", "-c", "echo java.lang.OutOfMemoryError >&2; exit 1"], timeout=5)
         self.assertEqual(got.outcome, "out of memory")
@@ -66,19 +80,26 @@ class Tools(unittest.TestCase):
         path.mkdir(exist_ok=True)
         return path
 
-    def test_seqpeeq_bam_waits_for_reads(self):
-        bam = self.dir / "tiny.bam"
+    def test_seqpeeq_shows_the_reads_of_the_igv_window(self):
+        # 50 kb opens zoomed out past the reads, so seqpeeq must be taken
+        # to the window IGV is sent to before its reads are drawn.
+        bam = make_data.write_bam(self.dir, depth=2, seed=1, length=50_000,
+                                  ref="mid_ref.fa", name="mid.bam")
         argv = run.commands("seqpeeq", bam, self.scratch("s"))
-        opened = run.measure(argv, timeout=30, ready=run.screen_shows("opened "))
-        reads = run.measure(argv, timeout=30, ready=run.seqpeeq_ready("bam"))
-        self.assertEqual(opened.outcome, "ok", opened.detail)
-        self.assertEqual(reads.outcome, "ok", reads.detail)
-        self.assertGreaterEqual(reads.seconds, opened.seconds * 0.5)
+        got = run.measure(argv, timeout=30, ready=run.seqpeeq_steps("bam"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        run.commands("igv", bam, self.scratch("i"))
+        self.assertIn(f"goto {run.WINDOW}\n", (self.scratch("i") / "batch.txt").read_text())
+
+    def test_jalview_is_timed_itself_not_its_launcher(self):
+        argv = run.commands("jalview", self.dir / "tiny.fa", self.scratch("j"))
+        self.assertIn("jalview.bin.Jalview", argv)
+        self.assertNotIn("-jar", argv)
 
     def test_seqpeeq_shows_an_alignment_and_a_tree(self):
         for name, kind in [("tiny.fa", "msa"), ("tiny.nwk", "tree")]:
             argv = run.commands("seqpeeq", self.dir / name, self.scratch("s"))
-            got = run.measure(argv, timeout=30, ready=run.seqpeeq_ready(kind))
+            got = run.measure(argv, timeout=30, ready=run.seqpeeq_steps(kind))
             self.assertEqual(got.outcome, "ok", f"{name}: {got.detail}")
 
     def test_igv_never_uses_the_home_folder(self):

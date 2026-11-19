@@ -268,3 +268,7 @@ make ones it can't record. `:rescue FILE` still saves the current alignment, so 
 
 See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, FigTree and Jalview on files of rising
 size.
+For example, on an Apple M2 laptop:
+
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 1.4 s; Jalview takes 7.3 minutes and 16 GB.
+- **A tree of a million tips:** seqpeeq draws it in 0.6 s; FigTree takes 29 s.

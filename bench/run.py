@@ -38,6 +38,9 @@ MEMORY = "-Xmx16g"
 TIMEOUT = 600
 LONG_RUN = 60
 PTY_ROWS, PTY_COLS = 48, 160
+# The stretch of a BAM both IGV and seqpeeq are taken to and timed showing.
+WINDOW = "c1:1-1000"
+LEFT_BEHIND_GRACE = 0.5
 
 # Which tools are timed on which kind of file.
 TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "igv"]}
@@ -81,13 +84,32 @@ def _kill(pid):
         pass
 
 
+def _left_behind(pgid):
+    """Whether processes of the group outlive its leader. A launcher that
+    starts the real program and exits would otherwise be timed instead of
+    the program; any found are killed."""
+    deadline = time.monotonic() + LEFT_BEHIND_GRACE
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        if time.monotonic() > deadline:
+            _kill(pgid)
+            return True
+        time.sleep(0.02)
+
+
 def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS)) -> Run:
     """Run `argv` once in its own process group and say how it went.
 
-    Without `ready`, the time is until the program exits. With `ready` (a
-    test of the screen's text), the program runs in a pseudo-terminal and
-    the time is until `ready` first holds; it is then sent `q` to quit.
-    On `timeout` the whole process group is killed.
+    Without `ready`, the time is until the program exits. With `ready`,
+    the program runs in a pseudo-terminal and the time is until the screen
+    passes the last of its steps; it is then sent `q` to quit. `ready` is a
+    test of the screen's text, or a list of (test, keys) steps: when a
+    step's test holds its keys are typed, and the last step has keys None.
+    On `timeout` the whole process group is killed, and a group that
+    outlives its leader is a failure.
     """
     if ready is None:
         return _measure_exit(argv, timeout, env)
@@ -112,10 +134,15 @@ def _measure_exit(argv, timeout, env):
             time.sleep(0.005)
         proc.returncode = os.waitstatus_to_exitcode(status)
         out.seek(0)
+        if _left_behind(proc.pid):
+            return Run(seconds, _rss_bytes(rusage), "failed",
+                       "exited with processes still running; they were killed")
         return _ended(status, out.read(), seconds, rusage)
 
 
 def _measure_screen(argv, timeout, env, ready, size):
+    steps = ready if isinstance(ready, list) else [(ready, None)]
+    step = 0
     rows, cols = size
     master, slave = os.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -153,13 +180,21 @@ def _measure_screen(argv, timeout, env, ready, size):
                     chunk = b""
                 output += chunk
                 stream.feed(chunk)
-                if shown is None and ready("\n".join(screen.display)):
-                    shown = time.monotonic() - started
-                    quit_sent = time.monotonic()
-                    os.write(master, b"q")
+                while shown is None and steps[step][0]("\n".join(screen.display)):
+                    keys = steps[step][1]
+                    if keys is None:
+                        shown = time.monotonic() - started
+                        quit_sent = time.monotonic()
+                        os.write(master, b"q")
+                    else:
+                        os.write(master, keys)
+                        step += 1
     finally:
         os.close(master)
     proc.returncode = os.waitstatus_to_exitcode(status)
+    if _left_behind(proc.pid):
+        return Run(time.monotonic() - started, _rss_bytes(rusage), "failed",
+                   "exited with processes still running; they were killed")
     if shown is None:
         run = _ended(status, bytes(output), time.monotonic() - started, rusage)
         if run.outcome == "ok":
@@ -180,6 +215,15 @@ def seqpeeq_ready(kind) -> Callable[[str], bool]:
     if kind == "bam":
         return lambda screen: "depth " in screen
     return screen_shows("opened ")
+
+
+def seqpeeq_steps(kind):
+    """How seqpeeq is driven to show a file: for an alignment or a tree,
+    until it is opened; a BAM opens on the whole contig, so it is then
+    taken to IGV's window with `g` and timed until those reads are read."""
+    if kind == "bam":
+        return [(screen_shows("opened "), f"g{WINDOW}\r".encode()), (seqpeeq_ready("bam"), None)]
+    return [(seqpeeq_ready(kind), None)]
 
 
 def _java(env):
@@ -203,8 +247,10 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
                 "-height", "800", str(file), str(scratch / "figtree.png")]
     if tool == "jalview":
         jar = next((BENCH / "share").glob("jalview-*/jalview-all-j11.jar"))
-        return [_java(BENCH), MEMORY, "-Dapple.awt.UIElement=true", "-jar", str(jar),
-                "--headless", "--open", str(file), "--close"]
+        # The jar's own entry point is a launcher that starts Jalview in a
+        # second JVM and exits; this is the command it runs.
+        return [_java(BENCH), MEMORY, "-Dapple.awt.UIElement=true", "-cp", str(jar),
+                "jalview.bin.Jalview", "--headless", "--open", str(file), "--close"]
     if tool == "igv":
         ref = _reference(file)
         prefs = scratch / "igv" / "prefs.properties"
@@ -213,7 +259,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
         # download hg38 when it starts.
         prefs.write_text(f"DEFAULT_GENOME_KEY={ref}\n")
         batch = scratch / "batch.txt"
-        batch.write_text("\n".join(["new", f"genome {ref}", f"load {file}", "goto c1:1-1000",
+        batch.write_text("\n".join(["new", f"genome {ref}", f"load {file}", f"goto {WINDOW}",
                                     f"snapshotDirectory {scratch}", "snapshot igv.png", "exit", ""]))
         lib = BENCH_IGV / "lib" / "igv"
         return [_java(BENCH_IGV), f"--module-path={lib}", MEMORY, f"@{lib / 'igv.args'}",
@@ -223,7 +269,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return seqpeeq_ready(kind) if tool == "seqpeeq" else None
+    return seqpeeq_steps(kind) if tool == "seqpeeq" else None
 
 
 def _output(argv):
