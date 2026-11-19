@@ -5116,4 +5116,162 @@ mod tests {
         app.handle_event(&press(KeyCode::Tab));
         assert_eq!(typed(&app), Some("tree link full.fax"));
     }
+
+    /// seqpeeq-only numbers for the benchmark page, on the largest
+    /// alignment and tree that `bench/make_data.py` makes.
+    #[test]
+    #[ignore = "timing on bench/data; run with SEQPEEQ_BENCH_DATA=… SEQPEEQ_BENCH_OUT=… cargo test --release -p seqpeeq -- --ignored bench_timings"]
+    fn bench_timings_on_the_benchmark_files() {
+        use std::time::Instant;
+        let data = PathBuf::from(std::env::var("SEQPEEQ_BENCH_DATA").expect("SEQPEEQ_BENCH_DATA"));
+        let out = std::env::var("SEQPEEQ_BENCH_OUT").expect("SEQPEEQ_BENCH_OUT");
+        let draw = |app: &App| {
+            crate::ui::tests::render(app, 200, 60);
+        };
+        fn time(steps: &mut Vec<(&'static str, f64)>, what: &'static str, step: impl FnOnce()) {
+            let started = Instant::now();
+            step();
+            let seconds = started.elapsed().as_secs_f64();
+            eprintln!("{what}: {seconds:.4} s");
+            steps.push((what, seconds));
+        }
+        let shape = |app: &App| {
+            let msa = app.session.datasets()[app.active]
+                .msa()
+                .expect("an alignment");
+            (msa.rows(), msa.cols())
+        };
+
+        // The interface hands column counts and overview summaries to its
+        // worker thread and keeps drawing meanwhile. `settle` does that work
+        // inline, so each step is timed to the frame that shows it, and the
+        // background work after it is timed on its own.
+        fn shown(app: &mut App) {
+            loop {
+                app.pump();
+                let Some(i) = app.outbox.iter().position(|request| {
+                    !matches!(
+                        request,
+                        Request::Conserve { .. } | Request::Summarise { .. }
+                    )
+                }) else {
+                    break;
+                };
+                let request = app.outbox.remove(i);
+                crate::worker::perform(request, &mut |done| app.handle_done(done));
+            }
+        }
+        let mut alignment = Vec::new();
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 60));
+        time(&mut alignment, "open and first frame", || {
+            app.enqueue(Command::Open {
+                path: data.join("aln_100k.fa"),
+                kind: None,
+            });
+            shown(&mut app);
+            draw(&app);
+        });
+        assert!(app.status.starts_with("opened "), "{}", app.status);
+        time(&mut alignment, "background: count the columns", || {
+            settle(&mut app)
+        });
+        time(&mut alignment, "frame after PageDown", || {
+            app.handle_event(&press(KeyCode::PageDown));
+            shown(&mut app);
+            draw(&app);
+        });
+        time(&mut alignment, "frame after a zoom-out step", || {
+            app.handle_event(&key('-'));
+            shown(&mut app);
+            draw(&app);
+        });
+        time(
+            &mut alignment,
+            "background: summary for the overview",
+            || {
+                settle(&mut app);
+            },
+        );
+        app.handle_event(&key('+'));
+        settle(&mut app);
+        let (rows, cols) = shape(&app);
+        let typed = |app: &mut App, line: &str| {
+            type_str(app, &format!(":{line}"));
+            app.handle_event(&press(KeyCode::Enter));
+            shown(app);
+            draw(app);
+        };
+        time(&mut alignment, "delete 1,000 columns", || {
+            typed(&mut app, "msa delete-cols --cols 1-1000");
+        });
+        assert_eq!(shape(&app), (rows, cols - 1000), "{}", app.status);
+        time(
+            &mut alignment,
+            "background: count the columns again",
+            || {
+                settle(&mut app);
+            },
+        );
+        time(&mut alignment, "delete 1,000 rows", || {
+            typed(&mut app, "msa delete-rows --rows 1-1000");
+        });
+        assert_eq!(shape(&app), (rows - 1000, cols - 1000), "{}", app.status);
+        settle(&mut app);
+        time(&mut alignment, "search names", || {
+            type_str(&mut app, "/s05000");
+            app.handle_event(&press(KeyCode::Enter));
+            shown(&mut app);
+            draw(&app);
+        });
+        assert!(app.status.starts_with("match 1 of"), "{}", app.status);
+        drop(app);
+
+        let mut tree = Vec::new();
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 60));
+        time(&mut tree, "open and first frame", || {
+            open_file(&mut app, &data.join("tree_1m.nwk"));
+            settle(&mut app);
+            draw(&app);
+        });
+        time(&mut tree, "frame after PageDown", || {
+            app.handle_event(&press(KeyCode::PageDown));
+            draw(&app);
+        });
+        let before = app.tree().expect("a tree").1.tips();
+        app.handle_event(&key('l'));
+        app.handle_event(&key('l'));
+        time(&mut tree, "prune a clade", || {
+            app.handle_event(&key('d'));
+            settle(&mut app);
+            draw(&app);
+        });
+        let after = app.tree().expect("a tree").1.tips();
+        assert!(
+            after < before,
+            "{before} tips before, {after} after: {}",
+            app.status
+        );
+        time(&mut tree, "tip search", || {
+            type_str(&mut app, "/^t500000$");
+            enter(&mut app);
+            draw(&app);
+        });
+        assert!(app.status.starts_with("match 1 of"), "{}", app.status);
+
+        let json = |steps: &[(&str, f64)]| {
+            steps
+                .iter()
+                .map(|(what, s)| format!("\"{what}\": {s:.6}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let text = format!(
+            "{{\"alignment\": {{{}}}, \"tree\": {{{}}}}}\n",
+            json(&alignment),
+            json(&tree)
+        );
+        fs::write(&out, text).unwrap();
+    }
 }

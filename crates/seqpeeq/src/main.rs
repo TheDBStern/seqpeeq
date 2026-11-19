@@ -166,9 +166,29 @@ fn open_commands(
     Ok(commands)
 }
 
+/// A test's wall-clock budget: `ms` on a developer's machine, ten times
+/// that on a shared CI runner (GitHub Actions sets `CI`), where a debug
+/// build shares its CPU. A budget is there to catch work that grows with
+/// the input, which is far slower than either.
+#[cfg(test)]
+pub(crate) fn time_budget(ms: u64) -> std::time::Duration {
+    budget_for(ms, std::env::var_os("CI").is_some())
+}
+
+#[cfg(test)]
+fn budget_for(ms: u64, ci: bool) -> std::time::Duration {
+    std::time::Duration::from_millis(if ci { ms * 10 } else { ms })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_budgets_stretch_on_a_shared_runner() {
+        assert_eq!(budget_for(50, false), std::time::Duration::from_millis(50));
+        assert_eq!(budget_for(50, true), std::time::Duration::from_millis(500));
+    }
 
     #[test]
     fn kind_flag_applies_to_files_given_at_start() {

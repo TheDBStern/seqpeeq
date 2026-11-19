@@ -1,0 +1,9 @@
+# IGV, which needs Java 21.
+# conda env create -f bench/env-igv.yml
+name: seqpeeq-bench-igv
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - igv=2.19.8
+  - openjdk>=21
