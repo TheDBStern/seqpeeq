@@ -109,6 +109,19 @@ impl Pty {
         }
     }
 
+    /// Wait until every one of `texts` is on the screen at once.
+    fn wait_for_all(&self, texts: &[&str]) {
+        let deadline = Instant::now() + PATIENCE;
+        while !texts.iter().all(|text| self.screen().contains(text)) {
+            assert!(
+                Instant::now() < deadline,
+                "{texts:?} never appeared together; the screen shows:\n{}",
+                self.screen()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn send(&mut self, keys: &str) {
         self.writer.write_all(keys.as_bytes()).unwrap();
         self.writer.flush().unwrap();
@@ -217,7 +230,8 @@ fn a_read_opens_along_its_own_bases() {
     run.wait_for("g1  2,000 bp");
     run.send("g");
     run.send("g1:101-160\r");
-    run.wait_for("g1:101  1 bp a column");
+    // `depth N` joins the status line once the reads are read.
+    run.wait_for_all(&["g1:101  ", "1 bp a column"]);
     run.send("a");
     run.wait_for("x1 · pair");
     run.wait_for("g1:401 (−)");
@@ -239,7 +253,8 @@ fn a_bam_opens_is_drawn_and_jumps() {
     run.wait_for("c1  1,000 bp");
     run.send("g");
     run.send("c1:101-160\r");
-    run.wait_for("c1:101  1 bp a column");
+    // `depth N` joins the status line once the reads are read.
+    run.wait_for_all(&["c1:101  ", "1 bp a column"]);
     run.wait_for(&seqpeeq_core::bam::testing::ref_bases("c1", 101, 140));
     run.send("]");
     run.wait_for("c1:301 ");
