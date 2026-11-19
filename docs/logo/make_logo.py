@@ -36,7 +36,7 @@ NAME = "seqpeeq"
 TAGLINE = "alignments · trees · reads"
 HEIGHT = 125
 LENS_X, LENS_Y, LENS_R = 104, 60, 44
-TEXT_X = 236
+TEXT_X = 196
 
 
 def num(v):
