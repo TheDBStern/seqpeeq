@@ -1,4 +1,9 @@
-# seqpeeq
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/seqpeeq-dark.svg">
+    <img alt="seqpeeq" src="docs/logo/seqpeeq-light.svg" width="420">
+  </picture>
+</h1>
 
 seqpeeq views and edits three kinds of file in the terminal:
 
