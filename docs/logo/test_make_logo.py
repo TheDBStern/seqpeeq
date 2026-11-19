@@ -6,7 +6,10 @@ The folder must hold JetBrainsMono-Bold.ttf and JetBrainsMono-Regular.ttf (relea
 fonttools, the tests are skipped.
 """
 
+import contextlib
+import io
 import os
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -75,6 +78,20 @@ class Logo(unittest.TestCase):
             with self.subTest(theme=theme):
                 again = self.make_logo.draw_logo(theme, self.bold, self.regular)
                 self.assertEqual(again, self.svgs[theme])
+
+    def test_main_writes_both_files(self):
+        with tempfile.TemporaryDirectory() as out, contextlib.redirect_stdout(io.StringIO()):
+            self.make_logo.main(["--bold", str(Path(FONTS) / "JetBrainsMono-Bold.ttf"),
+                                 "--regular", str(Path(FONTS) / "JetBrainsMono-Regular.ttf"), "--out-dir", out])
+            for theme in PAGES:
+                with self.subTest(theme=theme):
+                    written = (Path(out) / f"seqpeeq-{theme}.svg").read_bytes()
+                    self.assertEqual(written, self.svgs[theme].encode("utf-8"))
+
+    def test_rebuild_command_pastes(self):
+        # In the source, a line ends with one backslash, as it would be typed into a shell.
+        source = (HERE / "make_logo.py").read_text()
+        self.assertNotIn("\\\\\n", source)
 
     def test_committed_files_match(self):
         for theme in PAGES:

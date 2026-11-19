@@ -1,4 +1,4 @@
-"""Draw the seqpeeq logo: seqpeeq-light.svg and seqpeeq-dark.svg, for GitHub's light and dark themes.
+r"""Draw the seqpeeq logo: seqpeeq-light.svg and seqpeeq-dark.svg, for GitHub's light and dark themes.
 
 A lens over a three-row alignment, beside the name. The lettering is JetBrains Mono, turned into outlines, so the
 logo looks the same everywhere and the font is needed only to rebuild it. The output is the same on every run.
@@ -8,7 +8,7 @@ To rebuild:
     pip install fonttools
     # Download JetBrainsMono-2.304.zip from https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304
     # and unzip fonts/ttf/JetBrainsMono-Bold.ttf and fonts/ttf/JetBrainsMono-Regular.ttf.
-    python docs/logo/make_logo.py --bold path/to/JetBrainsMono-Bold.ttf \\
+    python3 docs/logo/make_logo.py --bold path/to/JetBrainsMono-Bold.ttf \
         --regular path/to/JetBrainsMono-Regular.ttf
 """
 
@@ -122,7 +122,7 @@ def main(argv=None):
     bold, regular = TTFont(args.bold), TTFont(args.regular)
     for theme in THEMES:
         path = args.out_dir / f"seqpeeq-{theme}.svg"
-        path.write_text(draw_logo(theme, bold, regular), newline="\n")
+        path.write_bytes(draw_logo(theme, bold, regular).encode("utf-8"))
         print(path)
 
 
