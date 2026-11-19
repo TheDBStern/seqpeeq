@@ -748,6 +748,22 @@ impl Session {
         })
     }
 
+    /// How many of `tree`'s tips have a sequence in `alignment`, and how
+    /// many tips it has; `None` unless the ids are an open tree and an
+    /// open alignment.
+    pub fn shared_tips(&self, tree: u64, alignment: u64) -> Option<(usize, usize)> {
+        let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
+        let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
+        let names: HashSet<&str> = (0..msa.rows()).map(|row| msa.name(row)).collect();
+        let tree = doc.tree();
+        let tips = tree.tips();
+        let shared = tips
+            .iter()
+            .filter(|&&n| tree.label(n).is_some_and(|l| names.contains(l)))
+            .count();
+        Some((shared, tips.len()))
+    }
+
     /// `tree link NAME`, where NAME is no open file's path but the file
     /// name of exactly one open alignment, becomes `tree link PATH` before
     /// it is logged, so the log always names the file it linked.
@@ -796,19 +812,13 @@ impl Session {
             if other.id == opened || self.links.contains_key(&tree.id) {
                 continue;
             }
-            let (Some(doc), Some(msa)) = (tree.tree(), alignment.msa()) else {
+            let Some((shared, tips)) = self.shared_tips(tree.id, alignment.id) else {
                 continue;
             };
-            let names: HashSet<&str> = (0..msa.rows()).map(|row| msa.name(row)).collect();
-            let tips = doc.tree().tips();
-            let shared = tips
-                .iter()
-                .filter(|&&n| doc.tree().label(n).is_some_and(|l| names.contains(l)))
-                .count();
             // An alignment that already has a tree is not linked to a
             // second by itself: `msa rename --tree` needs exactly one.
             let linked_to = self.trees_linked_to(alignment.id);
-            if tree_opened && shared == tips.len() && !linked_to.is_empty() {
+            if tree_opened && shared == tips && !linked_to.is_empty() {
                 let to = self
                     .datasets
                     .iter()
@@ -818,7 +828,7 @@ impl Session {
                 continue;
             }
             if shared > 0 {
-                pairs.push((tree, alignment, shared, tips.len()));
+                pairs.push((tree, alignment, shared, tips));
             }
         }
         let other_name = |(tree, alignment, _, _): &(&Dataset, &Dataset, usize, usize)| {
@@ -3312,5 +3322,14 @@ mod tests {
         assert_eq!(s.link_of(s.datasets()[2].id), None);
         ex(&mut s, "use 1").unwrap();
         ex(&mut s, "msa rename --rows 1 --to Q --tree").unwrap();
+    }
+
+    #[test]
+    fn shared_tips_counts_tips_with_a_sequence() {
+        let (_keep, dir) = trees();
+        let s = opened(&dir, &["a.fa", "l.nwk"]);
+        let (a, l) = (s.datasets()[0].id, s.datasets()[1].id);
+        assert_eq!(s.shared_tips(l, a), Some((3, 4)));
+        assert_eq!(s.shared_tips(a, l), None);
     }
 }

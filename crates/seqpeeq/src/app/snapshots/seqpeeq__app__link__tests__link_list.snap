@@ -1,0 +1,16 @@
+---
+source: crates/seqpeeq/src/app/link.rs
+assertion_line: 327
+expression: "screen.join(\"\\n\")"
+---
+ part.fa │ full.fa │ t.nwk
+ t.nwk · 4 tips · linked to full.fa (4 of 4)
+ ┌─────────────────────────────────────┬────────────────────────────────────── A
+─┤        ┌link t.nwk to─────────────────────────────────────────────┐──────── B
+ └────────│full.fa   4 of 4 tips  (linked)                           │──────── C
+          │part.fa   2 of 4 tips                                     │──────── D
+          │unlink from full.fa                                       │
+          └──────────────────────────────────────────────────────────┘
+
+
+A

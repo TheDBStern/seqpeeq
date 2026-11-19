@@ -26,6 +26,7 @@ use crate::zoom::{self, Scale};
 
 mod axis;
 pub(crate) mod bam;
+pub(crate) mod link;
 
 pub enum Mode {
     Normal,
@@ -40,6 +41,8 @@ pub enum Mode {
     Help,
     /// `c` on a BAM tab: picking a contig.
     Contigs(Box<crate::bam_view::ContigList>),
+    /// `p` on a tree tab: picking the alignment to link to.
+    Links(Box<link::LinkList>),
 }
 
 /// How typed characters go into a row.
@@ -1007,6 +1010,7 @@ impl App {
             }
             Mode::Help => self.mode = Mode::Normal,
             Mode::Contigs(_) => self.contigs_key(key),
+            Mode::Links(_) => self.links_key(key),
         }
     }
 
@@ -1765,6 +1769,9 @@ impl App {
         if matches!(self.mode, Mode::Contigs(_)) {
             return self.contigs_mouse(mouse);
         }
+        if matches!(self.mode, Mode::Links(_)) {
+            return self.links_mouse(mouse);
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
@@ -1815,6 +1822,7 @@ impl App {
             KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
             KeyCode::Char('w') => self.start_save(),
             KeyCode::Char('a') => self.show_sequences(),
+            KeyCode::Char('p') => self.open_links(),
             _ => {}
         }
     }

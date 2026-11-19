@@ -2,6 +2,7 @@
 
 pub mod bam;
 pub mod grid;
+pub mod link;
 pub mod overview;
 pub mod read_axis;
 pub mod tree;
@@ -174,6 +175,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         && !regions.body.is_empty()
     {
         bam::draw_contigs(frame, app, list, regions.body);
+    }
+    if let Mode::Links(list) = &app.mode
+        && !regions.body.is_empty()
+    {
+        link::draw_links(frame, app, list);
     }
 }
 
@@ -633,6 +639,7 @@ const HELP_TREE: &[&str] = &[
     "          d prune  r rename  o re-root",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo  a to the alignment",
+    "          p link to an open alignment",
 ];
 
 /// The keys of a BAM tab.
@@ -1667,6 +1674,7 @@ pub(crate) mod tests {
     fn help_has_a_tree_section() {
         let help = HELP_TREE.join("\n");
         for text in [
+            "p link to an open alignment",
             "w save the whole tree   e extract the clade",
             "Enter open/close",
             "b lengths",
