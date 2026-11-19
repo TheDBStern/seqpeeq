@@ -1826,6 +1826,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn readme_downloads_this_version() {
+        let line = format!("v=v{}", env!("CARGO_PKG_VERSION"));
+        assert!(
+            readme().contains(&format!("\n{line}\n")),
+            "the README's download lines should set {line}"
+        );
+    }
+
+    #[test]
     fn readme_names_every_command() {
         let readme = readme();
         let paths = command_paths();

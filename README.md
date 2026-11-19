@@ -59,7 +59,27 @@ Each release on GitHub has:
   however old;
 - `seqpeeq-<version>-aarch64-apple-darwin.tar.gz`, for Apple-silicon Macs.
 
-Each comes with a `.sha256` file. Unpack it and put `seqpeeq` anywhere on your `PATH`.
+Each comes with a `.sha256` file. Download, check and unpack one in a terminal:
+
+```sh
+v=v0.1.0
+t=aarch64-apple-darwin           # on Linux: t=x86_64-unknown-linux-musl
+f=seqpeeq-$v-$t.tar.gz
+curl -fLO https://github.com/TheDBStern/seqpeeq/releases/download/$v/$f
+curl -fLO https://github.com/TheDBStern/seqpeeq/releases/download/$v/$f.sha256
+shasum -a 256 -c $f.sha256       # on Linux: sha256sum -c $f.sha256
+tar xzf $f
+```
+
+Then move `seqpeeq-$v-$t/seqpeeq` to a folder on your `PATH`, such as `~/.local/bin`.
+
+**On a Mac, download with `curl` as above, not with a browser.** The program is not signed by Apple, and macOS refuses
+to open an unsigned program that a browser or Mail downloaded. A program fetched with `curl`, built with `cargo` or
+installed with conda is not affected. If you did use a browser, clear the flag once:
+
+```sh
+xattr -d com.apple.quarantine seqpeeq
+```
 
 ## First session
 
