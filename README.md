@@ -10,7 +10,7 @@
 - **phylogenetic trees** (Newick);
 - **mapped reads** (sorted BAM).
 
-### Does the things I wished other viewers could do: 
+#### Cool features: 
 - Easily open and process large file (see [benchmarks.md](docs/benchmarks.md))
 - Extract regions of an MSA
 - Extract or prune clades of a phylogeny.
@@ -18,6 +18,7 @@
 - Link an MSA to a phylogeny to jointly edit both and extract sequences associated with a tips in a tree
 - Export reads, regions, or reference of a BAM file
 - Follow multi-mapped and split reads everywhere they align in a BAM
+- Jump to the next covered or 0-coverage region in a BAM
 
 **Input files are never changed.** Every result is written to a new file and seqpeeq refuses to overwrite a
   file that already exists.
@@ -29,7 +30,7 @@
 
 ### Conda environment
 
-Build seqpeeq into its own conda environment:
+To build seqpeeq into its own conda environment:
 
 ```sh
 conda create -n seqpeeq -c conda-forge rust
@@ -39,7 +40,7 @@ cargo install --path crates/seqpeeq --root "$CONDA_PREFIX"
 ```
 
 
-- The build downloads its libraries from crates.io, so internet is needed.
+- The build downloads its libraries from crates.io.
 - If cargo says ``linker `cc` not found``, load or install gcc first.
 
 ### With Rust
@@ -113,31 +114,33 @@ Other ways to run it:
 ### Alignment
 
 ```
-Move      arrows hjkl   Shift+arrows a screen
+Move      arrows hjkl   Shift+arrows jumps
           PgUp PgDn   Home End   g go to
           / search names   n N next, previous
 Select    drag   right-click extends   v V C   Esc clear
 Edit      d delete or gap   f fill   r rename
           i insert (shifts)   R type over   Esc stop
-Zoom      - out   + in   z whole alignment and back
+Zoom      - out   + in   z view whole alignment
           u U undo redo
           w save the whole alignment
           e extract the selection
-          c colours   [ ] name width
+          c change colors   [ ] adjust name width
           msa delete-rows  delete-cols  fill  overwrite
           msa insert  remove  extract  rename
 ```
+- Colors are either: shade majority base (default) or color each base
 
 ### Tree
 
 ```
 Tree      jk rows  h parent  l back  Enter open/close
           + - z zoom  b lengths  / n N find  v select
-          d prune  r rename  o re-root
+          d prune  r rename  o re-root on branch
           w save the whole tree   e extract the clade
-          s ladderize  u U undo redo  a to the alignment
+          s ladderize  u U undo redo  a go to the alignment
           p link to an open alignment
 ```
+Note: is there a midpoint root option?
 
 **Linking:** a tree is linked to an alignment when one has a sequence for every tip of the other. This happens on its
 own when you open the second file, or with `p` or `:tree link`. Once linked:
@@ -153,19 +156,22 @@ own when you open the second file, or with `p` or `:tree link`. Once linked:
 ```
 Move      arrows hjkl   Shift+arrows a screen
           PgUp PgDn   Home End
-BAM       g go to   ] [ covered   } { no coverage
-          m mate   s other part   ' back   c contigs
-          - + z zoom   F filtered   S clips
+BAM       g go to position   ] [ covered   } { no coverage
+          m mate   s other part   ' back   c list contigs
+          - + z zoom   F toggle filtered   S toggle clips
           click, drag select   Esc clear
           Space add the read under the cursor
                 to the selection
           drag the column numbers, v v  a stretch
           e export reads   E reference   to a file
-          a read's places   A reads aligning elsewhere
+          a visualize all alignments for a read   
+          A list all alignments for a read
           in those: S search the BAM   g go   / filter
 ```
 
-### Every tab
+Note: Can we explain or show the colors here
+
+### Every file type
 
 ```
 View      Tab next file   L log   ? help   q quit
