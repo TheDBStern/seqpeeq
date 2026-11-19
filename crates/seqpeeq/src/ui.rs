@@ -617,17 +617,17 @@ fn draw_bottom(frame: &mut Frame, app: &App, area: Rect) {
 /// wider than 56 columns, so the box fits a 60-column terminal.
 /// The keys of an alignment tab.
 const HELP_ALIGNMENT: &[&str] = &[
-    "Move      arrows hjkl   Shift+arrows a screen",
+    "Move      arrows hjkl   Shift+arrows jumps",
     "          PgUp PgDn   Home End   g go to",
     "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
     "Edit      d delete or gap   f fill   r rename",
     "          i insert (shifts)   R type over   Esc stop",
-    "Zoom      - out   + in   z whole alignment and back",
+    "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo",
     "          w save the whole alignment",
     "          e extract the selection",
-    "          c colours   [ ] name width",
+    "          c change colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
 ];
@@ -636,25 +636,28 @@ const HELP_ALIGNMENT: &[&str] = &[
 const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
-    "          d prune  r rename  o re-root",
+    "          d prune  r rename  o re-root on branch",
+    "          O re-root at the midpoint",
     "          w save the whole tree   e extract the clade",
-    "          s ladderize  u U undo redo  a to the alignment",
+    "          s ladderize  u U undo redo",
+    "          a go to the alignment",
     "          p link to an open alignment",
 ];
 
 /// The keys of a BAM tab.
 const HELP_BAM: &[&str] = &[
     "Move      arrows hjkl   Shift+arrows a screen",
-    "          PgUp PgDn   Home End",
-    "BAM       g go to   ] [ covered   } { no coverage",
-    "          m mate   s other part   ' back   c contigs",
-    "          - + z zoom   F filtered   S clips",
+    "          PgUp PgDn   Home End   g go to position",
+    "BAM       ] [ covered   } { no coverage   c list contigs",
+    "          m mate   s other part   ' back",
+    "          - + z zoom  F toggle filtered  S toggle clips",
     "          click, drag select   Esc clear",
     "          Space add the read under the cursor",
     "                to the selection",
     "          drag the column numbers, v v  a stretch",
     "          e export reads   E reference   to a file",
-    "          a read's places   A reads aligning elsewhere",
+    "          a visualize all alignments for a read",
+    "          A list all alignments for a read",
     "          in those: S search the BAM   g go   / filter",
 ];
 
@@ -1501,7 +1504,7 @@ pub(crate) mod tests {
             "insert",
             "remove",
             "R type over",
-            "z whole",
+            "z view whole alignment",
             "delete-rows",
             "delete-cols",
             "extract",
@@ -1641,9 +1644,10 @@ pub(crate) mod tests {
             "m mate",
             "s other part",
             "' back",
-            "c contigs",
-            "F filtered",
-            "S clips",
+            "g go to position",
+            "c list contigs",
+            "F toggle filtered",
+            "S toggle clips",
             "Space add the read under the cursor",
             "                to the selection",
             "v v  a stretch",
@@ -1658,8 +1662,8 @@ pub(crate) mod tests {
     fn help_has_a_read_axis_section() {
         let help = HELP_BAM.join("\n");
         for text in [
-            "a read's places",
-            "A reads aligning elsewhere",
+            "a visualize all alignments for a read",
+            "A list all alignments for a read",
             "S search the BAM",
         ] {
             assert!(help.contains(text), "{text}");
@@ -1674,8 +1678,22 @@ pub(crate) mod tests {
             "w save the whole tree   e extract the clade",
             "Enter open/close",
             "b lengths",
-            "o re-root",
-            "a to the alignment",
+            "o re-root on branch",
+            "a go to the alignment",
+            "O re-root at the midpoint",
+        ] {
+            assert!(help.contains(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn help_alignment_wording() {
+        let help = HELP_ALIGNMENT.join("\n");
+        for text in [
+            "Shift+arrows jumps",
+            "z view whole alignment",
+            "c change colors",
+            "[ ] adjust name width",
         ] {
             assert!(help.contains(text), "{text}");
         }

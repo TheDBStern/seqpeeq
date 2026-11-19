@@ -6,6 +6,14 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `O` in a tree re-roots it at the midpoint of its longest path, like `:tree reroot --midpoint`.
+
+### Changed
+
+- The help pages are reworded to match the README.
+
 ## [0.1.0] - 2026-11-18
 
 The first release: one terminal program to view and edit alignments, trees and mapped reads, with every change
