@@ -5,35 +5,31 @@
   </picture>
 </h1>
 
-seqpeeq views and edits three kinds of file in the terminal:
-
+**seqpeeq** is a lightweight, terminal-based viewer of the following file types:
 - **multiple sequence alignments** (aligned FASTA);
 - **phylogenetic trees** (Newick);
 - **mapped reads** (sorted BAM).
 
-You can rename, delete, overwrite and extract, and link a tree to its alignment so that edits to one follow in the
-other. For BAMs you can export reads, regions or reference, and follow a read to every place it aligns.
+### Does the things I wished other viewers could do: 
+- Easily open and process large file (see [benchmarks.md](docs/benchmarks.md))
+- Extract regions of an MSA
+- Extract or prune clades of a phylogeny.
+- Edit and delete bases, rows, columns, and seq names of an MSA
+- Link an MSA to a phylogeny to jointly edit both and extract sequences associated with a tips in a tree
+- Export reads, regions, or reference of a BAM file
+- Follow multi-mapped and split reads everywhere they align in a BAM
 
-It is built for large files:
-
-- An alignment is mapped, not copied, so a several-GB file opens in seconds.
-- A tree of a million tips collapses itself to fit the screen.
-- A BAM is read by region through its index.
-
-It runs the same on a laptop and over SSH on a cluster, with nothing to set up.
-
-**Two promises:**
-
-- **Your input files are never changed.** Every result is written to a new file, and seqpeeq refuses to overwrite a
+**Input files are never changed.** Every result is written to a new file and seqpeeq refuses to overwrite a
   file that already exists.
-- **Every change is logged.** Each command is written to a session log, which `seqpeeq replay` runs again to make the
+
+**Every change is logged.** Each command is written to a session log, which `seqpeeq replay` runs again to make the
   same files.
 
 ## Install
 
 ### Conda environment
 
-On a Linux server or a Mac, build seqpeeq into its own conda environment:
+Build seqpeeq into its own conda environment:
 
 ```sh
 conda create -n seqpeeq -c conda-forge rust
@@ -42,11 +38,9 @@ git clone https://github.com/TheDBStern/seqpeeq && cd seqpeeq
 cargo install --path crates/seqpeeq --root "$CONDA_PREFIX"
 ```
 
-- The program goes in the environment's `bin`, so `seqpeeq` is there whenever the environment is active.
-- To update, run `git pull` and the last line again.
-- The build downloads its libraries from crates.io, so run it where there is internet, usually a login node.
-- All dependencies are pure Rust, so no C libraries are needed. Linking uses the system's `cc`, which Linux servers
-  almost always have; if cargo says ``linker `cc` not found``, load or install gcc first.
+
+- The build downloads its libraries from crates.io, so internet is needed.
+- If cargo says ``linker `cc` not found``, load or install gcc first.
 
 ### With Rust
 
@@ -58,13 +52,12 @@ cargo install --git https://github.com/TheDBStern/seqpeeq seqpeeq
 
 ### Prebuilt program
 
-Each release on GitHub has:
+The GitHub releases have:
 
-- `seqpeeq-<version>-x86_64-unknown-linux-musl.tar.gz`, a static Linux program that runs on any x86_64 Linux,
-  however old;
+- `seqpeeq-<version>-x86_64-unknown-linux-musl.tar.gz`, a static Linux program that runs on any x86_64 Linux
 - `seqpeeq-<version>-aarch64-apple-darwin.tar.gz`, for Apple-silicon Macs.
 
-Each comes with a `.sha256` file. Download, check and unpack one in a terminal:
+Download, check and unpack one in a terminal:
 
 ```sh
 v=v0.1.0
@@ -78,33 +71,35 @@ tar xzf $f
 
 Then move `seqpeeq-$v-$t/seqpeeq` to a folder on your `PATH`, such as `~/.local/bin`.
 
-**On a Mac, download with `curl` as above, not with a browser.** The program is not signed by Apple, and macOS refuses
-to open an unsigned program that a browser or Mail downloaded. A program fetched with `curl`, built with `cargo` or
-installed with conda is not affected. If you did use a browser, clear the flag once:
+**On a Mac, download with `curl` as above, not with a browser.** 
+Fetching with `curl`, building with `cargo` or
+installing with conda should work fine. If you did use a browser, you can run this:
 
 ```sh
 xattr -d com.apple.quarantine seqpeeq
 ```
 
-## First session
+## Quick start
 
 ```sh
 seqpeeq aln.fa          # open an alignment (also: tree.nwk, reads.bam, or several at once)
 ```
 
 1. Move with the arrows or `hjkl`.
-2. Press `V` to select whole rows, and `j` to extend the selection down a row.
+2. Press `V` to select whole rows and `j` to extend the selection down a row.
 3. Press `d` to delete the selected rows.
 4. Press `w` to save the whole alignment to a new file. Type its name at the prompt and press Enter.
 5. Press `q` to quit.
 
-The session's log is in the current folder as `seqpeeq-YYYYMMDD-HHMMSS.log`. Run it again, without the interface:
+You can select reads, bases, or clades by clicking and dragging. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
+
+Session logs are saved in the current folder as `seqpeeq-YYYYMMDD-HHMMSS.log`. To rerun a session without the interface:
 
 ```sh
-seqpeeq replay seqpeeq-20261118-101500.log
+seqpeeq replay seqpeeq-<log-number>.log
 ```
 
-Other ways in:
+Other ways to run it:
 
 - `seqpeeq reads.bam --ref genome.fa` opens a BAM with its reference.
 - `seqpeeq run 'open aln.fa' 'msa delete-cols --cols 1-100' 'msa extract --out trimmed.fa'` runs commands with no
@@ -206,7 +201,7 @@ Each applies to the current file: the one opened last, or chosen with `use`.
 
 | Command | What it does |
 |---|---|
-| `open PATH [--kind msa\|tree\|bam]` | Open a file. The kind is taken from the extension unless given. |
+| `open PATH [--kind msa\|tree\|bam]` | Open a file. The file type is inferred from the extension unless given. |
 | `use N` | Make the Nth open file (counting from 1) the one commands apply to. |
 | `close` | Close the current file. Nothing is written. |
 | `undo` | Take back the last change to the current file. |
@@ -259,22 +254,20 @@ The options of `bam export-reads`:
 
 **The log file:**
 
-- **Where it goes:** each session writes `seqpeeq-YYYYMMDD-HHMMSS.log` in the current folder.
+- Each session writes `seqpeeq-YYYYMMDD-HHMMSS.log` in the current folder.
   - `--log PATH` puts it elsewhere.
   - `--no-log` writes none.
-  - A session that runs no command leaves no log.
+  - Logs aren't written if no command is run.
   - An existing log is never overwritten or added to.
-- **What it holds:** every command, opens included, one per line, with timestamps and notes as `#` comments.
+- Every command, opens included, one per line, with timestamps and notes as `#` comments are saved in the log.
   - Scrolling, zooming and selecting are not logged.
-  - Undo and redo are, so a replay follows exactly what happened.
-- **Inputs:** each `open` records the file's full path and size. A replay warns when a file's size has changed since.
-- **Names files:** a command naming too many reads to fit on a line gives them in a names file beside the log,
+  - Undo and redo are logged, so a replay follows exactly what happened.
+- Each `open` records the file's full path and size. A replay warns when a file's size has changed since.
+- A command naming too many reads to fit on a line gives them in a names file beside the log,
   `<log>.names-N.txt`, which the command points to with `--names-file`.
 
 **Replaying:**
 
-- `seqpeeq replay LOG` reads every line before running any, so a log it cannot understand changes nothing.
-- A command that fails stops the replay there.
 - Since outputs are never overwritten, replay into a folder where the log's output files don't exist yet. Moving or
   deleting the earlier outputs also works.
 - Paths are kept as they were typed, so relative paths are read from the folder you replay in. Copy the inputs
@@ -286,13 +279,12 @@ make ones it can't record. `:rescue FILE` still saves the current alignment, so 
 ## Limits
 
 - **Alignments:** FASTA, plain or gzipped. Unaligned FASTA (rows of different lengths) opens too.
-- **Trees:** Newick. Nexus is not read.
+- **Trees:** Newick only.
 - **BAMs:** coordinate-sorted BAMs only. A missing index is built when the file is opened. CRAM is not read.
-- **Out of scope:** realigning, tree inference and variant calling.
 
 ## Benchmarks
 
-See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, FigTree and Jalview on files of rising
+See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, FigTree and Jalview on files of different
 size.
 For example, on an Apple M2 laptop:
 
@@ -315,3 +307,6 @@ at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in seqpeeq by you, as
 defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+
+## AI Usage Disclosure
+The majority of this codebase was generated or refactored using **Claude**. All AI-assisted code has been reviewed, tested, and verified by the project maintainers, who take full responsibility for the final implementation.
