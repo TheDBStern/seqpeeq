@@ -202,26 +202,42 @@ impl App {
     /// stack is laid out in `body`.
     fn stacked_reads(&self, body: ratatui::layout::Rect) -> HashMap<u64, ratatui::layout::Rect> {
         let mut reads = HashMap::new();
-        for members in self.session.stacks() {
-            // The BAM shown leads; the others follow it.
-            let leader = members
-                .iter()
-                .find(|&&m| self.session.datasets().get(self.active).map(|d| d.id) == Some(m))
-                .unwrap_or(&members[0]);
-            let base_level = self.bams.get(leader).is_some_and(|v| v.per_col == 1);
-            let needs: Vec<usize> = members
-                .iter()
-                .map(|m| match self.bams.get(m) {
-                    Some(view) if view.loaded.is_some() => view.packed.rows.len(),
-                    _ => usize::MAX,
-                })
-                .collect();
-            let layout = ui::bam::stack_layout(body, base_level, &needs);
+        for (members, layout) in self.stack_layouts(body) {
             for (member, rows) in members.iter().zip(&layout.members) {
                 reads.insert(*member, rows.reads);
             }
         }
         reads
+    }
+
+    /// Each stack (its members' dataset ids) and how it is laid out in
+    /// `body`: by the reads each member has, at the zoom of the BAM shown
+    /// (else its first).
+    pub(crate) fn stack_layouts(
+        &self,
+        body: ratatui::layout::Rect,
+    ) -> Vec<(Vec<u64>, ui::bam::StackLayout)> {
+        let shown = self.session.datasets().get(self.active).map(|d| d.id);
+        self.session
+            .stacks()
+            .iter()
+            .map(|members| {
+                let leader = members
+                    .iter()
+                    .find(|&&m| Some(m) == shown)
+                    .unwrap_or(&members[0]);
+                let base_level = self.bams.get(leader).is_some_and(|v| v.per_col == 1);
+                let needs: Vec<usize> = members
+                    .iter()
+                    .map(|m| match self.bams.get(m) {
+                        Some(view) if view.loaded.is_some() => view.packed.rows.len(),
+                        _ => usize::MAX,
+                    })
+                    .collect();
+                let layout = ui::bam::stack_layout(body, base_level, &needs);
+                (members.clone(), layout)
+            })
+            .collect()
     }
 
     /// Put every other BAM of the shown BAM's stack where it is: the same
@@ -805,6 +821,45 @@ impl App {
             return;
         }
         let body = self.bam_body();
+        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
+        let shown = self.session.datasets().get(self.active).map(|d| d.id);
+        let stack = self
+            .stack_layouts(body)
+            .into_iter()
+            .find(|(members, _)| shown.is_some_and(|id| members.contains(&id)));
+        if let Some((members, layout)) = &stack {
+            let under = layout.members.iter().position(|rows| {
+                [rows.name, rows.coverage, rows.reads]
+                    .iter()
+                    .any(|r| r.contains(at))
+            });
+            if let Some(i) = under {
+                let member = members[i];
+                match mouse.kind {
+                    // The wheel scrolls the BAM under it, which keeps
+                    // whatever has the focus.
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                        let by = if mouse.kind == MouseEventKind::ScrollDown {
+                            3
+                        } else {
+                            -3
+                        };
+                        if let Some(view) = self.bams.get_mut(&member) {
+                            view.scroll_rows(by);
+                        }
+                        return;
+                    }
+                    // A press focuses the BAM under it, then acts on it.
+                    MouseEventKind::Down(_) => {
+                        let datasets = self.session.datasets();
+                        if let Some(index) = datasets.iter().position(|d| d.id == member) {
+                            self.active = index;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
@@ -818,10 +873,17 @@ impl App {
         };
         let contig = &source.contigs()[view.contig];
         let length = contig.length;
-        let layout = ui::bam::bam_layout(body, view);
+        // In a stack, the focused BAM's rows; a drag stays with the BAM
+        // it started in, since only the focused BAM's rows are hit.
+        let layout = match &stack {
+            Some((members, layout)) => {
+                let i = members.iter().position(|&m| m == id).unwrap_or(0);
+                layout.member(i)
+            }
+            None => ui::bam::bam_layout(body, view),
+        };
         let hit = ui::bam::bam_hit(&layout, view, contig, mouse.column, mouse.row);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
         let sideways = layout.strip.contains(at) || layout.ruler.contains(at);
         match mouse.kind {
             MouseEventKind::ScrollDown if sideways => view.scroll(3, length),
@@ -2791,5 +2853,50 @@ pub(crate) mod tests {
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.active, 1);
         assert_eq!(view(&app).over.len(), 1);
+    }
+
+    #[test]
+    fn clicks_focus_a_member_and_the_wheel_scrolls_the_one_under_it() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, app.session.datasets()[1].id);
+        app.active = 0;
+        // Short enough that b.bam has one row for its two rows of reads.
+        app.resize(Size::new(80, 13));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        app.status.clear();
+        let body = app.bam_body();
+        let (members, layout) = app.stack_layouts(body).remove(0);
+        assert_eq!(members, [a, b]);
+        let second = layout.members[1].reads;
+        assert_eq!(second.height, 1);
+
+        let row = app.bams[&b].row;
+        mouse(&mut app, MouseEventKind::ScrollDown, (5, second.y), false);
+        assert_eq!((app.bams[&b].top, app.bams[&b].row), (1, row));
+        assert_eq!(app.bams[&a].top, 0);
+        assert_eq!(app.active, 0);
+
+        click(&mut app, (5, second.y));
+        assert_eq!(app.active, 1);
+        let column_5 = app.bams[&b].left + 5;
+        assert_eq!((app.bams[&b].cursor, app.bams[&b].row), (column_5, 1));
+
+        let left = app.bams[&a].left;
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            (5, layout.ruler.y),
+            false,
+        );
+        settle(&mut app);
+        assert!(app.bams[&b].left > left);
+        assert_eq!(app.bams[&a].left, app.bams[&b].left);
+
+        let left = app.bams[&a].left;
+        click(&mut app, (79, layout.strip.y));
+        settle(&mut app);
+        assert_ne!(app.bams[&b].left, left);
+        assert_eq!(app.bams[&a].left, app.bams[&b].left);
     }
 }

@@ -85,10 +85,6 @@ pub struct StackLayout {
 impl StackLayout {
     /// The layout as member `i` sees it: the shared rows, and its own
     /// coverage and reads.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the stack view uses it from the next commit")
-    )]
     pub fn member(&self, i: usize) -> BamLayout {
         BamLayout {
             strip: self.strip,
