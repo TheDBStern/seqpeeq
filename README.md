@@ -165,9 +165,8 @@ Move      arrows hjkl   Shift+arrows a screen
 BAM       ] [ covered   } { no coverage   c list contigs
           m mate   s other part   ' back
           - + z zoom  F toggle filtered  S toggle clips
-          click, drag select   Esc clear
-          Space add the read under the cursor
-                to the selection
+          click, drag, Space select   Esc clear
+          Tab next BAM in a stack   :bam unstack
           drag the column numbers, v v  a stretch
           e export reads   E reference   to a file
           a visualize all alignments for a read
@@ -196,6 +195,20 @@ A read's color says what is unusual about it. The first of these that applies is
 
 A **dimmed** read has mapping quality 0, or is secondary, a duplicate or QC-failed. Dimmed reads don't count towards
 coverage. The blue bars along the top show coverage, and selected reads have a gray background.
+
+**Several BAMs:** BAMs mapped to the same reference can be seen one above another, to compare samples at one spot or
+to see assembled contigs over the reads.
+
+- BAMs whose headers list the same contigs, by name and length in any order, open as one stack of up to 3, with or
+  without `--ref`. So `seqpeeq a.bam b.bam --ref ref.fa` opens straight into a stack on one tab.
+- The stack shares one ruler and one reference row, and moves as one: moving, zooming and jumping in one BAM moves
+  them all.
+- Each BAM has its own name line, coverage and reads. Rows go to the BAMs whose reads need them, so a BAM of contigs
+  takes only a row or two.
+- One BAM has the focus, marked `▸`. Keys and commands act on it. `Tab` and `Shift+Tab` move the focus through the
+  stack and then on to the next tab, and a click focuses the BAM under it. The wheel scrolls the BAM under it.
+- `:bam ref FILE` attaches the reference to every BAM in the stack.
+- `:bam unstack` splits the stack back into tabs, and `:bam stack FILE` stacks the current BAM with another open one.
 
 ### Every file type
 
@@ -298,10 +311,12 @@ step. Type them after `:` in the interface. The examples here start from names l
 
 | Command | What it does |
 |---|---|
-| `bam ref FILE` | Attach a reference FASTA to the current BAM, for reference bases, mismatches and `export-ref`. |
+| `bam ref FILE` | Attach a reference FASTA to the current BAM, or to every BAM in its stack, for reference bases, mismatches and `export-ref`. |
 | `bam export-region REGION --out FILE` | Write every record overlapping a region to a new BAM, with its index. |
 | `bam export-reads [--region REGION] [--name NAME … \| --names-file FILE] [--with-mates] [--clip] [--everywhere] --out FILE` | Write reads to a new BAM, FASTA or FASTQ, chosen by `--out`'s extension. See below. |
 | `bam export-ref REGION --out FILE` | Write a stretch of the reference to a new FASTA. |
+| `bam stack FILE` | Stack the current BAM with an open BAM that has the same contigs. |
+| `bam unstack` | Split the current BAM's stack back into tabs. |
 
 The options of `bam export-reads`:
 

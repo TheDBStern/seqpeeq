@@ -62,6 +62,125 @@ pub fn bam_layout(area: Rect, view: &BamView) -> BamLayout {
     }
 }
 
+/// One BAM's rows in a stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberRows {
+    /// Its file name, marked when it has the focus.
+    pub name: Rect,
+    pub coverage: Rect,
+    pub reads: Rect,
+}
+
+/// Where each row of a stack of BAMs goes: the rows they share, and each
+/// BAM's own. A row not shown has no height.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackLayout {
+    pub strip: Rect,
+    pub ruler: Rect,
+    pub reference: Rect,
+    pub details: Rect,
+    pub members: Vec<MemberRows>,
+}
+
+impl StackLayout {
+    /// The layout as member `i` sees it: the shared rows, and its own
+    /// coverage and reads.
+    pub fn member(&self, i: usize) -> BamLayout {
+        BamLayout {
+            strip: self.strip,
+            ruler: self.ruler,
+            reference: self.reference,
+            coverage: self.members[i].coverage,
+            reads: self.members[i].reads,
+            details: self.details,
+        }
+    }
+}
+
+/// Lay a stack out in `area`, `needs` being the rows of reads each BAM
+/// has (`usize::MAX` while unknown). The shared strip, ruler and
+/// reference (at a base a column) go on top and the details at the
+/// bottom; each BAM has a name line, a coverage row and at least one row
+/// of reads. When that does not fit, rows go in this order: the details,
+/// the reference, the strip, the ruler, then every coverage row. The
+/// other rows go to the BAMs whose reads need them.
+pub fn stack_layout(area: Rect, base_level: bool, needs: &[usize]) -> StackLayout {
+    let n = needs.len() as u16;
+    // strip, ruler, reference, details, coverage
+    let mut keep = [true, true, base_level, true, true];
+    let least = |keep: &[bool; 5]| {
+        let shared = keep[..4].iter().filter(|&&k| k).count() as u16;
+        shared + n * (2 + u16::from(keep[4]))
+    };
+    for i in [3, 2, 0, 1, 4] {
+        if least(&keep) <= area.height {
+            break;
+        }
+        keep[i] = false;
+    }
+    let spare = area.height.saturating_sub(least(&keep));
+    let wants: Vec<usize> = needs.iter().map(|need| need.saturating_sub(1)).collect();
+    let extra = share(usize::from(spare), &wants);
+
+    let mut y = area.y;
+    let mut take = |height: u16| {
+        let height = height.min(area.bottom().saturating_sub(y));
+        let rect = Rect { y, height, ..area };
+        y += height;
+        rect
+    };
+    let strip = take(u16::from(keep[0]));
+    let ruler = take(u16::from(keep[1]));
+    let reference = take(u16::from(keep[2]));
+    let members = extra
+        .iter()
+        .map(|&more| MemberRows {
+            name: take(1),
+            coverage: take(u16::from(keep[4])),
+            reads: take(1 + more as u16),
+        })
+        .collect();
+    let details = take(u16::from(keep[3]));
+    StackLayout {
+        strip,
+        ruler,
+        reference,
+        details,
+        members,
+    }
+}
+
+/// Share `spare` rows out among wants: each want no bigger than an even
+/// share is met in full, and what is left is split evenly among the rest
+/// (or, when every want is met, among those that wanted any, or else
+/// all), the first getting any odd rows.
+fn share(mut spare: usize, wants: &[usize]) -> Vec<usize> {
+    let mut got = vec![0; wants.len()];
+    let mut open: Vec<usize> = (0..wants.len()).collect();
+    while let Some(at) = open.iter().position(|&i| wants[i] <= spare / open.len()) {
+        let i = open.remove(at);
+        got[i] = wants[i];
+        spare -= wants[i];
+    }
+    // With every want met, the rest goes to those that wanted any, so a
+    // BAM with one row of reads keeps one; failing that, to all.
+    let wanting: Vec<usize> = (0..wants.len()).filter(|&i| wants[i] > 0).collect();
+    let rest: Vec<usize> = if !open.is_empty() {
+        open
+    } else if !wanting.is_empty() {
+        wanting
+    } else {
+        (0..wants.len()).collect()
+    };
+    if let Some(each) = spare.checked_div(rest.len()) {
+        let odd = spare % rest.len();
+        for (k, &i) in rest.iter().enumerate() {
+            got[i] += each + usize::from(k < odd);
+        }
+    }
+    got
+}
+
 const BARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// A bar for `value` out of `most`: blank for nothing, at least the
@@ -333,118 +452,242 @@ pub fn draw_bam(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let source = doc.source();
-    let contig = &source.contigs()[view.contig];
-    let length = contig.length;
+    let length = source.contigs()[view.contig].length;
     let layout = bam_layout(area, view);
     let pass = app.passes.get(&(dataset.id, view.contig));
-    let finished = pass.filter(|p| p.done_to >= length);
     let buf = frame.buffer_mut();
+    draw_strip(buf, layout.strip, view, source, pass);
+    draw_ruler(buf, layout.ruler, view, length);
+    let bases = bases_shown(view, length);
+    draw_reference(buf, layout.reference, view, length, &bases);
+    draw_coverage(buf, layout.coverage, view, source, pass);
+    draw_reads(buf, layout.reads, view, length, &bases);
+    draw_details(buf, layout.details, view, source);
+    place_cursor(frame, app, area, view, layout.reads, layout.ruler);
+}
 
-    // The strip: the sketch from the index until the pass is done.
-    if layout.strip.height > 0 {
-        let head = strip_head(contig);
-        buf.set_stringn(
-            layout.strip.x,
-            layout.strip.y,
-            &head,
-            layout.strip.width as usize,
-            Style::new(),
-        );
-        let bar_area = strip_bar(layout.strip, contig);
-        let width = bar_area.width;
-        let values: Vec<f32> = match finished {
-            Some(pass) => (0..width)
-                .map(|i| {
-                    let (a, b) = strip_span(i, width, length);
-                    resample(&pass.bins, length, a, b)
-                })
-                .collect(),
-            None => source.sketch(view.contig, width as usize),
-        };
-        let most = values.iter().copied().fold(0.0, f32::max);
-        let (left, end) = (view.left, view.end(length));
-        for (i, &value) in values.iter().enumerate() {
-            let (a, b) = strip_span(i as u16, width, length);
-            let style = if a <= end && b >= left {
-                palette::IN_VIEW
-            } else {
-                palette::DEPTH
-            };
-            let style = palette::DEPTH.patch(style);
-            put(
-                buf,
-                bar_area.x + i as u16,
-                bar_area.y,
-                bar(value, most),
-                style,
+/// Draw a stack of BAMs (`members`, dataset ids in stack order): the
+/// shared strip, ruler and reference of the BAM shown, then each BAM's
+/// name line, coverage and reads, then the details line.
+pub fn draw_stack(frame: &mut Frame, app: &App, members: &[u64], area: Rect) {
+    let Some((dataset, doc, view)) = app.bam() else {
+        return;
+    };
+    let datasets = app.session.datasets();
+    let shown: Vec<_> = members
+        .iter()
+        .filter_map(|id| {
+            let dataset = datasets.iter().find(|d| d.id == *id)?;
+            Some((dataset, dataset.bam()?, app.bams.get(id)?))
+        })
+        .collect();
+    let needs: Vec<usize> = shown
+        .iter()
+        .map(|(_, _, v)| match v.loaded {
+            Some(_) => v.packed.rows.len(),
+            None => usize::MAX,
+        })
+        .collect();
+    let layout = stack_layout(area, view.per_col == 1, &needs);
+    let source = doc.source();
+    let length = source.contigs()[view.contig].length;
+    let pass = app.passes.get(&(dataset.id, view.contig));
+    let buf = frame.buffer_mut();
+    draw_strip(buf, layout.strip, view, source, pass);
+    draw_ruler(buf, layout.ruler, view, length);
+    let bases = bases_shown(view, length);
+    draw_reference(buf, layout.reference, view, length, &bases);
+    let mut focused_reads = layout.ruler;
+    for ((member, doc, member_view), rows) in shown.iter().zip(&layout.members) {
+        let focused = member.id == dataset.id;
+        if focused {
+            focused_reads = rows.reads;
+        }
+        if rows.name.height > 0 {
+            let mark = if focused { "▸" } else { " " };
+            let head = format!("{mark}{} ", name(member));
+            let rule = (rows.name.width as usize).saturating_sub(head.width());
+            let line = format!("{head}{}", "─".repeat(rule));
+            buf.set_stringn(
+                rows.name.x,
+                rows.name.y,
+                &line,
+                rows.name.width as usize,
+                dim(),
             );
         }
+        let source = doc.source();
+        let length = source.contigs()[member_view.contig].length;
+        let pass = app.passes.get(&(member.id, member_view.contig));
+        draw_coverage(buf, rows.coverage, member_view, source, pass);
+        let bases = bases_shown(member_view, length);
+        // Zoomed out past reads, draw_reads says to zoom in; no read is
+        // coming then.
+        let past_reads = member_view.cols() * member_view.per_col >= READS_WIDTH;
+        if member_view.loaded.is_none() && !past_reads && rows.reads.height > 0 {
+            let reads = rows.reads;
+            buf.set_stringn(reads.x, reads.y, "reading…", reads.width as usize, dim());
+        } else {
+            draw_reads(buf, rows.reads, member_view, length, &bases);
+        }
     }
+    draw_details(buf, layout.details, view, source);
+    place_cursor(frame, app, area, view, focused_reads, layout.ruler);
+}
 
-    draw_ruler(buf, layout.ruler, view, length);
+fn dim() -> Style {
+    Style::new().add_modifier(Modifier::DIM)
+}
 
-    let bases = if view.per_col == 1 {
+/// The file name a dataset is shown by, as on its tab.
+fn name(dataset: &seqpeeq_core::Dataset) -> String {
+    match dataset.path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => dataset.path.display().to_string(),
+    }
+}
+
+/// The contig strip: the sketch from the index until the pass is done.
+fn draw_strip(
+    buf: &mut Buffer,
+    area: Rect,
+    view: &BamView,
+    source: &seqpeeq_core::bam::BamSource,
+    pass: Option<&Coverage>,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let contig = &source.contigs()[view.contig];
+    let length = contig.length;
+    let finished = pass.filter(|p| p.done_to >= length);
+    let head = strip_head(contig);
+    buf.set_stringn(area.x, area.y, &head, area.width as usize, Style::new());
+    let bar_area = strip_bar(area, contig);
+    let width = bar_area.width;
+    let values: Vec<f32> = match finished {
+        Some(pass) => (0..width)
+            .map(|i| {
+                let (a, b) = strip_span(i, width, length);
+                resample(&pass.bins, length, a, b)
+            })
+            .collect(),
+        None => source.sketch(view.contig, width as usize),
+    };
+    let most = values.iter().copied().fold(0.0, f32::max);
+    let (left, end) = (view.left, view.end(length));
+    for (i, &value) in values.iter().enumerate() {
+        let (a, b) = strip_span(i as u16, width, length);
+        let style = if a <= end && b >= left {
+            palette::IN_VIEW
+        } else {
+            palette::DEPTH
+        };
+        let style = palette::DEPTH.patch(style);
+        put(
+            buf,
+            bar_area.x + i as u16,
+            bar_area.y,
+            bar(value, most),
+            style,
+        );
+    }
+}
+
+/// The reference bases in view, at a base a column; none otherwise.
+fn bases_shown(view: &BamView, length: u64) -> HashMap<u64, u8> {
+    if view.per_col == 1 {
         reference_bases(view, length)
     } else {
         HashMap::new()
-    };
-    if layout.reference.height > 0 {
-        for col in 0..layout.reference.width {
+    }
+}
+
+/// The reference row, with the marked stretch.
+fn draw_reference(
+    buf: &mut Buffer,
+    area: Rect,
+    view: &BamView,
+    length: u64,
+    bases: &HashMap<u64, u8>,
+) {
+    if area.height > 0 {
+        for col in 0..area.width {
             let pos = view.left + u64::from(col);
             if pos > length {
                 break;
             }
             if let Some(&b) = bases.get(&pos) {
-                put(
-                    buf,
-                    layout.reference.x + col,
-                    layout.reference.y,
-                    b as char,
-                    palette::base(b),
-                );
+                put(buf, area.x + col, area.y, b as char, palette::base(b));
             }
         }
     }
+    highlight_stretch(buf, area, view);
+}
 
-    highlight_stretch(buf, layout.reference, view);
-
-    if layout.coverage.height > 0 {
-        let depths = column_depths(view, length, pass, source);
-        let most = depths.iter().copied().fold(0.0, f32::max);
-        for (col, &depth) in depths.iter().enumerate() {
-            put(
-                buf,
-                layout.coverage.x + col as u16,
-                layout.coverage.y,
-                bar(depth, most),
-                palette::DEPTH,
-            );
-        }
+fn draw_coverage(
+    buf: &mut Buffer,
+    area: Rect,
+    view: &BamView,
+    source: &seqpeeq_core::bam::BamSource,
+    pass: Option<&Coverage>,
+) {
+    if area.height == 0 {
+        return;
     }
+    let length = source.contigs()[view.contig].length;
+    let depths = column_depths(view, length, pass, source);
+    let most = depths.iter().copied().fold(0.0, f32::max);
+    for (col, &depth) in depths.iter().enumerate() {
+        put(
+            buf,
+            area.x + col as u16,
+            area.y,
+            bar(depth, most),
+            palette::DEPTH,
+        );
+    }
+}
 
-    draw_reads(buf, layout.reads, view, length, &bases);
-
-    if layout.details.height > 0
+/// The details line: the read under the cursor.
+fn draw_details(
+    buf: &mut Buffer,
+    area: Rect,
+    view: &BamView,
+    source: &seqpeeq_core::bam::BamSource,
+) {
+    if area.height > 0
         && let Some(read) = view.cursor_read()
     {
         buf.set_stringn(
-            layout.details.x,
-            layout.details.y,
+            area.x,
+            area.y,
             details(read, source.contigs(), view.cursor),
-            layout.details.width as usize,
+            area.width as usize,
             Style::new(),
         );
     }
+}
 
+/// The terminal cursor: on the cursor's column, at the row cursor when it
+/// is in `reads`, else on the ruler.
+fn place_cursor(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    view: &BamView,
+    reads: Rect,
+    ruler: Rect,
+) {
     if matches!(app.mode, Mode::Normal)
         && let Some(col) = view.col_of(view.cursor)
         && (col as u16) < area.width
     {
-        let on_screen = view.row >= view.top && view.row - view.top < layout.reads.height as usize;
+        let on_screen = view.row >= view.top && view.row - view.top < reads.height as usize;
         let y = if on_screen {
-            layout.reads.y + (view.row - view.top) as u16
+            reads.y + (view.row - view.top) as u16
         } else {
-            layout.ruler.y
+            ruler.y
         };
         if y < area.bottom() {
             frame.set_cursor_position(Position::new(area.x + col as u16, y));
@@ -1076,5 +1319,225 @@ mod tests {
         app.status.clear();
         let screen = rows(&render(&app, 80, 14));
         assert!(screen[12].ends_with("(bam ref FILE)"), "{}", screen[12]);
+    }
+
+    /// The reads heights of a stack layout's members.
+    fn reads_heights(l: &StackLayout) -> Vec<u16> {
+        l.members.iter().map(|m| m.reads.height).collect()
+    }
+
+    /// Every rect of `l` lies inside `area`, and the members' rows do not
+    /// overlap one another or the shared rows.
+    fn assert_fits(l: &StackLayout, area: Rect) {
+        let mut rects = vec![l.strip, l.ruler, l.reference, l.details];
+        for m in &l.members {
+            rects.extend([m.name, m.coverage, m.reads]);
+        }
+        let shown: Vec<Rect> = rects.into_iter().filter(|r| r.height > 0).collect();
+        for (i, r) in shown.iter().enumerate() {
+            assert!(
+                area.contains(r.as_position()) && r.bottom() <= area.bottom(),
+                "{r:?}"
+            );
+            for other in &shown[i + 1..] {
+                assert!(!r.intersects(*other), "{r:?} overlaps {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stack_shares_rows_out_by_need() {
+        let area = Rect::new(0, 0, 80, 20);
+        let l = stack_layout(area, true, &[30, 2]);
+        assert_eq!(
+            (l.strip.y, l.ruler.y, l.reference.y, l.details.y),
+            (0, 1, 2, 19)
+        );
+        let m = &l.members;
+        assert_eq!((m[0].name.y, m[0].coverage.y, m[0].reads.y), (3, 4, 5));
+        assert_eq!((m[1].name.y, m[1].coverage.y, m[1].reads.y), (15, 16, 17));
+        assert_eq!(reads_heights(&l), [10, 2]);
+        assert_fits(&l, area);
+
+        let l = stack_layout(area, true, &[usize::MAX, usize::MAX, 1]);
+        assert_eq!(reads_heights(&l), [5, 4, 1]);
+        assert_fits(&l, area);
+
+        // Rows left once every need is met go to the BAMs with more than
+        // one row of reads; a one-row BAM keeps its one row.
+        let l = stack_layout(area, true, &[2, 2, 1]);
+        assert_eq!(reads_heights(&l), [5, 4, 1]);
+        assert_fits(&l, area);
+
+        // With none, they are split evenly.
+        let l = stack_layout(area, false, &[1, 1]);
+        assert_eq!(l.reference.height, 0);
+        assert_eq!(reads_heights(&l), [7, 6]);
+        assert_fits(&l, area);
+
+        let member = l.member(1);
+        assert_eq!(
+            (member.strip, member.ruler, member.reference, member.details),
+            (l.strip, l.ruler, l.reference, l.details)
+        );
+        assert_eq!(
+            (member.coverage, member.reads),
+            (l.members[1].coverage, l.members[1].reads)
+        );
+    }
+
+    #[test]
+    fn a_short_stack_drops_shared_rows_then_coverage() {
+        let unknown = [usize::MAX; 3];
+        let area = Rect::new(0, 0, 80, 13);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(
+            (l.strip.y, l.ruler.y, l.reference.y, l.details.y),
+            (0, 1, 2, 12)
+        );
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert!(l.members.iter().all(|m| m.coverage.height == 1));
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 10);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(
+            (
+                l.strip.height,
+                l.ruler.height,
+                l.reference.height,
+                l.details.height
+            ),
+            (0, 1, 0, 0)
+        );
+        assert_eq!(l.members[0].name.y, 1);
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 8);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(l.ruler.height, 0);
+        assert!(l.members.iter().all(|m| m.coverage.height == 0));
+        assert_eq!(reads_heights(&l), [2, 2, 1]);
+        assert_eq!(
+            l.members.iter().map(|m| m.name.y).collect::<Vec<_>>(),
+            [0, 3, 6]
+        );
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 6);
+        let l = stack_layout(area, true, &[0, 5, 9]);
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert!(l.members.iter().all(|m| m.name.height == 1));
+        assert_fits(&l, area);
+
+        // Too short even for that: rows stop at the bottom, nothing past it.
+        let area = Rect::new(0, 0, 80, 4);
+        assert_fits(&stack_layout(area, true, &unknown), area);
+    }
+
+    /// An app with the fixture's reads.bam, a copy (b.bam) and then each
+    /// of `more` (name, SAM text) opened, ref.fa attached, at base level
+    /// from c1:101 on an 80 x 24 screen.
+    fn stack_at_101(more: &[(&str, String)]) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let f = seqpeeq_core::bam::testing::fixture(dir.path());
+        let copy = dir.path().join("b.bam");
+        std::fs::copy(&f.bam, &copy).unwrap();
+        let mut paths = vec![f.bam.clone(), copy];
+        for (name, sam) in more {
+            paths.push(bam_from_sam(dir.path(), name, sam));
+        }
+        let mut app = App::new(Session::new(None));
+        for path in paths {
+            app.enqueue(Command::Open { path, kind: None });
+        }
+        app.enqueue(Command::Bam(BamCmd::Ref {
+            file: f.reference.clone(),
+        }));
+        settle(&mut app);
+        sized(&mut app, 80, 24);
+        base_level_at(&mut app, 101);
+        app.status.clear();
+        (app, dir)
+    }
+
+    /// The row whose text starts with `start`.
+    fn row_starting(screen: &[String], start: &str) -> usize {
+        screen
+            .iter()
+            .position(|row| row.starts_with(start))
+            .unwrap_or_else(|| panic!("no row starts with {start:?}: {screen:#?}"))
+    }
+
+    #[test]
+    fn stack_of_two_at_base_level() {
+        let (app, _dir) = stack_at_101(&[]);
+        let terminal = render(&app, 80, 24);
+        insta::assert_snapshot!(terminal.backend());
+        let screen = rows(&terminal);
+        assert!(screen[1].starts_with("c1  1,000 bp"), "{}", screen[1]);
+        assert!(screen[2].starts_with("101"), "{}", screen[2]);
+        assert_eq!(screen[3], ref_bases("c1", 101, 180));
+        let first = row_starting(&screen, " reads.bam ─");
+        let second = row_starting(&screen, "▸b.bam ─");
+        assert_eq!(first, 4);
+        // The same reads, under each name and its coverage.
+        assert!(screen[first + 2].starts_with(".."), "{}", screen[first + 2]);
+        assert_eq!(screen[first + 2], screen[second + 2]);
+        assert_eq!(screen[first + 1], screen[second + 1]);
+    }
+
+    #[test]
+    fn stack_of_three_with_a_one_row_member() {
+        let sam = format!(
+            "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c1\tLN:1000\n@SQ\tSN:c2\tLN:500\n@SQ\tSN:c3\tLN:300\n\
+             r9\t0\tc1\t101\t60\t50M\t*\t0\t0\t{}\t*\n",
+            ref_bases("c1", 101, 150)
+        );
+        let (app, _dir) = stack_at_101(&[("c.bam", sam)]);
+        let terminal = render(&app, 80, 24);
+        insta::assert_snapshot!(terminal.backend());
+        let screen = rows(&terminal);
+        let third = row_starting(&screen, "▸c.bam ─");
+        assert!(
+            screen[third + 2].starts_with(".................................................."),
+            "{}",
+            screen[third + 2]
+        );
+        let datasets = app.session.datasets();
+        let heights: Vec<usize> = datasets.iter().map(|d| app.bams[&d.id].height).collect();
+        assert_eq!(heights[2], 1);
+        assert!(heights[0] > 1 && heights[1] > 1, "{heights:?}");
+    }
+
+    #[test]
+    fn a_stack_zoomed_out_past_reads_says_to_zoom_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:248956422\n");
+        for i in 0..50 {
+            let start = 1_000_000 + i * 100;
+            sam.push_str(&format!(
+                "r{i}\t0\tchr1\t{start}\t60\t10M\t*\t0\t0\tACGTACGTAC\t*\n"
+            ));
+        }
+        let a = bam_from_sam(dir.path(), "a.bam", &sam);
+        let b = bam_from_sam(dir.path(), "b.bam", &sam);
+        let mut app = App::new(Session::new(None));
+        for path in [a, b] {
+            app.enqueue(Command::Open { path, kind: None });
+        }
+        settle(&mut app);
+        sized(&mut app, 80, 24);
+        let screen = rows(&render(&app, 80, 24));
+        assert!(
+            !screen.iter().any(|r| r.contains("reading…")),
+            "{screen:#?}"
+        );
+        let said = screen
+            .iter()
+            .filter(|r| r.starts_with("zoom in to see reads"))
+            .count();
+        assert_eq!(said, 2, "{screen:#?}");
     }
 }

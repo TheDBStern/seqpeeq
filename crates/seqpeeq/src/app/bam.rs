@@ -109,11 +109,16 @@ impl App {
             keep
         });
         let body = self.bam_body();
+        let stacked = self.stacked_reads(body);
+        let mut fresh = Vec::new();
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
                 continue;
             };
             let contigs = doc.source().contigs();
+            if !self.bams.contains_key(&dataset.id) {
+                fresh.push(dataset.id);
+            }
             let view = self.bams.entry(dataset.id).or_insert_with(|| {
                 let first = contigs
                     .iter()
@@ -128,7 +133,10 @@ impl App {
                 }
             }
             let length = contigs[view.contig].length;
-            let reads = ui::bam::bam_layout(body, view).reads;
+            let reads = match stacked.get(&dataset.id) {
+                Some(&reads) => reads,
+                None => ui::bam::bam_layout(body, view).reads,
+            };
             let (width, height) = (reads.width as usize, reads.height as usize);
             if (view.width, view.height) != (width, height) {
                 view.width = width;
@@ -139,48 +147,214 @@ impl App {
             }
         }
 
+        self.mirror_stacks(&fresh);
+
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
         let id = dataset.id;
-        let Some(source) = dataset.bam().map(|b| b.source().clone()) else {
+        if dataset.bam().is_none() || !self.bams.contains_key(&id) {
             return;
+        }
+
+        // The BAM shown first, then the rest of its stack, one at a time:
+        // its coverage pass and window, then theirs.
+        let pass_done = self.ask_pass(id, true);
+        let window_done = self.ask_window(id, true);
+        let others: Vec<u64> = self
+            .session
+            .stack_of(id)
+            .map(|members| members.iter().copied().filter(|&m| m != id).collect())
+            .unwrap_or_default();
+        if pass_done {
+            for &member in &others {
+                if !self.ask_pass(member, false) {
+                    break;
+                }
+            }
+        }
+        if window_done {
+            for member in others {
+                if !self.ask_window(member, false) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Start the coverage pass of BAM `id`'s contig in view, unless it is
+    /// done, running or failed; `take_over` cancels another pass for it,
+    /// else it waits for no pass to be running. Returns whether the pass
+    /// has finished (or cannot be had).
+    fn ask_pass(&mut self, id: u64, take_over: bool) -> bool {
+        let Some(source) = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(Dataset::bam)
+            .map(|b| b.source().clone())
+        else {
+            return true;
         };
-        let Some(view) = self.bams.get_mut(&id) else {
-            return;
+        let Some(view) = self.bams.get(&id) else {
+            return true;
         };
         let contig = view.contig;
         let length = source.contigs()[contig].length;
-
         let done = self
             .passes
             .get(&(id, contig))
             .is_some_and(|c| c.done_to >= length);
+        if done || self.pass_failed.contains(&(id, contig)) {
+            return true;
+        }
         let running = self
             .passing
             .as_ref()
             .is_some_and(|(d, c, _)| (*d, *c) == (id, contig));
-        if !done && !running && !self.pass_failed.contains(&(id, contig)) {
-            if let Some((d, c, progress)) = self.passing.take() {
-                progress.cancel();
-                // Unfinished, so not kept: it starts again when shown.
-                self.passes.remove(&(d, c));
-            }
-            let progress = Arc::new(Progress::new());
-            self.outbox.push(Request::Pass {
-                dataset: id,
-                contig,
-                source: source.clone(),
-                progress: progress.clone(),
-            });
-            self.passing = Some((id, contig, progress));
+        if running || (!take_over && self.passing.is_some()) {
+            return false;
         }
+        if let Some((d, c, progress)) = self.passing.take() {
+            progress.cancel();
+            // Unfinished, so not kept: it starts again when shown.
+            self.passes.remove(&(d, c));
+        }
+        let progress = Arc::new(Progress::new());
+        self.outbox.push(Request::Pass {
+            dataset: id,
+            contig,
+            source,
+            progress: progress.clone(),
+        });
+        self.passing = Some((id, contig, progress));
+        false
+    }
 
+    /// The rows of reads of each BAM in a stack, by dataset id, as the
+    /// stack is laid out in `body`.
+    fn stacked_reads(&self, body: ratatui::layout::Rect) -> HashMap<u64, ratatui::layout::Rect> {
+        let mut reads = HashMap::new();
+        for (members, layout) in self.stack_layouts(body) {
+            for (member, rows) in members.iter().zip(&layout.members) {
+                reads.insert(*member, rows.reads);
+            }
+        }
+        reads
+    }
+
+    /// Each stack (its members' dataset ids) and how it is laid out in
+    /// `body`: by the reads each member has, at the zoom of the BAM shown
+    /// (else its first).
+    pub(crate) fn stack_layouts(
+        &self,
+        body: ratatui::layout::Rect,
+    ) -> Vec<(Vec<u64>, ui::bam::StackLayout)> {
+        let shown = self.session.datasets().get(self.active).map(|d| d.id);
+        self.session
+            .stacks()
+            .iter()
+            .map(|members| {
+                let leader = members
+                    .iter()
+                    .find(|&&m| Some(m) == shown)
+                    .unwrap_or(&members[0]);
+                let base_level = self.bams.get(leader).is_some_and(|v| v.per_col == 1);
+                let needs: Vec<usize> = members
+                    .iter()
+                    .map(|m| match self.bams.get(m) {
+                        Some(view) if view.loaded.is_some() => view.packed.rows.len(),
+                        _ => usize::MAX,
+                    })
+                    .collect();
+                let layout = ui::bam::stack_layout(body, base_level, &needs);
+                (members.clone(), layout)
+            })
+            .collect()
+    }
+
+    /// Put every other BAM of the shown BAM's stack where it is: the same
+    /// contig (by name), place and zoom. A BAM whose view is new this turn
+    /// (`fresh`) has just joined, so it takes the stack's place instead.
+    pub(super) fn mirror_stacks(&mut self, fresh: &[u64]) {
+        let Some(shown) = self.session.datasets().get(self.active).map(|d| d.id) else {
+            return;
+        };
+        let Some(members) = self.session.stack_of(shown) else {
+            return;
+        };
+        let leader = if fresh.contains(&shown) {
+            members
+                .iter()
+                .copied()
+                .find(|m| !fresh.contains(m) && self.bams.contains_key(m))
+                .unwrap_or(shown)
+        } else {
+            shown
+        };
+        let datasets = self.session.datasets();
+        let contigs_of = |id: u64| -> &[seqpeeq_core::bam::Contig] {
+            let doc = datasets.iter().find(|d| d.id == id).and_then(Dataset::bam);
+            doc.map_or(&[], |b| b.source().contigs())
+        };
+        let Some(lead) = self.bams.get(&leader).map(BamView::place_now) else {
+            return;
+        };
+        let theirs = contigs_of(leader);
+        for &member in members.iter().filter(|&&m| m != leader) {
+            let mine = contigs_of(member);
+            // Stacked BAMs mostly list contigs in the same order.
+            let index = |contig: usize| {
+                let name = &theirs.get(contig)?.name;
+                match mine.get(contig) {
+                    Some(c) if &c.name == name => Some(contig),
+                    _ => mine.iter().position(|c| &c.name == name),
+                }
+            };
+            let Some(contig) = index(lead.contig) else {
+                continue;
+            };
+            let back = lead
+                .back
+                .iter()
+                .filter_map(|&(c, pos)| Some((index(c)?, pos)))
+                .collect();
+            let place = crate::bam_view::StackPlace {
+                contig,
+                back,
+                ..lead.clone()
+            };
+            if let Some(view) = self.bams.get_mut(&member) {
+                view.follow(place, mine[contig].length);
+            }
+        }
+    }
+
+    /// Ask for the window the view of BAM `id` needs, unless it has it, has
+    /// asked for it, or failed to read it; `take_over` cancels another
+    /// BAM's read for it, else it waits for no read to be running. Returns
+    /// whether the view has all it needs.
+    fn ask_window(&mut self, id: u64, take_over: bool) -> bool {
+        let Some(source) = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(Dataset::bam)
+            .map(|b| b.source().clone())
+        else {
+            return true;
+        };
+        let Some(view) = self.bams.get_mut(&id) else {
+            return true;
+        };
+        let length = source.contigs()[view.contig].length;
         let Some(want) = view.wanted(length, pass_bin(length)) else {
             if let Some(reading) = self.reading.take_if(|r| r.dataset == id) {
                 reading.progress.cancel();
             }
-            return;
+            return true;
         };
         let shown = view.view_region(length);
         let with_reference = source.reference().is_some();
@@ -196,8 +370,14 @@ impl App {
                 && complete(r.want.2, r.with_reference)
         });
         let failed = self.window_failed == Some((id, want));
-        if loaded || asked || failed {
-            return;
+        if loaded || failed {
+            return true;
+        }
+        if asked {
+            return false;
+        }
+        if !take_over && self.reading.is_some() {
+            return false;
         }
         if let Some(reading) = self.reading.take() {
             reading.progress.cancel();
@@ -218,6 +398,7 @@ impl App {
             with_reference,
             progress,
         });
+        false
     }
 
     /// Take in a window read in the background, if its view still wants it.
@@ -691,6 +872,45 @@ impl App {
             return;
         }
         let body = self.bam_body();
+        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
+        let shown = self.session.datasets().get(self.active).map(|d| d.id);
+        let stack = self
+            .stack_layouts(body)
+            .into_iter()
+            .find(|(members, _)| shown.is_some_and(|id| members.contains(&id)));
+        if let Some((members, layout)) = &stack {
+            let under = layout.members.iter().position(|rows| {
+                [rows.name, rows.coverage, rows.reads]
+                    .iter()
+                    .any(|r| r.contains(at))
+            });
+            if let Some(i) = under {
+                let member = members[i];
+                match mouse.kind {
+                    // The wheel scrolls the BAM under it, which keeps
+                    // whatever has the focus.
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                        let by = if mouse.kind == MouseEventKind::ScrollDown {
+                            3
+                        } else {
+                            -3
+                        };
+                        if let Some(view) = self.bams.get_mut(&member) {
+                            view.scroll_rows(by);
+                        }
+                        return;
+                    }
+                    // A press focuses the BAM under it, then acts on it.
+                    MouseEventKind::Down(_) => {
+                        let datasets = self.session.datasets();
+                        if let Some(index) = datasets.iter().position(|d| d.id == member) {
+                            self.focus(index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
@@ -704,10 +924,17 @@ impl App {
         };
         let contig = &source.contigs()[view.contig];
         let length = contig.length;
-        let layout = ui::bam::bam_layout(body, view);
+        // In a stack, the focused BAM's rows; a drag stays with the BAM
+        // it started in, since only the focused BAM's rows are hit.
+        let layout = match &stack {
+            Some((members, layout)) => {
+                let i = members.iter().position(|&m| m == id).unwrap_or(0);
+                layout.member(i)
+            }
+            None => ui::bam::bam_layout(body, view),
+        };
         let hit = ui::bam::bam_hit(&layout, view, contig, mouse.column, mouse.row);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
         let sideways = layout.strip.contains(at) || layout.ruler.contains(at);
         match mouse.kind {
             MouseEventKind::ScrollDown if sideways => view.scroll(3, length),
@@ -2533,5 +2760,323 @@ pub(crate) mod tests {
         app.status.clear();
         let screen = crate::ui::tests::rows(&crate::ui::tests::render(&app, 80, 14));
         assert_eq!(screen[12], "Esc back", "{screen:#?}");
+    }
+
+    // A stack of BAMs.
+
+    /// An app showing `first` and then `second` (opened in that order, so
+    /// the second is focused), everything read.
+    fn stack_of(dir: &TempDir, first: PathBuf, second: PathBuf) -> App {
+        let _ = dir;
+        let mut app = App::new(Session::new(None));
+        open(&mut app, first);
+        open(&mut app, second);
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        app
+    }
+
+    /// The fixture's reads.bam and a copy of it, b.bam, stacked.
+    fn two_stacked() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(dir.path());
+        let copy = dir.path().join("b.bam");
+        std::fs::copy(&f.bam, &copy).unwrap();
+        let app = stack_of(&dir, f.bam, copy);
+        (app, dir)
+    }
+
+    /// The views of the open BAMs, in file order.
+    fn views(app: &App) -> Vec<&BamView> {
+        let datasets = app.session.datasets();
+        datasets.iter().map(|d| &app.bams[&d.id]).collect()
+    }
+
+    /// Where a view is: its contig's name, left edge, zoom and cursor.
+    fn place_of(app: &App, index: usize) -> (String, u64, u64, u64) {
+        let dataset = &app.session.datasets()[index];
+        let view = &app.bams[&dataset.id];
+        let contigs = dataset.bam().unwrap().source().contigs();
+        let name = contigs[view.contig].name.clone();
+        (name, view.left, view.per_col, view.cursor)
+    }
+
+    /// The datasets the windows in `requests` are for, in order.
+    fn window_ids(requests: &[Request]) -> Vec<u64> {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Window { dataset, .. } => Some(*dataset),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn moving_the_focused_bam_moves_the_stack() {
+        let (mut app, _dir) = two_stacked();
+        assert_eq!(app.active, 1);
+        go(&mut app, "c2:301");
+        right(&mut app, 5);
+        keys(&mut app, "-");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        assert_eq!(place_of(&app, 1).0, "c2");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, 0);
+        keys(&mut app, "+");
+        assert_eq!(place_of(&app, 1), place_of(&app, 0));
+    }
+
+    #[test]
+    fn members_that_number_contigs_differently_land_on_the_same_contig() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(dir.path());
+        let reordered = seqpeeq_core::bam::testing::header_bam(
+            dir.path(),
+            "b.bam",
+            &[("c3", 300), ("c1", 1000), ("c2", 500)],
+        );
+        let mut app = stack_of(&dir, f.bam, reordered);
+        go(&mut app, "c2:301");
+        assert_eq!((views(&app)[0].contig, views(&app)[1].contig), (1, 2));
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        go(&mut app, "c1:10");
+        assert_eq!(place_of(&app, 0).0, "c1");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        keys(&mut app, "'");
+        assert_eq!(place_of(&app, 0).0, "c2");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn every_member_reads_its_window_the_focused_first() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, id(&app));
+        // Somewhere new at a base a column, nothing read there yet.
+        let length = app.bam().unwrap().1.source().contigs()[1].length;
+        let focused = app.bams.get_mut(&b).unwrap();
+        focused.per_col = 1;
+        focused.place(1, 301, length);
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(window_ids(&held), [b]);
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(window_ids(&held), [a]);
+        deliver(&mut app, held);
+        assert!(views(&app).iter().all(|v| v.loaded.is_some()));
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn closing_the_focused_member_while_it_reads_leaves_the_other_alone() {
+        let (mut app, _dir) = two_stacked();
+        let a = app.session.datasets()[0].id;
+        let b = id(&app);
+        app.bams.get_mut(&b).unwrap().place(2, 101, 300);
+        app.pump();
+        assert_eq!(window_ids(&requests(&mut app)), [b]);
+        app.enqueue(Command::Close);
+        app.pump();
+        assert_eq!(app.active, 0);
+        assert_eq!(crate::ui::tab_labels(&app), ["reads.bam"]);
+        assert_eq!(window_ids(&requests(&mut app)), [a]);
+    }
+
+    #[test]
+    fn tab_away_from_a_members_axis_view_and_back_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = seqpeeq_core::bam::testing::multi(dir.path());
+        let copy = dir.path().join("multi2.bam");
+        std::fs::copy(&first, &copy).unwrap();
+        let mut app = stack_of(&dir, first, copy);
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        deliver(&mut app, held);
+        assert_eq!(view(&app).over.len(), 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, 0);
+        assert!(view(&app).over.is_empty());
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.active, 1);
+        assert_eq!(view(&app).over.len(), 1);
+    }
+
+    #[test]
+    fn clicks_focus_a_member_and_the_wheel_scrolls_the_one_under_it() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, app.session.datasets()[1].id);
+        app.active = 0;
+        // Short enough that b.bam has one row for its two rows of reads.
+        app.resize(Size::new(80, 13));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        app.status.clear();
+        let body = app.bam_body();
+        let (members, layout) = app.stack_layouts(body).remove(0);
+        assert_eq!(members, [a, b]);
+        let second = layout.members[1].reads;
+        assert_eq!(second.height, 1);
+
+        let row = app.bams[&b].row;
+        mouse(&mut app, MouseEventKind::ScrollDown, (5, second.y), false);
+        assert_eq!((app.bams[&b].top, app.bams[&b].row), (1, row));
+        assert_eq!(app.bams[&a].top, 0);
+        assert_eq!(app.active, 0);
+
+        click(&mut app, (5, second.y));
+        assert_eq!(app.active, 1);
+        let column_5 = app.bams[&b].left + 5;
+        assert_eq!((app.bams[&b].cursor, app.bams[&b].row), (column_5, 1));
+
+        let left = app.bams[&a].left;
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            (5, layout.ruler.y),
+            false,
+        );
+        settle(&mut app);
+        assert!(app.bams[&b].left > left);
+        assert_eq!(app.bams[&a].left, app.bams[&b].left);
+
+        let left = app.bams[&a].left;
+        click(&mut app, (79, layout.strip.y));
+        settle(&mut app);
+        assert_ne!(app.bams[&b].left, left);
+        assert_eq!(app.bams[&a].left, app.bams[&b].left);
+    }
+
+    #[test]
+    fn a_bam_joining_a_stack_takes_its_place_and_keeps_the_way_back() {
+        let (mut app, dir) = with_bam();
+        go(&mut app, "c2:301");
+        go(&mut app, "c3:101");
+        let before = place_of(&app, 0);
+        let back = view(&app).back.clone();
+        assert_eq!(before.0, "c3");
+        assert_eq!(back.len(), 2);
+        let copy = dir.path().join("b.bam");
+        std::fs::copy(app.session.datasets()[0].path.clone(), &copy).unwrap();
+        open(&mut app, copy);
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        assert_eq!(place_of(&app, 0), before);
+        assert_eq!(place_of(&app, 1), before);
+        assert_eq!(views(&app)[0].back, back);
+        assert_eq!(views(&app)[1].back, back);
+    }
+
+    #[test]
+    #[ignore = "timing on testdata/; run with: cargo test --release -p seqpeeq -- --ignored timings_on"]
+    fn timings_on_a_stack_turn() {
+        use std::time::Instant;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let dir = tempfile::tempdir().unwrap();
+        for ext in ["bam", "bam.bai"] {
+            std::fs::copy(
+                data.join(format!("deep.{ext}")),
+                dir.path().join(format!("b.{ext}")),
+            )
+            .unwrap();
+        }
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        open(&mut app, data.join("deep.bam"));
+        open(&mut app, dir.path().join("b.bam"));
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        // As wide a window as still shows reads: 200 columns of 100 bases.
+        let id = id(&app);
+        let length = app.bam().unwrap().1.source().contigs()[0].length;
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 100;
+        v.place(0, 2_000_000, length);
+        settle(&mut app);
+        let reads = view(&app).reads().len();
+        assert!(reads > 10_000, "{reads}");
+        let turns = 200;
+        let started = Instant::now();
+        for _ in 0..turns {
+            app.pump();
+        }
+        let each = started.elapsed() / turns;
+        eprintln!("deep stacked: a turn with {reads} reads in the window {each:?}");
+        assert!(each < std::time::Duration::from_micros(500), "{each:?}");
+    }
+
+    #[test]
+    fn moves_then_a_change_of_focus_before_the_next_turn_are_kept() {
+        let (mut app, _dir) = two_stacked();
+        at_base_level(&mut app, 0, 101, 0);
+        let cursor = view(&app).cursor;
+        // Keys arriving together are handled before the next turn.
+        for _ in 0..30 {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        app.handle_event(&Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        settle(&mut app);
+        assert_eq!(place_of(&app, 0).3, cursor + 30);
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+
+        // And the same with a press on the other BAM's rows.
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        let other = layout.members[1].name;
+        assert_eq!(app.active, 0);
+        for _ in 0..10 {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        click(&mut app, (0, other.y));
+        settle(&mut app);
+        assert_eq!(app.active, 1);
+        assert_eq!(place_of(&app, 1).3, cursor + 40);
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn every_member_gets_its_coverage_pass_the_shown_first() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, id(&app));
+        let contig = view(&app).contig;
+        let done = |app: &App, id: u64| {
+            let length = app.bam().unwrap().1.source().contigs()[contig].length;
+            app.passes
+                .get(&(id, contig))
+                .is_some_and(|c| c.done_to >= length)
+        };
+        assert!(done(&app, b) && done(&app, a));
+
+        // Another contig: the shown BAM's pass is asked first, then the other.
+        go(&mut app, "c2:1");
+        app.passes.clear();
+        app.pump();
+        let passes = |held: &[Request]| -> Vec<u64> {
+            held.iter()
+                .filter_map(|r| match r {
+                    Request::Pass { dataset, .. } => Some(*dataset),
+                    _ => None,
+                })
+                .collect()
+        };
+        let held = requests(&mut app);
+        assert_eq!(passes(&held), [b]);
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(passes(&held), [a]);
+        deliver(&mut app, held);
     }
 }

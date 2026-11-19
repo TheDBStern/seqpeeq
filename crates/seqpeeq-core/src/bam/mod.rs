@@ -171,15 +171,15 @@ impl BamDoc {
     }
 
     /// Use `reference` for reference bases from now on. Returns what the
-    /// message says: `attached ref.fa to reads.bam (3 of 3 contigs)`.
-    pub(crate) fn set_reference(&mut self, reference: Reference) -> String {
+    /// message says, `named` being the BAM or BAMs it went to:
+    /// `attached ref.fa to reads.bam (3 of 3 contigs)`.
+    pub(crate) fn set_reference(&mut self, reference: Reference, named: &str) -> String {
         let contigs = self.source.contigs();
         let found = contigs.iter().filter(|c| reference.has(&c.name)).count();
         let missing = contigs.len() - found;
         let ref_name = index::file_name(reference.path());
         let mut message = format!(
-            "attached {ref_name} to {} ({} of {} contigs",
-            self.source.file_name(),
+            "attached {ref_name} to {named} ({} of {} contigs",
             grouped(found as u64),
             grouped(contigs.len() as u64)
         );

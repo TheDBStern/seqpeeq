@@ -563,6 +563,8 @@ mod tests {
         let region = || "[^\\x00\\r\\n]{1,20}";
         prop_oneof![
             path().prop_map(|file| BamCmd::Ref { file }),
+            path().prop_map(|file| BamCmd::Stack { file }),
+            Just(BamCmd::Unstack),
             (region(), path()).prop_map(|(region, out)| BamCmd::ExportRegion { region, out }),
             (region(), path()).prop_map(|(region, out)| BamCmd::ExportRef { region, out }),
             (

@@ -9,8 +9,8 @@ use noodles::csi;
 use noodles::csi::BinningIndex as _;
 use noodles::csi::binning_index::ReferenceSequence as _;
 
-use super::testing::{bam_from_sam, fixture};
-use crate::{Command, Error, Outcome, Session, Started};
+use super::testing::{bam_from_sam, fixture, header_bam};
+use crate::{BamCmd, Command, Error, Outcome, Session, Started};
 
 /// A session with no log whose cache folder is `cache`.
 fn session(cache: &Path) -> Session {
@@ -1716,4 +1716,289 @@ fn an_xa_entry_whose_nm_is_not_a_number_is_skipped() {
     assert_eq!(q.alts.len(), 1);
     assert_eq!(q.alts[0].place.pos, 501);
     assert_eq!(q.alts_skipped, 2);
+}
+
+/// The fixture's contigs, for header-only BAMs that stack with it.
+const FIXTURE_CONTIGS: [(&str, u64); 3] = [("c1", 1000), ("c2", 500), ("c3", 300)];
+
+#[test]
+fn bams_with_the_same_contigs_stack_on_open_in_any_order() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let other = header_bam(
+        data.path(),
+        "b.bam",
+        &[("c3", 300), ("c1", 1000), ("c2", 500)],
+    );
+    let out = open(&mut s, &other).unwrap();
+    assert!(
+        out.message.ends_with("; stacked with reads.bam"),
+        "{}",
+        out.message
+    );
+    let (a, b) = (s.datasets()[0].id, s.datasets()[1].id);
+    assert_eq!(s.stack_of(a), Some(&[a, b][..]));
+    assert_eq!(s.stack_of(b), Some(&[a, b][..]));
+    assert_eq!(s.stacks(), &[vec![a, b]]);
+}
+
+#[test]
+fn bams_with_other_contigs_do_not_stack() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let fewer = header_bam(data.path(), "b.bam", &[("c1", 1000), ("c2", 500)]);
+    let longer = header_bam(
+        data.path(),
+        "c.bam",
+        &[("c1", 1000), ("c2", 500), ("c3", 301)],
+    );
+    for path in [fewer, longer] {
+        let out = open(&mut s, &path).unwrap();
+        assert!(!out.message.contains("stacked"), "{}", out.message);
+    }
+    assert!(s.stacks().is_empty());
+    assert_eq!(s.stack_of(s.datasets()[0].id), None);
+}
+
+#[test]
+fn a_fourth_matching_bam_opens_on_its_own() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let mut messages = Vec::new();
+    for name in ["b.bam", "c.bam", "d.bam"] {
+        let path = header_bam(data.path(), name, &FIXTURE_CONTIGS);
+        messages.push(open(&mut s, &path).unwrap().message);
+    }
+    assert!(
+        messages[0].ends_with("; stacked with reads.bam"),
+        "{}",
+        messages[0]
+    );
+    assert!(
+        messages[1].ends_with("; stacked with reads.bam and b.bam"),
+        "{}",
+        messages[1]
+    );
+    assert!(
+        messages[2]
+            .ends_with("; reads.bam's stack already holds 3 BAMs, so d.bam opens on its own"),
+        "{}",
+        messages[2]
+    );
+    assert_eq!(s.stacks().len(), 1);
+    assert_eq!(s.stacks()[0].len(), 3);
+}
+
+#[test]
+fn closing_a_member_leaves_the_stack_and_a_stack_of_one_dissolves() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    for name in ["b.bam", "c.bam"] {
+        open(&mut s, &header_bam(data.path(), name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    let ids: Vec<u64> = s.datasets().iter().map(|d| d.id).collect();
+    ex(&mut s, "use 2").unwrap();
+    let out = ex(&mut s, "close").unwrap();
+    assert!(
+        out.message.contains("; b.bam leaves its stack"),
+        "{}",
+        out.message
+    );
+    assert_eq!(s.stacks(), &[vec![ids[0], ids[2]]]);
+    ex(&mut s, "use 2").unwrap();
+    let out = ex(&mut s, "close").unwrap();
+    assert!(
+        out.message.contains("; the stack is dissolved"),
+        "{}",
+        out.message
+    );
+    assert!(s.stacks().is_empty());
+}
+
+/// A session with the fixture's reads.bam and, for each name, a
+/// header-only BAM with the fixture's contigs, opened in that order.
+fn stacked(data: &Path, cache: &Path, names: &[&str]) -> Session {
+    let f = fixture(data);
+    let mut s = session(cache);
+    open(&mut s, &f.bam).unwrap();
+    for name in names {
+        open(&mut s, &header_bam(data, name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    s
+}
+
+#[test]
+fn unstack_splits_and_stack_joins_again() {
+    let (data, cache) = dirs();
+    let mut s = stacked(data.path(), cache.path(), &["b.bam"]);
+    let (a, b) = (s.datasets()[0].id, s.datasets()[1].id);
+    let out = ex(&mut s, "bam unstack").unwrap();
+    assert_eq!(out.message, "unstacked reads.bam and b.bam");
+    assert!(s.stacks().is_empty());
+    let out = ex(&mut s, "bam stack reads.bam").unwrap();
+    assert_eq!(out.message, "stacked b.bam with reads.bam");
+    assert_eq!(s.stacks(), &[vec![a, b]]);
+    let path = s.datasets()[0].path.clone();
+    assert_eq!(
+        Command::parse_line(s.history().last().unwrap()).unwrap(),
+        Command::Bam(BamCmd::Stack { file: path })
+    );
+}
+
+#[test]
+fn stack_and_unstack_say_why_they_cannot() {
+    let (data, cache) = dirs();
+    let mut s = stacked(data.path(), cache.path(), &["b.bam", "c.bam", "d.bam"]);
+    let err = |s: &mut Session, line: &str| ex(s, line).unwrap_err().to_string();
+    // d.bam opened on its own: the stack was full.
+    assert_eq!(err(&mut s, "bam unstack"), "d.bam is not stacked");
+    assert_eq!(
+        err(&mut s, "bam stack reads.bam"),
+        "reads.bam's stack already holds 3 BAMs"
+    );
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "a BAM cannot be stacked with itself"
+    );
+    ex(&mut s, "use 2").unwrap();
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "b.bam is already stacked; bam unstack first"
+    );
+    fs::write(data.path().join("t.nwk"), "(A,B);").unwrap();
+    open(&mut s, &data.path().join("t.nwk")).unwrap();
+    open(
+        &mut s,
+        &header_bam(data.path(), "e.bam", &[("c1", 1000), ("x", 5)]),
+    )
+    .unwrap();
+    assert_eq!(err(&mut s, "bam stack t.nwk"), "t.nwk is not an open BAM");
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "e.bam's contigs differ from d.bam's; a stack needs the same contigs, by name and length"
+    );
+}
+
+#[test]
+fn a_replayed_session_stacks_the_same_way() {
+    let (data, cache) = dirs();
+    let log = data.path().join("s.log");
+    let f = fixture(data.path());
+    let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+    s.set_cache_dir(cache.path().to_path_buf());
+    open(&mut s, &f.bam).unwrap();
+    for name in ["b.bam", "c.bam"] {
+        open(&mut s, &header_bam(data.path(), name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    ex(&mut s, "bam unstack").unwrap();
+    ex(&mut s, "use 3").unwrap();
+    ex(&mut s, "bam stack reads.bam").unwrap();
+    let by_position = |s: &Session| -> Vec<Vec<usize>> {
+        let at = |id: &u64| s.datasets().iter().position(|d| d.id == *id).unwrap();
+        s.stacks()
+            .iter()
+            .map(|m| m.iter().map(at).collect())
+            .collect()
+    };
+    assert_eq!(by_position(&s), vec![vec![0, 2]]);
+
+    let text = fs::read_to_string(&log).unwrap();
+    let mut again = session(cache.path());
+    crate::replay(&text, &mut again).unwrap();
+    assert_eq!(by_position(&again), vec![vec![0, 2]]);
+}
+
+/// The path of the reference attached to the BAM at `index`, if any.
+fn reference_path(s: &Session, index: usize) -> Option<PathBuf> {
+    let bam = s.datasets()[index].bam().unwrap();
+    bam.source().reference().map(|r| r.path().to_path_buf())
+}
+
+/// The fixture and a copy of its BAM, stacked.
+fn stacked_copy(data: &Path, cache: &Path) -> (Session, crate::bam::testing::Fixture) {
+    let f = fixture(data);
+    let mut s = session(cache);
+    open(&mut s, &f.bam).unwrap();
+    fs::copy(&f.bam, data.join("b.bam")).unwrap();
+    open(&mut s, &data.join("b.bam")).unwrap();
+    assert_eq!(s.stacks().len(), 1);
+    (s, f)
+}
+
+#[test]
+fn bam_ref_in_a_stack_attaches_to_every_member() {
+    let (data, cache) = dirs();
+    let (mut s, f) = stacked_copy(data.path(), cache.path());
+    let out = ex(&mut s, &format!("bam ref {}", f.reference.display())).unwrap();
+    assert_eq!(
+        out.message,
+        "attached ref.fa to reads.bam and b.bam (3 of 3 contigs)"
+    );
+    for index in 0..2 {
+        let bam = s.datasets()[index].bam().unwrap();
+        let reference = bam.source().reference().unwrap();
+        assert_eq!(reference.fetch("c1", 101, 110).unwrap(), b"ACGTACGTAC");
+    }
+}
+
+#[test]
+fn bam_ref_of_a_file_a_member_already_has_does_not_read_it_again() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let line = format!("bam ref {}", f.reference.display());
+    ex(&mut s, &line).unwrap();
+    fs::copy(&f.bam, data.path().join("b.bam")).unwrap();
+    open(&mut s, &data.path().join("b.bam")).unwrap();
+    let started = s.start(Command::parse_line(&line).unwrap()).unwrap();
+    let Started::Done(outcome) = started else {
+        panic!("the reference was read again");
+    };
+    assert_eq!(
+        outcome.message,
+        "attached ref.fa to reads.bam and b.bam (3 of 3 contigs)"
+    );
+    assert_eq!(reference_path(&s, 1), Some(f.reference.clone()));
+    assert_eq!(s.history().last().unwrap(), &line);
+}
+
+#[test]
+fn bam_ref_of_another_file_reads_it_for_every_member() {
+    let (data, cache) = dirs();
+    let (mut s, f) = stacked_copy(data.path(), cache.path());
+    ex(&mut s, &format!("bam ref {}", f.reference.display())).unwrap();
+    let short = data.path().join("short.fa");
+    fs::write(&short, ">c1\nACGT\n").unwrap();
+    let cmd = Command::parse_line(&format!("bam ref {}", short.display())).unwrap();
+    let Started::Running(job) = s.start(cmd).unwrap() else {
+        panic!("the new file was not read");
+    };
+    s.finish(job.run()).unwrap();
+    assert_eq!(reference_path(&s, 0), Some(short.clone()));
+    assert_eq!(reference_path(&s, 1), Some(short));
+}
+
+#[test]
+fn bam_ref_again_on_a_lone_bam_reads_the_file_again() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let line = format!("bam ref {}", f.reference.display());
+    ex(&mut s, &line).unwrap();
+    // The file may have changed since, so it is read, not reused.
+    let started = s.start(Command::parse_line(&line).unwrap()).unwrap();
+    assert!(
+        matches!(started, Started::Running(_)),
+        "the file was not read again"
+    );
 }

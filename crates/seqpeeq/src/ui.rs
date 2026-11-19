@@ -232,17 +232,18 @@ fn dim() -> Style {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = tab_titles(app);
+    let titles = tab_labels(app);
     if titles.is_empty() {
         frame.render_widget(Paragraph::new(" seqpeeq").style(dim()), area);
         return;
     }
-    let ranges = tab_ranges(&titles, area.width, app.active);
+    let active = active_tab(app);
+    let ranges = tab_ranges(&titles, area.width, active);
     for (index, (title, range)) in titles.iter().zip(&ranges).enumerate() {
         if range.is_empty() {
             continue;
         }
-        let style = if index == app.active {
+        let style = if index == active {
             Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else {
             Style::new()
@@ -309,7 +310,10 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         match view.over.last() {
             Some(Over::Axis(axis)) => read_axis::draw_axis(frame, app, axis, area),
             Some(Over::List(list)) => read_axis::draw_elsewhere(frame, app, list, area),
-            None => bam::draw_bam(frame, app, area),
+            None => match app.session.stack_of(app.session.datasets()[app.active].id) {
+                Some(members) => bam::draw_stack(frame, app, members, area),
+                None => bam::draw_bam(frame, app, area),
+            },
         }
         return;
     }
@@ -652,9 +656,8 @@ const HELP_BAM: &[&str] = &[
     "BAM       ] [ covered   } { no coverage   c list contigs",
     "          m mate   s other part   ' back",
     "          - + z zoom  F toggle filtered  S toggle clips",
-    "          click, drag select   Esc clear",
-    "          Space add the read under the cursor",
-    "                to the selection",
+    "          click, drag, Space select   Esc clear",
+    "          Tab next BAM in a stack   :bam unstack",
     "          drag the column numbers, v v  a stretch",
     "          e export reads   E reference   to a file",
     "          a visualize all alignments for a read",
@@ -740,6 +743,49 @@ pub fn tab_titles(app: &App) -> Vec<String> {
             None => dataset.path.display().to_string(),
         })
         .collect()
+}
+
+/// The open files on each tab, as dataset positions: a stack of BAMs
+/// shares one tab, in stack order, at its first member's place; every
+/// other file has a tab of its own.
+pub fn tab_groups(app: &App) -> Vec<Vec<usize>> {
+    let datasets = app.session.datasets();
+    let at = |id: &u64| datasets.iter().position(|d| d.id == *id);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, dataset) in datasets.iter().enumerate() {
+        match app.session.stack_of(dataset.id) {
+            Some(members) => {
+                let members: Vec<usize> = members.iter().filter_map(at).collect();
+                if members.iter().min() == Some(&index) {
+                    groups.push(members);
+                }
+            }
+            None => groups.push(vec![index]),
+        }
+    }
+    groups
+}
+
+/// Each tab's label: its file's name, or for a stack its first BAM's
+/// name and how many more it holds (`reads.bam +1`).
+pub fn tab_labels(app: &App) -> Vec<String> {
+    let titles = tab_titles(app);
+    tab_groups(app)
+        .iter()
+        .map(|group| match group.as_slice() {
+            [one] => titles[*one].clone(),
+            [first, rest @ ..] => format!("{} +{}", titles[*first], rest.len()),
+            [] => String::new(),
+        })
+        .collect()
+}
+
+/// The tab holding the file shown.
+pub fn active_tab(app: &App) -> usize {
+    tab_groups(app)
+        .iter()
+        .position(|group| group.contains(&app.active))
+        .unwrap_or(0)
 }
 
 /// The columns each tab occupies in a tab bar `width` columns wide; an
@@ -1658,8 +1704,8 @@ pub(crate) mod tests {
             "c list contigs",
             "F toggle filtered",
             "S toggle clips",
-            "Space add the read under the cursor",
-            "                to the selection",
+            "click, drag, Space select   Esc clear",
+            "Tab next BAM in a stack",
             "v v  a stretch",
             "e export reads",
             "E reference",

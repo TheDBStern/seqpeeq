@@ -675,7 +675,7 @@ impl App {
                     && !(busy.queued && pending)
                     && let Some(current) = self.session.current()
                 {
-                    self.active = current;
+                    self.focus(current);
                 }
                 self.report(ended.map(|outcome| Some(outcome.message)), busy.queued);
             }
@@ -1854,9 +1854,13 @@ impl App {
         }
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         if left_click && mouse.row == 0 {
-            let ranges = ui::tab_ranges(&ui::tab_titles(self), self.screen.width, self.active);
+            let ranges = ui::tab_ranges(
+                &ui::tab_labels(self),
+                self.screen.width,
+                ui::active_tab(self),
+            );
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
-                self.active = tab;
+                self.focus(ui::tab_groups(self)[tab][0]);
                 return;
             }
         }
@@ -2238,13 +2242,35 @@ impl App {
         self.dragging = dragging;
     }
 
-    /// Move `step` tabs right (negative: left), wrapping at the ends.
+    /// Move one file right (`step` 1) or left (-1): through the BAMs of a
+    /// stack first, then on to the next tab, wrapping at the ends.
+    /// Show the file at `index`. Moves made in a stack since the last turn
+    /// reach the rest of it first, so the BAM shown next leads from there.
+    fn focus(&mut self, index: usize) {
+        self.mirror_stacks(&[]);
+        self.active = index;
+    }
+
     fn step_tab(&mut self, step: isize) {
-        let count = self.session.datasets().len() as isize;
-        if count > 0 {
-            self.active = (self.active as isize + step).rem_euclid(count) as usize;
-            self.reveal();
-        }
+        self.mirror_stacks(&[]);
+        let groups = ui::tab_groups(self);
+        let Some(tab) = groups.iter().position(|g| g.contains(&self.active)) else {
+            return;
+        };
+        let group = &groups[tab];
+        let at = group.iter().position(|&i| i == self.active).unwrap_or(0);
+        let next = at as isize + step;
+        self.active = if (0..group.len() as isize).contains(&next) {
+            group[next as usize]
+        } else {
+            let other = &groups[(tab as isize + step).rem_euclid(groups.len() as isize) as usize];
+            if step > 0 {
+                other[0]
+            } else {
+                other[other.len() - 1]
+            }
+        };
+        self.reveal();
     }
 
     /// Run a command on behalf of the user looking at the visible tab. Every
@@ -2300,7 +2326,7 @@ impl App {
                     }
                 }
                 if follow {
-                    self.active = self.session.current().unwrap_or(0);
+                    self.focus(self.session.current().unwrap_or(0));
                 }
                 Ok(Some(outcome.message))
             }
@@ -5306,5 +5332,44 @@ mod tests {
             json(&tree)
         );
         fs::write(&out, text).unwrap();
+    }
+
+    #[test]
+    fn a_stack_is_one_tab_and_tab_walks_its_members() {
+        use crate::ui::{active_tab, tab_groups, tab_labels};
+        let dir = tempfile::tempdir().unwrap();
+        let f = seqpeeq_core::bam::testing::fixture(dir.path());
+        fs::write(dir.path().join("t.nwk"), "(A,B);").unwrap();
+        fs::copy(&f.bam, dir.path().join("b.bam")).unwrap();
+        let mut app = App::new(Session::new(None));
+        app.handle_event(&Event::Resize(80, 24));
+        for path in [
+            f.bam.clone(),
+            dir.path().join("t.nwk"),
+            dir.path().join("b.bam"),
+        ] {
+            open_file(&mut app, &path);
+        }
+        assert_eq!(tab_labels(&app), ["reads.bam +1", "t.nwk"]);
+        assert_eq!(tab_groups(&app), [vec![0, 2], vec![1]]);
+        app.active = 0;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.handle_event(&press(KeyCode::Tab));
+            seen.push(app.active);
+        }
+        assert_eq!(seen, [2, 1, 0]);
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            app.handle_event(&press(KeyCode::BackTab));
+            seen.push(app.active);
+        }
+        assert_eq!(seen, [1, 2]);
+        assert_eq!(active_tab(&app), 0);
+        let ranges = tab_ranges(&tab_labels(&app), 80, active_tab(&app));
+        app.handle_event(&click(ranges[1].start, 0));
+        assert_eq!(app.active, 1);
+        app.handle_event(&click(ranges[0].start, 0));
+        assert_eq!(app.active, 0);
     }
 }

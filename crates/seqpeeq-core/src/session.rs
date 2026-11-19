@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
-use crate::bam::{BamDoc, BamExport, Reference};
+use crate::bam::{BamDoc, BamExport, Contig, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
@@ -79,6 +79,28 @@ impl Dataset {
     /// The file's name without its directory, for messages.
     fn file_name(&self) -> String {
         file_name(&self.path)
+    }
+}
+
+/// The most BAMs one stack holds.
+pub const STACK_LIMIT: usize = 3;
+
+/// Whether two BAMs have the same contigs, by name and length, in any
+/// order: the test for stacking them. Headers may list hundreds of
+/// thousands of contigs, so one side is looked up by name.
+fn same_contigs(a: &[Contig], b: &[Contig]) -> bool {
+    let lengths = |contigs: &[Contig]| -> HashMap<String, u64> {
+        contigs.iter().map(|c| (c.name.clone(), c.length)).collect()
+    };
+    a.len() == b.len() && lengths(a) == lengths(b)
+}
+
+/// Names for a message: `a`, `a and b`, `a, b and c`.
+fn names_joined(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -211,9 +233,9 @@ enum Work {
         dataset: u64,
         extraction: Box<TreeExtraction>,
     },
-    /// Read a reference FASTA's index, for `bam ref`.
+    /// Read a reference FASTA's index, for `bam ref`, for these BAMs.
     BamRef {
-        dataset: u64,
+        datasets: Vec<u64>,
         file: PathBuf,
     },
     /// Write a BAM region or a stretch of the reference.
@@ -276,9 +298,9 @@ impl Job {
                     whole: false,
                 })
             }
-            Work::BamRef { dataset, file } => {
+            Work::BamRef { datasets, file } => {
                 Reference::open(&file, &self.progress).map(|reference| Product::Attached {
-                    dataset,
+                    datasets,
                     reference: Box::new(reference),
                 })
             }
@@ -321,9 +343,9 @@ fn open_content(input: &Input, progress: &Progress) -> Result<(Content, Vec<Stri
 }
 
 enum Product {
-    /// A reference read for the BAM `dataset`.
+    /// A reference read for these BAMs.
     Attached {
-        dataset: u64,
+        datasets: Vec<u64>,
         reference: Box<Reference>,
     },
     Opened {
@@ -352,6 +374,9 @@ pub struct Session {
     clock: fn() -> Zoned,
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
+    /// BAMs shown as one stack, by dataset id, each in the order it was
+    /// formed; every stack has at least two.
+    stacks: Vec<Vec<u64>>,
     /// The id the next edit to two files will tag both its steps with.
     next_pair: u64,
     /// Where a BAM's index goes when the BAM's own folder cannot take it.
@@ -384,6 +409,7 @@ struct Checkpoint {
     /// current file and, for an edit to two files, the other one.
     snapshots: Vec<(usize, Snapshot)>,
     links: HashMap<u64, u64>,
+    stacks: Vec<Vec<u64>>,
 }
 
 enum Snapshot {
@@ -408,6 +434,7 @@ impl Session {
             log,
             clock,
             links: HashMap::new(),
+            stacks: Vec::new(),
             next_pair: 1,
             cache_dir: default_cache_dir(),
             replay_dir: None,
@@ -524,10 +551,32 @@ impl Session {
             Command::Bam(BamCmd::Ref { file }) => {
                 self.current_bam()?;
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let datasets = self
+                    .stack_of(dataset)
+                    .map_or_else(|| vec![dataset], <[u64]>::to_vec);
+                // Another member already holding this file lends it to the
+                // rest, so the FASTA is indexed once (as `--ref` asks after
+                // each BAM it opens). The current BAM asking again for its
+                // own file reads it again, as a BAM on its own does.
+                let held = datasets.iter().filter(|&&id| id != dataset).find_map(|id| {
+                    let doc = self.datasets.iter().find(|d| d.id == *id)?.bam()?;
+                    let reference = doc.source().reference()?;
+                    same_file(reference.path(), &file).then(|| reference.clone())
+                });
+                if let Some(reference) = held {
+                    let finished = Finished {
+                        line,
+                        result: Ok(Product::Attached {
+                            datasets,
+                            reference: Box::new(reference),
+                        }),
+                    };
+                    return self.finish(finished).map(Started::Done);
+                }
                 let label = format!("reading {}", file_name(&file));
-                return Ok(self.hand_out(label, line, Work::BamRef { dataset, file }));
+                return Ok(self.hand_out(label, line, Work::BamRef { datasets, file }));
             }
-            Command::Bam(mut cmd) => {
+            Command::Bam(mut cmd) if !matches!(cmd, BamCmd::Stack { .. } | BamCmd::Unstack) => {
                 if let BamCmd::ExportReads {
                     names_file: Some(file),
                     ..
@@ -582,19 +631,35 @@ impl Session {
         let Finished { line, result } = finished;
         let now = (self.clock)();
         match result? {
-            Product::Attached { dataset, reference } => {
-                let Some(doc) = self.datasets.iter_mut().find(|d| d.id == dataset) else {
+            Product::Attached {
+                datasets,
+                reference,
+            } => {
+                let open: Vec<u64> = datasets
+                    .into_iter()
+                    .filter(|id| self.datasets.iter().any(|d| d.id == *id))
+                    .collect();
+                if open.is_empty() {
                     return Err(Error::Invalid(
                         "the BAM was closed while its reference was read".to_string(),
                     ));
-                };
-                let Content::Bam(bam) = &mut doc.content else {
-                    unreachable!("bam ref is handed out for a BAM");
-                };
+                }
                 if let Some(log) = &mut self.log {
                     log.record(&line, None, &now)?;
                 }
-                let message = bam.set_reference(*reference);
+                let named = names_joined(&self.names_of(&open));
+                let mut message = String::new();
+                for (i, id) in open.iter().enumerate() {
+                    let doc = self.datasets.iter_mut().find(|d| d.id == *id);
+                    let Some(Content::Bam(bam)) = doc.map(|d| &mut d.content) else {
+                        unreachable!("bam ref is handed out for BAMs");
+                    };
+                    // Members share their contigs, so the first says it.
+                    let said = bam.set_reference((*reference).clone(), &named);
+                    if i == 0 {
+                        message = said;
+                    }
+                }
                 self.history.push(line);
                 Ok(Outcome { message })
             }
@@ -741,10 +806,12 @@ impl Session {
         });
         self.current = Some(self.datasets.len() - 1);
         self.history.push(line.to_string());
-        // A rule, not a logged command: replaying the opens links the same.
+        // Rules, not logged commands: replaying the opens links and
+        // stacks the same.
         let linked = self.auto_link(id);
+        let stacked = self.auto_stack(id);
         Ok(Outcome {
-            message: message + &linked,
+            message: message + &linked + &stacked,
         })
     }
 
@@ -764,12 +831,15 @@ impl Session {
         Some((shared, tips.len()))
     }
 
-    /// `tree link NAME`, where NAME is no open file's path but the file
-    /// name of exactly one open alignment, becomes `tree link PATH` before
-    /// it is logged, so the log always names the file it linked.
+    /// `tree link NAME` and `bam stack NAME`, where NAME is no open file's
+    /// path but the file name of exactly one open file of the kind named
+    /// (an alignment, a BAM), become the command with that file's path
+    /// before it is logged, so the log always names the file it meant.
     fn resolve_link(&self, cmd: Command) -> Command {
-        let Command::Tree(TreeCmd::Link { file }) = &cmd else {
-            return cmd;
+        let (file, wanted): (&Path, fn(&Dataset) -> bool) = match &cmd {
+            Command::Tree(TreeCmd::Link { file }) => (file, |d| d.msa().is_some()),
+            Command::Bam(BamCmd::Stack { file }) => (file, |d| d.bam().is_some()),
+            _ => return cmd,
         };
         if self.datasets.iter().any(|d| same_file(&d.path, file)) {
             return cmd;
@@ -778,12 +848,146 @@ impl Session {
         let mut named = self
             .datasets
             .iter()
-            .filter(|d| d.msa().is_some() && d.file_name() == name);
-        match (named.next(), named.next()) {
-            (Some(d), None) => Command::Tree(TreeCmd::Link {
-                file: d.path.clone(),
-            }),
-            _ => cmd,
+            .filter(|d| wanted(d) && d.file_name() == name);
+        let path = match (named.next(), named.next()) {
+            (Some(d), None) => d.path.clone(),
+            _ => return cmd,
+        };
+        match cmd {
+            Command::Tree(TreeCmd::Link { .. }) => Command::Tree(TreeCmd::Link { file: path }),
+            _ => Command::Bam(BamCmd::Stack { file: path }),
+        }
+    }
+
+    /// The members of the stack holding the BAM with id `id`, in order.
+    pub fn stack_of(&self, id: u64) -> Option<&[u64]> {
+        self.stacks
+            .iter()
+            .find(|s| s.contains(&id))
+            .map(Vec::as_slice)
+    }
+
+    /// `bam stack FILE`: put the current BAM, on its own, at the end of
+    /// FILE's stack, or stack the two.
+    fn stack_with(&mut self, file: &Path) -> Result<Applied> {
+        self.current_bam()?;
+        let me = &self.datasets[self.current.expect("there is a current BAM")];
+        let refuse = |message: String| Err(Error::Invalid(message));
+        let Some(target) = self
+            .datasets
+            .iter()
+            .find(|d| same_file(&d.path, file) && d.bam().is_some())
+        else {
+            return refuse(format!("{} is not an open BAM", file_name(file)));
+        };
+        if target.id == me.id {
+            return refuse("a BAM cannot be stacked with itself".to_string());
+        }
+        let (my_name, their_name) = (me.file_name(), target.file_name());
+        if self.stack_of(me.id).is_some() {
+            return refuse(format!("{my_name} is already stacked; bam unstack first"));
+        }
+        let contigs = |d: &Dataset| d.bam().map(|b| b.source().contigs().to_vec());
+        if !same_contigs(
+            &contigs(me).unwrap_or_default(),
+            &contigs(target).unwrap_or_default(),
+        ) {
+            return refuse(format!(
+                "{my_name}'s contigs differ from {their_name}'s; a stack needs the same contigs, by name and length"
+            ));
+        }
+        let members = self
+            .stack_of(target.id)
+            .map_or_else(|| vec![target.id], <[u64]>::to_vec);
+        let names = self.names_of(&members);
+        if members.len() >= STACK_LIMIT {
+            return refuse(format!(
+                "{}'s stack already holds {STACK_LIMIT} BAMs",
+                names[0]
+            ));
+        }
+        let (me, first) = (me.id, members[0]);
+        match self.stacks.iter_mut().find(|s| s[0] == first) {
+            Some(stack) => stack.push(me),
+            None => self.stacks.push(vec![first, me]),
+        }
+        Ok(Applied::new(format!(
+            "stacked {my_name} with {}",
+            names_joined(&names)
+        )))
+    }
+
+    /// `bam unstack`: split the current BAM's stack into lone BAMs.
+    fn unstack(&mut self) -> Result<Applied> {
+        self.current_bam()?;
+        let me = &self.datasets[self.current.expect("there is a current BAM")];
+        let Some(at) = self.stacks.iter().position(|s| s.contains(&me.id)) else {
+            return Err(Error::Invalid(format!("{} is not stacked", me.file_name())));
+        };
+        let members = self.stacks.remove(at);
+        Ok(Applied::new(format!(
+            "unstacked {}",
+            names_joined(&self.names_of(&members))
+        )))
+    }
+
+    /// Every stack of BAMs, each as its members' ids in order.
+    pub fn stacks(&self) -> &[Vec<u64>] {
+        &self.stacks
+    }
+
+    /// The file names of the open files with these ids, in order.
+    fn names_of(&self, ids: &[u64]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|&id| self.datasets.iter().find(|d| d.id == id))
+            .map(Dataset::file_name)
+            .collect()
+    }
+
+    /// Stack the BAM just opened with the first open BAM, in file order,
+    /// that has the same contigs, if its stack has room. Returns what to
+    /// add to the open's message.
+    fn auto_stack(&mut self, opened: u64) -> String {
+        let Some(new) = self.datasets.iter().find(|d| d.id == opened) else {
+            return String::new();
+        };
+        let Some(contigs) = new.bam().map(|b| b.source().contigs()) else {
+            return String::new();
+        };
+        if contigs.is_empty() {
+            return String::new();
+        }
+        let new_name = new.file_name();
+        let mut full = None;
+        for other in &self.datasets {
+            let Some(theirs) = other.bam().map(|b| b.source().contigs()) else {
+                continue;
+            };
+            if other.id == opened || !same_contigs(contigs, theirs) {
+                continue;
+            }
+            let members = match self.stack_of(other.id) {
+                // Only the first member stands for its stack.
+                Some(members) if members[0] != other.id => continue,
+                Some(members) => members.to_vec(),
+                None => vec![other.id],
+            };
+            if members.len() >= STACK_LIMIT {
+                full.get_or_insert(other.file_name());
+                continue;
+            }
+            let names = names_joined(&self.names_of(&members));
+            match self.stacks.iter_mut().find(|s| s[0] == members[0]) {
+                Some(stack) => stack.push(opened),
+                None => self.stacks.push(vec![other.id, opened]),
+            }
+            return format!("; stacked with {names}");
+        }
+        match full {
+            Some(first) => format!(
+                "; {first}'s stack already holds {STACK_LIMIT} BAMs, so {new_name} opens on its own"
+            ),
+            None => String::new(),
         }
     }
 
@@ -904,6 +1108,7 @@ impl Session {
             current: self.current,
             snapshots,
             links: self.links.clone(),
+            stacks: self.stacks.clone(),
         }
     }
 
@@ -917,6 +1122,7 @@ impl Session {
         }
         self.current = checkpoint.current;
         self.links = checkpoint.links;
+        self.stacks = checkpoint.stacks;
         for (index, snapshot) in checkpoint.snapshots {
             match (snapshot, &mut self.datasets[index].content) {
                 (Snapshot::Msa(layer), Content::Msa(alignment)) => alignment.restore(layer),
@@ -1512,6 +1718,15 @@ impl Session {
                 name_of(aln)
             ));
         }
+        if let Some(at) = self.stacks.iter().position(|s| s.contains(&dataset.id)) {
+            self.stacks[at].retain(|&id| id != dataset.id);
+            if self.stacks[at].len() < 2 {
+                self.stacks.remove(at);
+                message.push_str("; the stack is dissolved");
+            } else {
+                message.push_str(&format!("; {} leaves its stack", dataset.file_name()));
+            }
+        }
         let applied = Applied {
             message,
             note: None,
@@ -1526,7 +1741,9 @@ impl Session {
             Command::Open { .. } | Command::Close => {
                 unreachable!("start handles opening and closing itself")
             }
-            Command::Bam(_) => unreachable!("start hands every bam command out as a job"),
+            Command::Bam(BamCmd::Stack { file }) => self.stack_with(&file),
+            Command::Bam(BamCmd::Unstack) => self.unstack(),
+            Command::Bam(_) => unreachable!("start hands the other bam commands out as jobs"),
             Command::Use { dataset } => {
                 let open = self.datasets.len();
                 if open == 0 {
@@ -3331,5 +3548,31 @@ mod tests {
         let (a, l) = (s.datasets()[0].id, s.datasets()[1].id);
         assert_eq!(s.shared_tips(l, a), Some((3, 4)));
         assert_eq!(s.shared_tips(a, l), None);
+    }
+
+    #[test]
+    fn matching_the_contigs_of_big_headers_is_quick() {
+        let contigs = |reverse: bool| {
+            let mut all: Vec<Contig> = (0..20_000)
+                .map(|i| Contig {
+                    name: format!("ENST{i:011}.1"),
+                    length: 1000 + i,
+                    mapped: None,
+                    unmapped: None,
+                })
+                .collect();
+            if reverse {
+                all.reverse();
+            }
+            all
+        };
+        let (a, b) = (contigs(false), contigs(true));
+        let started = std::time::Instant::now();
+        assert!(same_contigs(&a, &b));
+        let mut c = contigs(true);
+        c[0].length += 1;
+        assert!(!same_contigs(&a, &c));
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 }
