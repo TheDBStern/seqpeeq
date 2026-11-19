@@ -62,6 +62,128 @@ pub fn bam_layout(area: Rect, view: &BamView) -> BamLayout {
     }
 }
 
+/// One BAM's rows in a stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberRows {
+    /// Its file name, marked when it has the focus.
+    pub name: Rect,
+    pub coverage: Rect,
+    pub reads: Rect,
+}
+
+/// Where each row of a stack of BAMs goes: the rows they share, and each
+/// BAM's own. A row not shown has no height.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackLayout {
+    pub strip: Rect,
+    pub ruler: Rect,
+    pub reference: Rect,
+    pub details: Rect,
+    pub members: Vec<MemberRows>,
+}
+
+impl StackLayout {
+    /// The layout as member `i` sees it: the shared rows, and its own
+    /// coverage and reads.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the stack view uses it from the next commit")
+    )]
+    pub fn member(&self, i: usize) -> BamLayout {
+        BamLayout {
+            strip: self.strip,
+            ruler: self.ruler,
+            reference: self.reference,
+            coverage: self.members[i].coverage,
+            reads: self.members[i].reads,
+            details: self.details,
+        }
+    }
+}
+
+/// Lay a stack out in `area`, `needs` being the rows of reads each BAM
+/// has (`usize::MAX` while unknown). The shared strip, ruler and
+/// reference (at a base a column) go on top and the details at the
+/// bottom; each BAM has a name line, a coverage row and at least one row
+/// of reads. When that does not fit, rows go in this order: the details,
+/// the reference, the strip, the ruler, then every coverage row. The
+/// other rows go to the BAMs whose reads need them.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the stack view uses it from the next commit")
+)]
+pub fn stack_layout(area: Rect, base_level: bool, needs: &[usize]) -> StackLayout {
+    let n = needs.len() as u16;
+    // strip, ruler, reference, details, coverage
+    let mut keep = [true, true, base_level, true, true];
+    let least = |keep: &[bool; 5]| {
+        let shared = keep[..4].iter().filter(|&&k| k).count() as u16;
+        shared + n * (2 + u16::from(keep[4]))
+    };
+    for i in [3, 2, 0, 1, 4] {
+        if least(&keep) <= area.height {
+            break;
+        }
+        keep[i] = false;
+    }
+    let spare = area.height.saturating_sub(least(&keep));
+    let wants: Vec<usize> = needs.iter().map(|need| need.saturating_sub(1)).collect();
+    let extra = share(usize::from(spare), &wants);
+
+    let mut y = area.y;
+    let mut take = |height: u16| {
+        let height = height.min(area.bottom().saturating_sub(y));
+        let rect = Rect { y, height, ..area };
+        y += height;
+        rect
+    };
+    let strip = take(u16::from(keep[0]));
+    let ruler = take(u16::from(keep[1]));
+    let reference = take(u16::from(keep[2]));
+    let members = extra
+        .iter()
+        .map(|&more| MemberRows {
+            name: take(1),
+            coverage: take(u16::from(keep[4])),
+            reads: take(1 + more as u16),
+        })
+        .collect();
+    let details = take(u16::from(keep[3]));
+    StackLayout {
+        strip,
+        ruler,
+        reference,
+        details,
+        members,
+    }
+}
+
+/// Share `spare` rows out among wants: each want no bigger than an even
+/// share is met in full, and what is left is split evenly among the rest
+/// (or, when every want is met, among all), the first getting any odd
+/// rows.
+fn share(mut spare: usize, wants: &[usize]) -> Vec<usize> {
+    let mut got = vec![0; wants.len()];
+    let mut open: Vec<usize> = (0..wants.len()).collect();
+    while let Some(at) = open.iter().position(|&i| wants[i] <= spare / open.len()) {
+        let i = open.remove(at);
+        got[i] = wants[i];
+        spare -= wants[i];
+    }
+    let rest: Vec<usize> = if open.is_empty() {
+        (0..wants.len()).collect()
+    } else {
+        open
+    };
+    if let Some(each) = spare.checked_div(rest.len()) {
+        let odd = spare % rest.len();
+        for (k, &i) in rest.iter().enumerate() {
+            got[i] += each + usize::from(k < odd);
+        }
+    }
+    got
+}
+
 const BARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// A bar for `value` out of `most`: blank for nothing, at least the
@@ -1076,5 +1198,114 @@ mod tests {
         app.status.clear();
         let screen = rows(&render(&app, 80, 14));
         assert!(screen[12].ends_with("(bam ref FILE)"), "{}", screen[12]);
+    }
+
+    /// The reads heights of a stack layout's members.
+    fn reads_heights(l: &StackLayout) -> Vec<u16> {
+        l.members.iter().map(|m| m.reads.height).collect()
+    }
+
+    /// Every rect of `l` lies inside `area`, and the members' rows do not
+    /// overlap one another or the shared rows.
+    fn assert_fits(l: &StackLayout, area: Rect) {
+        let mut rects = vec![l.strip, l.ruler, l.reference, l.details];
+        for m in &l.members {
+            rects.extend([m.name, m.coverage, m.reads]);
+        }
+        let shown: Vec<Rect> = rects.into_iter().filter(|r| r.height > 0).collect();
+        for (i, r) in shown.iter().enumerate() {
+            assert!(
+                area.contains(r.as_position()) && r.bottom() <= area.bottom(),
+                "{r:?}"
+            );
+            for other in &shown[i + 1..] {
+                assert!(!r.intersects(*other), "{r:?} overlaps {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stack_shares_rows_out_by_need() {
+        let area = Rect::new(0, 0, 80, 20);
+        let l = stack_layout(area, true, &[30, 2]);
+        assert_eq!(
+            (l.strip.y, l.ruler.y, l.reference.y, l.details.y),
+            (0, 1, 2, 19)
+        );
+        let m = &l.members;
+        assert_eq!((m[0].name.y, m[0].coverage.y, m[0].reads.y), (3, 4, 5));
+        assert_eq!((m[1].name.y, m[1].coverage.y, m[1].reads.y), (15, 16, 17));
+        assert_eq!(reads_heights(&l), [10, 2]);
+        assert_fits(&l, area);
+
+        let l = stack_layout(area, true, &[usize::MAX, usize::MAX, 1]);
+        assert_eq!(reads_heights(&l), [5, 4, 1]);
+        assert_fits(&l, area);
+
+        // Rows left once every need is met are split evenly.
+        let l = stack_layout(area, false, &[1, 1]);
+        assert_eq!(l.reference.height, 0);
+        assert_eq!(reads_heights(&l), [7, 6]);
+        assert_fits(&l, area);
+
+        let member = l.member(1);
+        assert_eq!(
+            (member.strip, member.ruler, member.reference, member.details),
+            (l.strip, l.ruler, l.reference, l.details)
+        );
+        assert_eq!(
+            (member.coverage, member.reads),
+            (l.members[1].coverage, l.members[1].reads)
+        );
+    }
+
+    #[test]
+    fn a_short_stack_drops_shared_rows_then_coverage() {
+        let unknown = [usize::MAX; 3];
+        let area = Rect::new(0, 0, 80, 13);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(
+            (l.strip.y, l.ruler.y, l.reference.y, l.details.y),
+            (0, 1, 2, 12)
+        );
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert!(l.members.iter().all(|m| m.coverage.height == 1));
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 10);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(
+            (
+                l.strip.height,
+                l.ruler.height,
+                l.reference.height,
+                l.details.height
+            ),
+            (0, 1, 0, 0)
+        );
+        assert_eq!(l.members[0].name.y, 1);
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 8);
+        let l = stack_layout(area, true, &unknown);
+        assert_eq!(l.ruler.height, 0);
+        assert!(l.members.iter().all(|m| m.coverage.height == 0));
+        assert_eq!(reads_heights(&l), [2, 2, 1]);
+        assert_eq!(
+            l.members.iter().map(|m| m.name.y).collect::<Vec<_>>(),
+            [0, 3, 6]
+        );
+        assert_fits(&l, area);
+
+        let area = Rect::new(0, 0, 80, 6);
+        let l = stack_layout(area, true, &[0, 5, 9]);
+        assert_eq!(reads_heights(&l), [1, 1, 1]);
+        assert!(l.members.iter().all(|m| m.name.height == 1));
+        assert_fits(&l, area);
+
+        // Too short even for that: rows stop at the bottom, nothing past it.
+        let area = Rect::new(0, 0, 80, 4);
+        assert_fits(&stack_layout(area, true, &unknown), area);
     }
 }
