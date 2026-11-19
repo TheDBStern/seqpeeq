@@ -108,10 +108,6 @@ impl StackLayout {
 /// of reads. When that does not fit, rows go in this order: the details,
 /// the reference, the strip, the ruler, then every coverage row. The
 /// other rows go to the BAMs whose reads need them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the stack view uses it from the next commit")
-)]
 pub fn stack_layout(area: Rect, base_level: bool, needs: &[usize]) -> StackLayout {
     let n = needs.len() as u16;
     // strip, ruler, reference, details, coverage

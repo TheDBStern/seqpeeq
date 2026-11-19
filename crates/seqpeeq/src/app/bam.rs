@@ -109,6 +109,7 @@ impl App {
             keep
         });
         let body = self.bam_body();
+        let stacked = self.stacked_reads(body);
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
                 continue;
@@ -128,7 +129,10 @@ impl App {
                 }
             }
             let length = contigs[view.contig].length;
-            let reads = ui::bam::bam_layout(body, view).reads;
+            let reads = match stacked.get(&dataset.id) {
+                Some(&reads) => reads,
+                None => ui::bam::bam_layout(body, view).reads,
+            };
             let (width, height) = (reads.width as usize, reads.height as usize);
             if (view.width, view.height) != (width, height) {
                 view.width = width;
@@ -139,6 +143,8 @@ impl App {
             }
         }
 
+        self.mirror_stacks();
+
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
@@ -146,7 +152,7 @@ impl App {
         let Some(source) = dataset.bam().map(|b| b.source().clone()) else {
             return;
         };
-        let Some(view) = self.bams.get_mut(&id) else {
+        let Some(view) = self.bams.get(&id) else {
             return;
         };
         let contig = view.contig;
@@ -176,11 +182,112 @@ impl App {
             self.passing = Some((id, contig, progress));
         }
 
+        // The BAM shown first, then the rest of its stack, one at a time.
+        if !self.ask_window(id, true) {
+            return;
+        }
+        let others: Vec<u64> = self
+            .session
+            .stack_of(id)
+            .map(|members| members.iter().copied().filter(|&m| m != id).collect())
+            .unwrap_or_default();
+        for member in others {
+            if !self.ask_window(member, false) {
+                return;
+            }
+        }
+    }
+
+    /// The rows of reads of each BAM in a stack, by dataset id, as the
+    /// stack is laid out in `body`.
+    fn stacked_reads(&self, body: ratatui::layout::Rect) -> HashMap<u64, ratatui::layout::Rect> {
+        let mut reads = HashMap::new();
+        for members in self.session.stacks() {
+            // The BAM shown leads; the others follow it.
+            let leader = members
+                .iter()
+                .find(|&&m| self.session.datasets().get(self.active).map(|d| d.id) == Some(m))
+                .unwrap_or(&members[0]);
+            let base_level = self.bams.get(leader).is_some_and(|v| v.per_col == 1);
+            let needs: Vec<usize> = members
+                .iter()
+                .map(|m| match self.bams.get(m) {
+                    Some(view) if view.loaded.is_some() => view.packed.rows.len(),
+                    _ => usize::MAX,
+                })
+                .collect();
+            let layout = ui::bam::stack_layout(body, base_level, &needs);
+            for (member, rows) in members.iter().zip(&layout.members) {
+                reads.insert(*member, rows.reads);
+            }
+        }
+        reads
+    }
+
+    /// Put every other BAM of the shown BAM's stack where it is: the same
+    /// contig (by name), place and zoom.
+    fn mirror_stacks(&mut self) {
+        let Some(leader) = self.session.datasets().get(self.active).map(|d| d.id) else {
+            return;
+        };
+        let Some(members) = self.session.stack_of(leader).map(<[u64]>::to_vec) else {
+            return;
+        };
+        let contigs_of = |id: u64| {
+            let datasets = self.session.datasets();
+            let doc = datasets.iter().find(|d| d.id == id).and_then(Dataset::bam);
+            doc.map(|b| b.source().contigs().to_vec())
+                .unwrap_or_default()
+        };
+        let Some(lead) = self.bams.get(&leader).cloned() else {
+            return;
+        };
+        let theirs = contigs_of(leader);
+        for member in members.into_iter().filter(|&m| m != leader) {
+            let mine = contigs_of(member);
+            let index = |contig: usize| {
+                let name = &theirs.get(contig)?.name;
+                mine.iter().position(|c| &c.name == name)
+            };
+            let Some(contig) = index(lead.contig) else {
+                continue;
+            };
+            let back = lead
+                .back
+                .iter()
+                .filter_map(|&(c, pos)| Some((index(c)?, pos)))
+                .collect();
+            if let Some(view) = self.bams.get_mut(&member) {
+                view.follow(&lead, contig, mine[contig].length);
+                view.back = back;
+            }
+        }
+    }
+
+    /// Ask for the window the view of BAM `id` needs, unless it has it, has
+    /// asked for it, or failed to read it; `take_over` cancels another
+    /// BAM's read for it, else it waits for no read to be running. Returns
+    /// whether the view has all it needs.
+    fn ask_window(&mut self, id: u64, take_over: bool) -> bool {
+        let Some(source) = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(Dataset::bam)
+            .map(|b| b.source().clone())
+        else {
+            return true;
+        };
+        let Some(view) = self.bams.get_mut(&id) else {
+            return true;
+        };
+        let length = source.contigs()[view.contig].length;
         let Some(want) = view.wanted(length, pass_bin(length)) else {
             if let Some(reading) = self.reading.take_if(|r| r.dataset == id) {
                 reading.progress.cancel();
             }
-            return;
+            return true;
         };
         let shown = view.view_region(length);
         let with_reference = source.reference().is_some();
@@ -196,8 +303,14 @@ impl App {
                 && complete(r.want.2, r.with_reference)
         });
         let failed = self.window_failed == Some((id, want));
-        if loaded || asked || failed {
-            return;
+        if loaded || failed {
+            return true;
+        }
+        if asked {
+            return false;
+        }
+        if !take_over && self.reading.is_some() {
+            return false;
         }
         if let Some(reading) = self.reading.take() {
             reading.progress.cancel();
@@ -218,6 +331,7 @@ impl App {
             with_reference,
             progress,
         });
+        false
     }
 
     /// Take in a window read in the background, if its view still wants it.
@@ -2533,5 +2647,149 @@ pub(crate) mod tests {
         app.status.clear();
         let screen = crate::ui::tests::rows(&crate::ui::tests::render(&app, 80, 14));
         assert_eq!(screen[12], "Esc back", "{screen:#?}");
+    }
+
+    // A stack of BAMs.
+
+    /// An app showing `first` and then `second` (opened in that order, so
+    /// the second is focused), everything read.
+    fn stack_of(dir: &TempDir, first: PathBuf, second: PathBuf) -> App {
+        let _ = dir;
+        let mut app = App::new(Session::new(None));
+        open(&mut app, first);
+        open(&mut app, second);
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        app
+    }
+
+    /// The fixture's reads.bam and a copy of it, b.bam, stacked.
+    fn two_stacked() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(dir.path());
+        let copy = dir.path().join("b.bam");
+        std::fs::copy(&f.bam, &copy).unwrap();
+        let app = stack_of(&dir, f.bam, copy);
+        (app, dir)
+    }
+
+    /// The views of the open BAMs, in file order.
+    fn views(app: &App) -> Vec<&BamView> {
+        let datasets = app.session.datasets();
+        datasets.iter().map(|d| &app.bams[&d.id]).collect()
+    }
+
+    /// Where a view is: its contig's name, left edge, zoom and cursor.
+    fn place_of(app: &App, index: usize) -> (String, u64, u64, u64) {
+        let dataset = &app.session.datasets()[index];
+        let view = &app.bams[&dataset.id];
+        let contigs = dataset.bam().unwrap().source().contigs();
+        let name = contigs[view.contig].name.clone();
+        (name, view.left, view.per_col, view.cursor)
+    }
+
+    /// The datasets the windows in `requests` are for, in order.
+    fn window_ids(requests: &[Request]) -> Vec<u64> {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Window { dataset, .. } => Some(*dataset),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn moving_the_focused_bam_moves_the_stack() {
+        let (mut app, _dir) = two_stacked();
+        assert_eq!(app.active, 1);
+        go(&mut app, "c2:301");
+        right(&mut app, 5);
+        keys(&mut app, "-");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        assert_eq!(place_of(&app, 1).0, "c2");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, 0);
+        keys(&mut app, "+");
+        assert_eq!(place_of(&app, 1), place_of(&app, 0));
+    }
+
+    #[test]
+    fn members_that_number_contigs_differently_land_on_the_same_contig() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(dir.path());
+        let reordered = seqpeeq_core::bam::testing::header_bam(
+            dir.path(),
+            "b.bam",
+            &[("c3", 300), ("c1", 1000), ("c2", 500)],
+        );
+        let mut app = stack_of(&dir, f.bam, reordered);
+        go(&mut app, "c2:301");
+        assert_eq!((views(&app)[0].contig, views(&app)[1].contig), (1, 2));
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        go(&mut app, "c1:10");
+        assert_eq!(place_of(&app, 0).0, "c1");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+        keys(&mut app, "'");
+        assert_eq!(place_of(&app, 0).0, "c2");
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn every_member_reads_its_window_the_focused_first() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, id(&app));
+        // Somewhere new at a base a column, nothing read there yet.
+        let length = app.bam().unwrap().1.source().contigs()[1].length;
+        let focused = app.bams.get_mut(&b).unwrap();
+        focused.per_col = 1;
+        focused.place(1, 301, length);
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(window_ids(&held), [b]);
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(window_ids(&held), [a]);
+        deliver(&mut app, held);
+        assert!(views(&app).iter().all(|v| v.loaded.is_some()));
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn closing_the_focused_member_while_it_reads_leaves_the_other_alone() {
+        let (mut app, _dir) = two_stacked();
+        let a = app.session.datasets()[0].id;
+        let b = id(&app);
+        app.bams.get_mut(&b).unwrap().place(2, 101, 300);
+        app.pump();
+        assert_eq!(window_ids(&requests(&mut app)), [b]);
+        app.enqueue(Command::Close);
+        app.pump();
+        assert_eq!(app.active, 0);
+        assert_eq!(crate::ui::tab_labels(&app), ["reads.bam"]);
+        assert_eq!(window_ids(&requests(&mut app)), [a]);
+    }
+
+    #[test]
+    fn tab_away_from_a_members_axis_view_and_back_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = seqpeeq_core::bam::testing::multi(dir.path());
+        let copy = dir.path().join("multi2.bam");
+        std::fs::copy(&first, &copy).unwrap();
+        let mut app = stack_of(&dir, first, copy);
+        at_base_level(&mut app, 0, 101, 0);
+        press(&mut app, KeyCode::Char('a'));
+        let held = requests(&mut app);
+        deliver(&mut app, held);
+        assert_eq!(view(&app).over.len(), 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, 0);
+        assert!(view(&app).over.is_empty());
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.active, 1);
+        assert_eq!(view(&app).over.len(), 1);
     }
 }

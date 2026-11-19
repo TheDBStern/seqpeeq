@@ -524,6 +524,20 @@ impl BamView {
         self.place(contig, pos, length);
     }
 
+    /// Show where `leader` is, on this view's own `contig` (the leader's
+    /// contig, by name, in this BAM): its left edge, zoom, cursor and the
+    /// way back from both. A new contig resets this view as `place` does;
+    /// its rows, selection, stretch, filters and panels are its own.
+    pub fn follow(&mut self, leader: &BamView, contig: usize, length: u64) {
+        if contig != self.contig {
+            self.place(contig, leader.cursor, length);
+        }
+        self.left = leader.left;
+        self.per_col = leader.per_col;
+        self.cursor = leader.cursor;
+        self.before_whole = leader.before_whole;
+    }
+
     /// As [`go`](Self::go), without remembering.
     pub fn place(&mut self, contig: usize, pos: u64, length: u64) {
         let fresh = contig != self.contig;
