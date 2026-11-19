@@ -2,6 +2,8 @@
 name = "seqpeeq-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Data models, command language, session log and replay for seqpeeq"
 
 [dependencies]
