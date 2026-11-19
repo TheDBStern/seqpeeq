@@ -271,6 +271,6 @@ See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, 
 size.
 For example, on an Apple M2 laptop:
 
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 1.4 s; Jalview takes 5.7 minutes and 15 GB, near
-  the 16 GB it was given.
-- **A tree of a million tips:** seqpeeq draws it in 0.6 s; FigTree takes 26 s.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 0.65 s; Jalview takes 6.5 minutes and 15 GB,
+  near the 16 GB it was given.
+- **A tree of a million tips:** seqpeeq draws it in 0.44 s; FigTree takes 26 s.

@@ -74,6 +74,13 @@ class Page(unittest.TestCase):
         self.assertIn("[^", row)
         self.assertIn("16 GB heap limit", page)
 
+    def test_the_uncached_open_comes_from_the_runs(self):
+        big = result("seqpeeq", "msa", "aln_100k.fa", "ok", 0.65, 3_000_000_000)
+        big["runs"] = [{"seconds": s, "max_rss": 1, "outcome": "ok", "detail": ""}
+                       for s in [4.567, 0.65, 0.65]]
+        page = report.page({**RESULTS, "results": [big]}, ONLY)
+        self.assertIn("first run of `aln_100k.fa`, read from disk, took 4.57 s against 0.65 s", page)
+
     def test_page_names_the_machine_and_versions(self):
         self.assertIn("Apple M9", self.page)
         for version in VERSIONS.values():

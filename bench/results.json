@@ -6,7 +6,7 @@
   "os": "macOS 26.6.2"
  },
  "versions": {
-  "seqpeeq": "0.1.0",
+  "seqpeeq": "0.1.0 (arm64)",
   "figtree": "1.4.4",
   "jalview": "2.11.5.1",
   "java (FigTree, Jalview)": "11.0.30",
@@ -23,27 +23,27 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 0.06726029200035555,
-     "max_rss": 6520832,
+     "seconds": 0.06118570800026646,
+     "max_rss": 5226496,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.0696462910000264,
-     "max_rss": 6582272,
+     "seconds": 0.06350720899899898,
+     "max_rss": 5226496,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07056195900077,
-     "max_rss": 6582272,
+     "seconds": 0.06574183300108416,
+     "max_rss": 5242880,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.0696462910000264,
-   "max_rss": 6582272
+   "median_seconds": 0.06350720899899898,
+   "max_rss": 5242880
   },
   {
    "tool": "jalview",
@@ -52,27 +52,27 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 1.3748703750006825,
-     "max_rss": 278069248,
+     "seconds": 1.3840761249994102,
+     "max_rss": 266780672,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4217906249996304,
-     "max_rss": 283262976,
+     "seconds": 1.3491804580007738,
+     "max_rss": 283082752,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.3483295419991919,
-     "max_rss": 285310976,
+     "seconds": 1.3255964170002699,
+     "max_rss": 281296896,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.3748703750006825,
-   "max_rss": 285310976
+   "median_seconds": 1.3491804580007738,
+   "max_rss": 283082752
   },
   {
    "tool": "seqpeeq",
@@ -81,27 +81,27 @@
    "file_bytes": 80,
    "runs": [
     {
-     "seconds": 0.08795112500047253,
-     "max_rss": 6864896,
+     "seconds": 0.061237541000082274,
+     "max_rss": 5390336,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07696233400019992,
-     "max_rss": 6868992,
+     "seconds": 0.06028008300017973,
+     "max_rss": 5406720,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.0749511670001084,
-     "max_rss": 6868992,
+     "seconds": 0.061653708000449114,
+     "max_rss": 5455872,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.07696233400019992,
-   "max_rss": 6868992
+   "median_seconds": 0.061237541000082274,
+   "max_rss": 5455872
   },
   {
    "tool": "figtree",
@@ -110,27 +110,27 @@
    "file_bytes": 80,
    "runs": [
     {
-     "seconds": 1.146480542000063,
-     "max_rss": 225787904,
+     "seconds": 1.1450288340001862,
+     "max_rss": 225968128,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.1622336250002263,
-     "max_rss": 225640448,
+     "seconds": 1.1777850829985255,
+     "max_rss": 221380608,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.1724111670009734,
-     "max_rss": 223019008,
+     "seconds": 1.1477889159996266,
+     "max_rss": 225918976,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.1622336250002263,
-   "max_rss": 225787904
+   "median_seconds": 1.1477889159996266,
+   "max_rss": 225968128
   },
   {
    "tool": "seqpeeq",
@@ -139,27 +139,27 @@
    "file_bytes": 1329,
    "runs": [
     {
-     "seconds": 0.149824375001117,
-     "max_rss": 7479296,
+     "seconds": 0.13935570900139282,
+     "max_rss": 5914624,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.14065866700002516,
-     "max_rss": 7430144,
+     "seconds": 0.13396141699922737,
+     "max_rss": 5914624,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.13924025000051188,
-     "max_rss": 7426048,
+     "seconds": 0.13213962500049092,
+     "max_rss": 5947392,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.14065866700002516,
-   "max_rss": 7479296
+   "median_seconds": 0.13396141699922737,
+   "max_rss": 5947392
   },
   {
    "tool": "igv",
@@ -168,27 +168,27 @@
    "file_bytes": 1329,
    "runs": [
     {
-     "seconds": 3.3418927089987847,
-     "max_rss": 311427072,
+     "seconds": 3.3595843330003845,
+     "max_rss": 314507264,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.3179042079991632,
-     "max_rss": 317603840,
+     "seconds": 3.704407541999899,
+     "max_rss": 314081280,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.324744167000972,
-     "max_rss": 318963712,
+     "seconds": 2.3251724999990984,
+     "max_rss": 321945600,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.324744167000972,
-   "max_rss": 318963712
+   "median_seconds": 3.3595843330003845,
+   "max_rss": 321945600
   },
   {
    "tool": "seqpeeq",
@@ -197,27 +197,27 @@
    "file_bytes": 1010000,
    "runs": [
     {
-     "seconds": 0.08824958299919672,
-     "max_rss": 7786496,
+     "seconds": 0.08098504100053106,
+     "max_rss": 6520832,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08712916600052267,
-     "max_rss": 7811072,
+     "seconds": 0.08157937499890977,
+     "max_rss": 6438912,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08834854099950462,
-     "max_rss": 7811072,
+     "seconds": 0.08387908300028357,
+     "max_rss": 6455296,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08824958299919672,
-   "max_rss": 7811072
+   "median_seconds": 0.08157937499890977,
+   "max_rss": 6520832
   },
   {
    "tool": "jalview",
@@ -226,27 +226,27 @@
    "file_bytes": 1010000,
    "runs": [
     {
-     "seconds": 1.4667430830013473,
-     "max_rss": 305987584,
+     "seconds": 1.4271432909990835,
+     "max_rss": 290390016,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4896143330006453,
-     "max_rss": 306806784,
+     "seconds": 1.42544000000089,
+     "max_rss": 296124416,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.472765791000711,
-     "max_rss": 306626560,
+     "seconds": 1.4276487500010262,
+     "max_rss": 303890432,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.472765791000711,
-   "max_rss": 306806784
+   "median_seconds": 1.4271432909990835,
+   "max_rss": 303890432
   },
   {
    "tool": "seqpeeq",
@@ -255,27 +255,27 @@
    "file_bytes": 100100000,
    "runs": [
     {
-     "seconds": 0.25406145799934166,
-     "max_rss": 108367872,
+     "seconds": 0.1856008329996257,
+     "max_rss": 107102208,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08346987499862735,
-     "max_rss": 108376064,
+     "seconds": 0.07706241699997918,
+     "max_rss": 107085824,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08305566699891642,
-     "max_rss": 108376064,
+     "seconds": 0.07846120800058998,
+     "max_rss": 107036672,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08346987499862735,
-   "max_rss": 108376064
+   "median_seconds": 0.07846120800058998,
+   "max_rss": 107102208
   },
   {
    "tool": "jalview",
@@ -284,27 +284,27 @@
    "file_bytes": 100100000,
    "runs": [
     {
-     "seconds": 6.168670875000316,
-     "max_rss": 1292238848,
+     "seconds": 5.934932417001619,
+     "max_rss": 1245773824,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 5.936934208000821,
-     "max_rss": 1252261888,
+     "seconds": 6.210342250000394,
+     "max_rss": 1274445824,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 5.890606208000463,
-     "max_rss": 1267875840,
+     "seconds": 6.1340102080012,
+     "max_rss": 1349074944,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 5.936934208000821,
-   "max_rss": 1292238848
+   "median_seconds": 6.1340102080012,
+   "max_rss": 1349074944
   },
   {
    "tool": "seqpeeq",
@@ -313,27 +313,27 @@
    "file_bytes": 900300000,
    "runs": [
     {
-     "seconds": 1.5567745000007562,
-     "max_rss": 912003072,
+     "seconds": 1.3311342080014583,
+     "max_rss": 910786560,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.29153204199974425,
-     "max_rss": 911962112,
+     "seconds": 0.12693929099987145,
+     "max_rss": 910639104,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.2994539999999688,
-     "max_rss": 911958016,
+     "seconds": 0.13394091699956334,
+     "max_rss": 910606336,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.2994539999999688,
-   "max_rss": 912003072
+   "median_seconds": 0.13394091699956334,
+   "max_rss": 910786560
   },
   {
    "tool": "jalview",
@@ -342,15 +342,15 @@
    "file_bytes": 900300000,
    "runs": [
     {
-     "seconds": 86.54970320900065,
-     "max_rss": 5220368384,
+     "seconds": 75.71971208299874,
+     "max_rss": 5196234752,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 86.54970320900065,
-   "max_rss": 5220368384
+   "median_seconds": 75.71971208299874,
+   "max_rss": 5196234752
   },
   {
    "tool": "seqpeeq",
@@ -359,27 +359,27 @@
    "file_bytes": 3001000000,
    "runs": [
     {
-     "seconds": 1.4439975000004779,
-     "max_rss": 3016818688,
+     "seconds": 4.5674904999996215,
+     "max_rss": 3017162752,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4417034999987663,
-     "max_rss": 3016790016,
+     "seconds": 0.6496755000007397,
+     "max_rss": 3017129984,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4415417500003969,
-     "max_rss": 3016818688,
+     "seconds": 0.6495834160014056,
+     "max_rss": 3017080832,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.4417034999987663,
-   "max_rss": 3016818688
+   "median_seconds": 0.6496755000007397,
+   "max_rss": 3017162752
   },
   {
    "tool": "jalview",
@@ -388,15 +388,15 @@
    "file_bytes": 3001000000,
    "runs": [
     {
-     "seconds": 340.57123808399956,
-     "max_rss": 15133982720,
+     "seconds": 390.18437308300054,
+     "max_rss": 14736162816,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 340.57123808399956,
-   "max_rss": 15133982720
+   "median_seconds": 390.18437308300054,
+   "max_rss": 14736162816
   },
   {
    "tool": "seqpeeq",
@@ -405,27 +405,27 @@
    "file_bytes": 20878,
    "runs": [
     {
-     "seconds": 0.15482429100120498,
-     "max_rss": 7229440,
+     "seconds": 0.08435758299856388,
+     "max_rss": 5767168,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08248466700024437,
-     "max_rss": 7086080,
+     "seconds": 0.0768511660007789,
+     "max_rss": 5799936,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08408383299865818,
-     "max_rss": 7081984,
+     "seconds": 0.07889854099994409,
+     "max_rss": 5783552,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08408383299865818,
-   "max_rss": 7229440
+   "median_seconds": 0.07889854099994409,
+   "max_rss": 5799936
   },
   {
    "tool": "figtree",
@@ -434,27 +434,27 @@
    "file_bytes": 20878,
    "runs": [
     {
-     "seconds": 1.283031499999197,
+     "seconds": 1.2867019169989362,
+     "max_rss": 254312448,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2752175000005082,
+     "max_rss": 253984768,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2726947920000384,
      "max_rss": 251789312,
      "outcome": "ok",
      "detail": ""
-    },
-    {
-     "seconds": 1.2668280829984724,
-     "max_rss": 250642432,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.2649489160012308,
-     "max_rss": 252444672,
-     "outcome": "ok",
-     "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.2668280829984724,
-   "max_rss": 252444672
+   "median_seconds": 1.2752175000005082,
+   "max_rss": 254312448
   },
   {
    "tool": "seqpeeq",
@@ -463,27 +463,27 @@
    "file_bytes": 218879,
    "runs": [
     {
-     "seconds": 0.10193258400067862,
-     "max_rss": 9502720,
+     "seconds": 0.09286495800006378,
+     "max_rss": 7700480,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08676462499897752,
-     "max_rss": 9424896,
+     "seconds": 0.08197062499857566,
+     "max_rss": 7700480,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08457691599869577,
-     "max_rss": 9420800,
+     "seconds": 0.07996258399907674,
+     "max_rss": 7700480,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08676462499897752,
-   "max_rss": 9502720
+   "median_seconds": 0.08197062499857566,
+   "max_rss": 7700480
   },
   {
    "tool": "figtree",
@@ -492,27 +492,27 @@
    "file_bytes": 218879,
    "runs": [
     {
-     "seconds": 1.562692875000721,
-     "max_rss": 429621248,
+     "seconds": 1.5683337910013506,
+     "max_rss": 428736512,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.619248916998913,
-     "max_rss": 429244416,
+     "seconds": 1.5984600000010687,
+     "max_rss": 434520064,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.6592890840001928,
-     "max_rss": 432586752,
+     "seconds": 1.602287041998352,
+     "max_rss": 435044352,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.619248916998913,
-   "max_rss": 432586752
+   "median_seconds": 1.5984600000010687,
+   "max_rss": 435044352
   },
   {
    "tool": "seqpeeq",
@@ -521,27 +521,27 @@
    "file_bytes": 2288880,
    "runs": [
     {
-     "seconds": 0.09322995799993805,
-     "max_rss": 31809536,
+     "seconds": 0.08240195799953653,
+     "max_rss": 31375360,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07926395899994532,
-     "max_rss": 30666752,
+     "seconds": 0.07381166599952849,
+     "max_rss": 31375360,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07952349999868602,
-     "max_rss": 30666752,
+     "seconds": 0.07375237499945797,
+     "max_rss": 31440896,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.07952349999868602,
-   "max_rss": 31809536
+   "median_seconds": 0.07381166599952849,
+   "max_rss": 31440896
   },
   {
    "tool": "figtree",
@@ -550,27 +550,27 @@
    "file_bytes": 2288880,
    "runs": [
     {
-     "seconds": 3.8049630420009635,
-     "max_rss": 2034057216,
+     "seconds": 3.8205817500002013,
+     "max_rss": 2314027008,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 3.8962109999993118,
-     "max_rss": 2315370496,
+     "seconds": 3.9622291670002596,
+     "max_rss": 1927380992,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 3.8662610829996993,
-     "max_rss": 2232057856,
+     "seconds": 3.819106458000533,
+     "max_rss": 1942061056,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 3.8662610829996993,
-   "max_rss": 2315370496
+   "median_seconds": 3.8205817500002013,
+   "max_rss": 2314027008
   },
   {
    "tool": "seqpeeq",
@@ -579,27 +579,27 @@
    "file_bytes": 23888881,
    "runs": [
     {
-     "seconds": 0.6142904170010297,
-     "max_rss": 315351040,
+     "seconds": 0.44315016600012314,
+     "max_rss": 308379648,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.6019738329996471,
-     "max_rss": 315383808,
+     "seconds": 0.4402249999984633,
+     "max_rss": 308396032,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.6059051669999462,
-     "max_rss": 315363328,
+     "seconds": 0.4383132080001815,
+     "max_rss": 308412416,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.6059051669999462,
-   "max_rss": 315383808
+   "median_seconds": 0.4402249999984633,
+   "max_rss": 308412416
   },
   {
    "tool": "figtree",
@@ -608,27 +608,27 @@
    "file_bytes": 23888881,
    "runs": [
     {
-     "seconds": 26.339612750000015,
-     "max_rss": 12112543744,
+     "seconds": 26.330888000000414,
+     "max_rss": 10234445824,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 26.42966154200076,
-     "max_rss": 12016582656,
+     "seconds": 26.274660249999215,
+     "max_rss": 11795021824,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 26.154306582999197,
-     "max_rss": 9620176896,
+     "seconds": 26.238270124998962,
+     "max_rss": 11149754368,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 26.339612750000015,
-   "max_rss": 12112543744
+   "median_seconds": 26.274660249999215,
+   "max_rss": 11795021824
   },
   {
    "tool": "seqpeeq",
@@ -637,27 +637,27 @@
    "file_bytes": 1392581,
    "runs": [
     {
-     "seconds": 0.13941574999989825,
-     "max_rss": 7712768,
+     "seconds": 0.1329823750002106,
+     "max_rss": 6356992,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.13636866599881614,
-     "max_rss": 7757824,
+     "seconds": 0.1342262500002107,
+     "max_rss": 6455296,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.13635570799851848,
-     "max_rss": 7753728,
+     "seconds": 0.13448091600002954,
+     "max_rss": 6389760,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.13636866599881614,
-   "max_rss": 7757824
+   "median_seconds": 0.1342262500002107,
+   "max_rss": 6455296
   },
   {
    "tool": "igv",
@@ -666,27 +666,27 @@
    "file_bytes": 1392581,
    "runs": [
     {
-     "seconds": 3.84963337499903,
-     "max_rss": 352043008,
+     "seconds": 3.9047818340004596,
+     "max_rss": 361873408,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 3.358732124999733,
-     "max_rss": 342081536,
+     "seconds": 3.4063704590007546,
+     "max_rss": 342933504,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.3367571250000765,
-     "max_rss": 348815360,
+     "seconds": 1.5027209999989282,
+     "max_rss": 346374144,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 3.358732124999733,
-   "max_rss": 352043008
+   "median_seconds": 3.4063704590007546,
+   "max_rss": 361873408
   },
   {
    "tool": "seqpeeq",
@@ -695,27 +695,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 0.16695666699888534,
-     "max_rss": 8966144,
+     "seconds": 0.15959487500003888,
+     "max_rss": 7553024,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.163530042000275,
-     "max_rss": 8912896,
+     "seconds": 0.15817583299940452,
+     "max_rss": 7503872,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.16379283300011593,
-     "max_rss": 8912896,
+     "seconds": 0.15809475000060047,
+     "max_rss": 7471104,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.16379283300011593,
-   "max_rss": 8966144
+   "median_seconds": 0.15817583299940452,
+   "max_rss": 7553024
   },
   {
    "tool": "igv",
@@ -724,27 +724,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 1.4027198330004467,
-     "max_rss": 357842944,
+     "seconds": 1.5726052499994694,
+     "max_rss": 354664448,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4017052079998393,
-     "max_rss": 357105664,
+     "seconds": 1.406017665998661,
+     "max_rss": 370671616,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.399801875000776,
-     "max_rss": 359120896,
+     "seconds": 1.4161447080005019,
+     "max_rss": 356646912,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.4017052079998393,
-   "max_rss": 359120896
+   "median_seconds": 1.4161447080005019,
+   "max_rss": 370671616
   },
   {
    "tool": "seqpeeq",
@@ -753,27 +753,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 0.18139429100119742,
-     "max_rss": 18755584,
+     "seconds": 0.17361520800113794,
+     "max_rss": 18907136,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.17001499999969383,
-     "max_rss": 18681856,
+     "seconds": 0.16179366600044887,
+     "max_rss": 18857984,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.16843045800123946,
-     "max_rss": 18685952,
+     "seconds": 0.1612815420012339,
+     "max_rss": 18972672,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.17001499999969383,
-   "max_rss": 18755584
+   "median_seconds": 0.16179366600044887,
+   "max_rss": 18972672
   },
   {
    "tool": "igv",
@@ -782,27 +782,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 1.5695485420001205,
-     "max_rss": 384614400,
+     "seconds": 1.5541197080001439,
+     "max_rss": 388153344,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.5613738339998235,
-     "max_rss": 387219456,
+     "seconds": 1.548943750000035,
+     "max_rss": 386236416,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.5641465830012748,
-     "max_rss": 375488512,
+     "seconds": 1.5616249579998112,
+     "max_rss": 375635968,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.5641465830012748,
-   "max_rss": 387219456
+   "median_seconds": 1.5541197080001439,
+   "max_rss": 388153344
   }
  ]
 }

@@ -1,5 +1,6 @@
 """Tests for run.py. They use the tiny files, made into a temporary folder."""
 
+import platform
 import subprocess
 import tempfile
 import time
@@ -50,6 +51,14 @@ class Measure(unittest.TestCase):
         got = run.measure(["/bin/sh", "-c", "echo boom; exit 3"], timeout=5)
         self.assertEqual(got.outcome, "failed")
         self.assertIn("boom", got.detail)
+
+
+class Build(unittest.TestCase):
+    def test_seqpeeq_is_built_for_this_machine(self):
+        # An x86_64 seqpeeq on Apple silicon runs translated, beside native
+        # Java tools.
+        self.assertEqual(run.architecture(run.SEQPEEQ), platform.machine())
+        self.assertIn(f"({platform.machine()})", run.versions()["seqpeeq"])
 
 
 class Ready(unittest.TestCase):

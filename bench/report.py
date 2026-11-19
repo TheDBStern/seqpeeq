@@ -97,6 +97,21 @@ def only_tables(only):
     return out
 
 
+def _uncached(results):
+    """A sentence on seqpeeq's first, uncached open of the largest
+    alignment, when its first run was clearly slower than the median."""
+    alns = [r for r in results["results"] if r["tool"] == "seqpeeq" and r["kind"] == "msa"
+            and r["outcome"] == "ok" and len(r["runs"]) > 1]
+    if not alns:
+        return ""
+    big = max(alns, key=lambda r: r["file_bytes"])
+    first, median = big["runs"][0]["seconds"], big["median_seconds"]
+    if first < 1.5 * median:
+        return ""
+    return (f" Here, seqpeeq's first run of `{big['file']}`, read from disk, took"
+            f" {format_seconds(first)} against {format_seconds(median)}.")
+
+
 def page(results, only):
     machine, versions = results["machine"], results["versions"]
     timeout = results.get("timeout_seconds", 600)
@@ -152,7 +167,8 @@ def page(results, only):
         "- **Repeats:** each number is the median of 3 runs, or of 1 run when the first takes over a minute.",
         f"- **Limits:** each run stops after {timeout / 60:g} minutes. A tool that runs out of memory, crashes",
         "  or hits the limit is recorded as such, with the reason in a note.",
-        "- **Build:** seqpeeq is built with `--release`.",
+        "- **Build:** seqpeeq is built with `--release`, for the machine's own CPU. All four tools run",
+        "  natively; none is translated (as an x86_64 program on Apple silicon would be).",
         "",
         "## Results",
         "",
@@ -187,8 +203,7 @@ def page(results, only):
         f"  {memory} available, not the least they could manage with.",
         "- **The file cache.** Each tool's first run of a file may read it from disk; later runs find it",
         "  in memory, so a median of three is a cached run. Runs over a minute are run once and may be",
-        "  uncached. On this machine, an uncached open of the 3 GB alignment by seqpeeq took 5.4 s, against",
-        "  1.4 s cached.",
+        "  uncached." + _uncached(results),
         "- **IGV's start-up varies.** Its runs took either about 1.3 s or about 3.4 s, on any file, with",
         "  nothing in its log to tell them apart. Where two of a cell's three runs were slow, its median is",
         "  the slow one. `results.json` has every run.",
@@ -200,7 +215,7 @@ def page(results, only):
         "```sh",
         "conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte",
         "conda env create -f bench/env-igv.yml    # IGV, with Java 21",
-        "cargo build --release -p seqpeeq",
+        "cargo build --release -p seqpeeq     # on Apple silicon, with an aarch64-apple-darwin toolchain",
         "PY=$(conda run -n seqpeeq-bench which python)",
         "$PY bench/make_data.py --out bench/data --only all          # about 4 GB",
         "$PY bench/run.py --data bench/data --out bench/results.json --only all",

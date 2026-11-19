@@ -303,8 +303,15 @@ def machine():
             "os": platform.platform()}
 
 
+def architecture(program) -> str:
+    """The CPU a program is built for, as platform.machine() names it."""
+    kind = _output(["file", "-b", str(program)])
+    return next((arch for arch in ["arm64", "x86_64"] if arch in kind), kind)
+
+
 def versions():
-    found = {"seqpeeq": _output([str(SEQPEEQ), "--version"]).removeprefix("seqpeeq ")}
+    version = _output([str(SEQPEEQ), "--version"]).removeprefix("seqpeeq ")
+    found = {"seqpeeq": f"{version} ({architecture(SEQPEEQ)})"}
     for env, names in [(BENCH, ["figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"])]:
         for name in names:
             meta = sorted((env / "conda-meta").glob(f"{name}-[0-9]*.json"))
