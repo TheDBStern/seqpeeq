@@ -1780,4 +1780,79 @@ pub(crate) mod tests {
         let tips = app.tree().unwrap().1.tree().tips().len();
         assert!(tips < 64, "the prunes ran: {tips} tips left");
     }
+
+    fn readme() -> String {
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+            .expect("README.md at the repo root")
+    }
+
+    /// Every leaf command the parser knows, as its words: `msa delete-cols`.
+    pub(crate) fn command_paths() -> Vec<(String, clap::Command)> {
+        fn walk(prefix: &str, cmd: &clap::Command, out: &mut Vec<(String, clap::Command)>) {
+            for sub in cmd.get_subcommands() {
+                let path = format!("{prefix}{}", sub.get_name()).trim().to_string();
+                if sub.has_subcommands() {
+                    walk(&format!("{path} "), sub, out);
+                } else {
+                    out.push((path, sub.clone()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            "",
+            &<seqpeeq_core::Command as clap::CommandFactory>::command(),
+            &mut out,
+        );
+        out
+    }
+
+    #[test]
+    fn readme_has_every_help_line() {
+        let readme = readme();
+        for line in HELP_ALIGNMENT
+            .iter()
+            .chain(HELP_TREE)
+            .chain(HELP_BAM)
+            .chain(HELP_SHARED)
+        {
+            let line = line.trim();
+            assert!(!line.is_empty());
+            assert!(
+                readme.contains(line),
+                "README.md lacks the help line {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_names_every_command() {
+        let readme = readme();
+        let paths = command_paths();
+        assert!(paths.len() >= 20, "only {} commands found", paths.len());
+        for (path, _) in &paths {
+            assert!(
+                readme.contains(&format!("`{path}")),
+                "README.md does not name `{path}`"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "prints the commands for writing the README"]
+    fn print_commands() {
+        for (path, mut cmd) in command_paths() {
+            let usage = cmd.render_usage().to_string();
+            let about = cmd.get_about().map(|a| a.to_string()).unwrap_or_default();
+            println!("{path}\t{usage}\t{about}");
+            for arg in cmd.get_arguments() {
+                let name = arg
+                    .get_long()
+                    .map(|l| format!("--{l}"))
+                    .unwrap_or_else(|| arg.get_id().to_string().to_uppercase());
+                let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+                println!("    {name}\t{help}");
+            }
+        }
+    }
 }
