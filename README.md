@@ -119,10 +119,10 @@ Move      arrows hjkl   Shift+arrows jumps
           / search names   n N next, previous
 Select    drag   right-click extends   v V C   Esc clear
 Edit      d delete or gap   f fill   r rename
+          many: msa rename --regex RE --replace TEXT
           i insert (shifts)   R type over   Esc stop
 Zoom      - out   + in   z view whole alignment
-          u U undo redo
-          w save the whole alignment
+          u U undo redo   w save the whole alignment
           e extract the selection
           c change colors   [ ] adjust name width
           msa delete-rows  delete-cols  fill  overwrite
@@ -141,6 +141,7 @@ Tree      jk rows  h parent  l back  Enter open/close
           + - z zoom  b lengths  / n N find  v select
           d prune  r rename  o re-root on branch
           O re-root at the midpoint
+          many: tree rename --regex RE --replace TEXT
           w save the whole tree   e extract the clade
           s ladderize  u U undo redo
           a go to the alignment
@@ -265,6 +266,33 @@ names).
 | `tree rename [clade] --to NAME \| --regex RE --replace TEXT [--seqs]` | Rename one tip with `--to`, or many with `--regex` and `--replace`. `--seqs` also renames the matching sequences in the linked alignment. |
 | `tree link FILE` | Pair the tree with an open alignment, matching tip and sequence names. FILE may be the open alignment's path or just its file name. |
 | `tree unlink` | Drop the tree's link to an alignment. |
+
+### Renaming many at once
+
+`msa rename` and `tree rename` take `--regex RE --replace TEXT` to rename every name the pattern matches, in one undo
+step. Type them after `:` in the interface. The examples here start from names like `Wuhan_2019.2`.
+
+| Command | Result |
+|---|---|
+| `msa rename --regex '\.\d+$' --replace ''` | `Wuhan_2019`: the version suffix is removed. |
+| `msa rename --regex '^([^_]+)_(.+)$' --replace '${2}_$1'` | `2019.2_Wuhan`: the two parts swap places. |
+| `msa rename --match Delta --regex '^' --replace 'VOC_'` | `VOC_Delta_2021.1`, and only in rows whose names contain `Delta`. |
+| `tree rename --regex '_' --replace '-' --seqs` | `Wuhan-2019.2`, in the tree and in its linked alignment. |
+
+- The pattern is a [Rust regular expression](https://docs.rs/regex/latest/regex/#syntax), and every match in a name
+  is replaced.
+- Patterns are case-sensitive, unlike `/` search. Start one with `(?i)` to ignore case.
+- In `--replace`, `$1` or `${1}` is the first group, `${name}` a named group and `$$` a dollar sign. Write `${2}_`,
+  not `$2_`, when a group is followed by a letter, digit or `_`: seqpeeq refuses `$2_` rather than read it as a group
+  called `2_`.
+- `msa rename` takes `--rows`, `--name` or `--match` to rename only some rows. `tree rename --regex` renames across
+  the whole tree.
+- `--tree` (on `msa rename`) renames the matching tips in the linked tree too, and `--seqs` (on `tree rename`) the
+  matching sequences in the linked alignment.
+- Quote patterns with single quotes. In a shell, as in `seqpeeq run`, put the whole command in double quotes and
+  write each `$` as `\$`.
+- A rename that would give two tips the same name is refused, as is one that would give two linked sequences the same
+  name. An alignment on its own may end up with duplicate names; seqpeeq says how many.
 
 ### BAMs
 

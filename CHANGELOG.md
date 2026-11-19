@@ -13,6 +13,7 @@ All notable changes to seqpeeq are listed here. The format follows
 ### Changed
 
 - The help pages are reworded to match the README.
+- The alignment and tree help pages show how to rename many names at once, and the README explains it with examples.
 
 ### Fixed
 

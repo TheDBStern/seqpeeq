@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui.rs
-assertion_line: 896
+assertion_line: 897
 expression: "render(&app, 60, 12).backend()"
 ---
 "┌help: alignment───────────────────────────────────────────┐"
@@ -9,9 +9,9 @@ expression: "render(&app, 60, 12).backend()"
 "│           / search names   n N next, previous            │"
 "│ Select    drag   right-click extends   v V C   Esc clear │"
 "│ Edit      d delete or gap   f fill   r rename            │"
+"│           many: msa rename --regex RE --replace TEXT     │"
 "│           i insert (shifts)   R type over   Esc stop     │"
 "│ Zoom      - out   + in   z view whole alignment          │"
-"│           u U undo redo                                  │"
-"│           w save the whole alignment                     │"
+"│           u U undo redo   w save the whole alignment     │"
 "│           e extract the selection                        │"
 "└──────────────────────────────────────────────────────────┘"

@@ -622,10 +622,10 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
     "Edit      d delete or gap   f fill   r rename",
+    "          many: msa rename --regex RE --replace TEXT",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
-    "          u U undo redo",
-    "          w save the whole alignment",
+    "          u U undo redo   w save the whole alignment",
     "          e extract the selection",
     "          c change colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
@@ -638,6 +638,7 @@ const HELP_TREE: &[&str] = &[
     "          + - z zoom  b lengths  / n N find  v select",
     "          d prune  r rename  o re-root on branch",
     "          O re-root at the midpoint",
+    "          many: tree rename --regex RE --replace TEXT",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo",
     "          a go to the alignment",
@@ -1550,6 +1551,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_help_page_fits_a_24_row_terminal() {
+        // Its own lines, the shared ones, the log line and the border.
+        for own in [HELP_ALIGNMENT, HELP_TREE, HELP_BAM] {
+            let rows = own.len() + HELP_SHARED.len() + 1 + 2;
+            assert!(rows <= 24, "{rows} rows, starting {:?}", own[0]);
+        }
+    }
+
+    #[test]
     fn every_help_line_fits_a_60_column_terminal() {
         for line in HELP_ALIGNMENT
             .iter()
@@ -1681,6 +1691,7 @@ pub(crate) mod tests {
             "o re-root on branch",
             "a go to the alignment",
             "O re-root at the midpoint",
+            "many: tree rename --regex RE --replace TEXT",
         ] {
             assert!(help.contains(text), "{text}");
         }
@@ -1694,6 +1705,7 @@ pub(crate) mod tests {
             "z view whole alignment",
             "c change colors",
             "[ ] adjust name width",
+            "many: msa rename --regex RE --replace TEXT",
         ] {
             assert!(help.contains(text), "{text}");
         }
