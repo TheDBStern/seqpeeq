@@ -342,10 +342,7 @@ impl TreeView {
             // Each frame: a node, its children still to visit, the rows of
             // its first and last child, and the rows before it.
             let mut stack = vec![(self.shown, tree.children(self.shown), None, 0, 0)];
-            loop {
-                let Some(frame) = stack.last_mut() else {
-                    break;
-                };
+            while let Some(frame) = stack.last_mut() {
                 let y = match frame.1.next() {
                     Some(c) if self.open.contains(&c) => {
                         let before = self.rows.len();
