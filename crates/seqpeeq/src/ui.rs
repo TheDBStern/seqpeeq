@@ -622,6 +622,7 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
     "Edit      d delete or gap   f fill   r rename",
+    "          many: msa rename --regex RE --replace TEXT",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo",
@@ -637,6 +638,7 @@ const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
     "          d prune  r rename  o re-root on branch",
+    "          many: tree rename --regex RE --replace TEXT",
     "          O re-root at the midpoint",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo",
@@ -1681,6 +1683,7 @@ pub(crate) mod tests {
             "o re-root on branch",
             "a go to the alignment",
             "O re-root at the midpoint",
+            "many: tree rename --regex RE --replace TEXT",
         ] {
             assert!(help.contains(text), "{text}");
         }
@@ -1694,6 +1697,7 @@ pub(crate) mod tests {
             "z view whole alignment",
             "c change colors",
             "[ ] adjust name width",
+            "many: msa rename --regex RE --replace TEXT",
         ] {
             assert!(help.contains(text), "{text}");
         }
