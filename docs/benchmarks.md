@@ -54,26 +54,26 @@ Each cell is the median time of its runs and the highest peak memory among them.
 
 | Alignment | File | seqpeeq | Jalview |
 |---|---:|---:|---:|
-| start-up: 5 × 20 | 150 B | 69 ms · 7 MB | 1.34 s · 279 MB |
-| 1,000 × 1,000 | 1 MB | 88 ms · 8 MB | 1.48 s · 312 MB |
-| 10,000 × 10,000 | 100 MB | 83 ms · 108 MB | 6.48 s · 1.4 GB |
-| 30,000 × 30,000 | 900 MB | 0.30 s · 912 MB | 1.8 min · 6.9 GB |
-| 100,000 × 30,000 | 3.0 GB | 1.44 s · 3.0 GB | 7.3 min · 16.4 GB |
+| start-up: 5 × 20 | 150 B | 70 ms · 7 MB | 1.37 s · 285 MB |
+| 1,000 × 1,000 | 1 MB | 88 ms · 8 MB | 1.47 s · 307 MB |
+| 10,000 × 10,000 | 100 MB | 83 ms · 108 MB | 5.94 s · 1.3 GB |
+| 30,000 × 30,000 | 900 MB | 0.30 s · 912 MB | 87 s · 5.2 GB |
+| 100,000 × 30,000 | 3.0 GB | 1.44 s · 3.0 GB | 5.7 min · 15.1 GB |
 
 | Tree | File | seqpeeq | FigTree |
 |---|---:|---:|---:|
-| start-up: 5 tips | 80 B | 76 ms · 7 MB | 1.15 s · 229 MB |
-| 1,000 tips | 21 kB | 84 ms · 7 MB | 1.25 s · 253 MB |
-| 10,000 tips | 219 kB | 87 ms · 10 MB | 1.63 s · 438 MB |
-| 100,000 tips | 2 MB | 80 ms · 32 MB | 3.91 s · 2.3 GB |
-| 1,000,000 tips | 24 MB | 0.60 s · 323 MB | 29 s · 12.5 GB |
+| start-up: 5 tips | 80 B | 77 ms · 7 MB | 1.16 s · 226 MB |
+| 1,000 tips | 21 kB | 84 ms · 7 MB | 1.27 s · 252 MB |
+| 10,000 tips | 219 kB | 87 ms · 10 MB | 1.62 s · 433 MB |
+| 100,000 tips | 2 MB | 80 ms · 32 MB | 3.87 s · 2.3 GB |
+| 1,000,000 tips | 24 MB | 0.61 s · 315 MB | 26 s · 12.1 GB |
 
 | BAM | File | seqpeeq | IGV |
 |---|---:|---:|---:|
-| start-up: 2 kb, 2× | 1 kB | 0.14 s · 7 MB | 3.40 s · 316 MB |
-| 1 Mb, 10× | 1 MB | 0.14 s · 8 MB | 3.35 s · 347 MB |
-| 1 Mb, 100× | 8 MB | 0.16 s · 9 MB | 1.42 s · 357 MB |
-| 1 Mb, 1,000× | 44 MB | 0.17 s · 19 MB | 1.60 s · 385 MB |
+| start-up: 2 kb, 2× | 1 kB | 0.14 s · 7 MB | 1.32 s · 319 MB |
+| 1 Mb, 10× | 1 MB | 0.14 s · 8 MB | 3.36 s · 352 MB |
+| 1 Mb, 100× | 8 MB | 0.16 s · 9 MB | 1.40 s · 359 MB |
+| 1 Mb, 1,000× | 44 MB | 0.17 s · 19 MB | 1.56 s · 387 MB |
 
 ## seqpeeq only
 
@@ -116,9 +116,13 @@ behind the zoomed-out overview.
 - **seqpeeq reads a BAM by region.** It reads the window in view, through the index, and a sketch of
   the whole contig in the background. IGV also reads by region. Neither number says how long a
   tool takes to read every read.
+- **Java's memory is partly the limit given.** A Java program's resident memory grows toward its
+  heap limit before it collects garbage, so the Java tools' memory says what they used with
+  16 GB available, not the least they could manage with.
 - **The file cache.** Each tool's first run of a file may read it from disk; later runs find it
   in memory, so a median of three is a cached run. Runs over a minute are run once and may be
-  uncached. Here, seqpeeq's first, uncached open of the 3 GB alignment took 5.4 s against 1.4 s.
+  uncached. On this machine, an uncached open of the 3 GB alignment by seqpeeq took 5.4 s, against
+  1.4 s cached.
 - **IGV's start-up varies.** Its runs took either about 1.3 s or about 3.4 s, on any file, with
   nothing in its log to tell them apart. Where two of a cell's three runs were slow, its median is
   the slow one. `results.json` has every run.

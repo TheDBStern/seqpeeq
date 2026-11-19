@@ -72,6 +72,29 @@ class MakeData(unittest.TestCase):
         fa = self.dir / "tiny.fa"
         self.assertNotEqual(fa.stat().st_mtime_ns, before[fa])
 
+    def test_an_interrupted_file_is_made_again(self):
+        real = make_data.write_alignment
+
+        def interrupted(path, rows, cols, seed):
+            Path(path).write_text(">s000001\nAC")
+            raise KeyboardInterrupt
+
+        make_data.write_alignment = interrupted
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                make_data.main(["--out", str(self.dir), "--only", "tiny"])
+        finally:
+            make_data.write_alignment = real
+        self.assertFalse((self.dir / "tiny.fa").exists(), "a half-written file kept its name")
+        make_data.main(["--out", str(self.dir), "--only", "tiny"])
+        self.assertEqual(len(records(self.dir / "tiny.fa")), 5)
+
+    def test_a_bam_without_its_index_is_made_again(self):
+        (self.dir / "tiny.bam").write_bytes(b"half")
+        make_data.main(["--out", str(self.dir), "--only", "tiny"])
+        self.assertTrue((self.dir / "tiny.bam.bai").exists())
+        self.assertGreater((self.dir / "tiny.bam").stat().st_size, 4)
+
     def test_seqpeeq_opens_the_tiny_files(self):
         self.assertTrue(SEQPEEQ.exists(), "build it first: cargo build --release -p seqpeeq")
         make_data.main(["--out", str(self.dir), "--only", "tiny"])

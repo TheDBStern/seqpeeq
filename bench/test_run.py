@@ -81,15 +81,35 @@ class Tools(unittest.TestCase):
         return path
 
     def test_seqpeeq_shows_the_reads_of_the_igv_window(self):
-        # 50 kb opens zoomed out past the reads, so seqpeeq must be taken
+        # 300 kb opens zoomed out past the reads, so seqpeeq must be taken
         # to the window IGV is sent to before its reads are drawn.
-        bam = make_data.write_bam(self.dir, depth=2, seed=1, length=50_000,
+        bam = make_data.write_bam(self.dir, depth=1, seed=1, length=300_000,
                                   ref="mid_ref.fa", name="mid.bam")
         argv = run.commands("seqpeeq", bam, self.scratch("s"))
         got = run.measure(argv, timeout=30, ready=run.seqpeeq_steps("bam"))
         self.assertEqual(got.outcome, "ok", got.detail)
+        # Without the go-to, the last step must never hold.
+        alone = run.measure(argv, timeout=3, ready=run.seqpeeq_steps("bam")[-1][0])
+        self.assertEqual(alone.outcome, "timed out")
         run.commands("igv", bam, self.scratch("i"))
         self.assertIn(f"goto {run.WINDOW}\n", (self.scratch("i") / "batch.txt").read_text())
+
+    def test_the_window_test_needs_the_window_scale(self):
+        shown = run.seqpeeq_steps("bam")[-1][0]
+        # A small contig shows a mean depth at open, zoomed out.
+        self.assertFalse(shown("c1:1  mean depth 2.0  20 bp a column"))
+        self.assertTrue(shown("c1:1  mean depth 2.0  10 bp a column"))
+        self.assertTrue(shown("c1:1  depth 2  1 bp a column"))
+
+    def test_jalview_never_uses_the_home_folder(self):
+        props = Path.home() / ".jalview_properties"
+        before = props.read_bytes() if props.exists() else None
+        scratch = self.scratch("jh").resolve()
+        argv = run.commands("jalview", self.dir / "tiny.fa", scratch)
+        self.assertIn(f"-Duser.home={scratch}", argv)
+        got = run.measure(argv, timeout=120)
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertEqual(props.read_bytes() if props.exists() else None, before)
 
     def test_jalview_is_timed_itself_not_its_launcher(self):
         argv = run.commands("jalview", self.dir / "tiny.fa", self.scratch("j"))

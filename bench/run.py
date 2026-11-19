@@ -11,6 +11,7 @@ Its peak memory is read from the operating system when it exits.
 
 import argparse
 import fcntl
+import re
 import json
 import os
 import platform
@@ -40,6 +41,9 @@ LONG_RUN = 60
 PTY_ROWS, PTY_COLS = 48, 160
 # The stretch of a BAM both IGV and seqpeeq are taken to and timed showing.
 WINDOW = "c1:1-1000"
+# The coarsest scale seqpeeq fits WINDOW to in PTY_COLS columns. A small
+# contig opens zoomed out with a depth already shown, at a coarser scale.
+WINDOW_SCALE = 10
 LEFT_BEHIND_GRACE = 0.5
 
 # Which tools are timed on which kind of file.
@@ -222,8 +226,15 @@ def seqpeeq_steps(kind):
     until it is opened; a BAM opens on the whole contig, so it is then
     taken to IGV's window with `g` and timed until those reads are read."""
     if kind == "bam":
-        return [(screen_shows("opened "), f"g{WINDOW}\r".encode()), (seqpeeq_ready("bam"), None)]
+        return [(screen_shows("opened "), f"g{WINDOW}\r".encode()), (_window_shown, None)]
     return [(seqpeeq_ready(kind), None)]
+
+
+def _window_shown(screen):
+    """The reads of WINDOW are drawn: a depth is shown at its scale."""
+    scale = re.search(r"([\d,]+) bp a column", screen)
+    return (seqpeeq_ready("bam")(screen) and scale is not None
+            and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 
 
 def _java(env):
@@ -249,7 +260,9 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
         jar = next((BENCH / "share").glob("jalview-*/jalview-all-j11.jar"))
         # The jar's own entry point is a launcher that starts Jalview in a
         # second JVM and exits; this is the command it runs.
-        return [_java(BENCH), MEMORY, "-Dapple.awt.UIElement=true", "-cp", str(jar),
+        # Its settings and recent files go to the scratch folder, not ~.
+        return [_java(BENCH), MEMORY, "-Dapple.awt.UIElement=true", f"-Duser.home={scratch}",
+                "-cp", str(jar),
                 "jalview.bin.Jalview", "--headless", "--open", str(file), "--close"]
     if tool == "igv":
         ref = _reference(file)

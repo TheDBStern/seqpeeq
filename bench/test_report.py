@@ -66,6 +66,14 @@ class Page(unittest.TestCase):
         self.assertIn("out of memory", rows[1])
         self.assertIn("Java heap space", self.page)
 
+    def test_a_tool_at_its_heap_limit_is_marked(self):
+        page = report.page({**RESULTS, "results": [
+            result("seqpeeq", "msa", "aln_1k.fa", "ok", 0.21, 9_000_000),
+            result("jalview", "msa", "aln_1k.fa", "ok", 436.0, 16_400_000_000)]}, ONLY)
+        row = next(line for line in page.splitlines() if line.startswith("| 1,000 × 1,000"))
+        self.assertIn("[^", row)
+        self.assertIn("16 GB heap limit", page)
+
     def test_page_names_the_machine_and_versions(self):
         self.assertIn("Apple M9", self.page)
         for version in VERSIONS.values():

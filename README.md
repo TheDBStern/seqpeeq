@@ -40,7 +40,8 @@ cargo install --path crates/seqpeeq --root "$CONDA_PREFIX"
 - The program goes in the environment's `bin`, so `seqpeeq` is there whenever the environment is active.
 - To update, run `git pull` and the last line again.
 - The build downloads its libraries from crates.io, so run it where there is internet, usually a login node.
-- All dependencies are pure Rust, so no C compiler or system libraries are needed.
+- All dependencies are pure Rust, so no C libraries are needed. Linking uses the system's `cc`, which Linux servers
+  almost always have; if cargo says ``linker `cc` not found``, load or install gcc first.
 
 ### With Rust
 
@@ -270,5 +271,6 @@ See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, 
 size.
 For example, on an Apple M2 laptop:
 
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 1.4 s; Jalview takes 7.3 minutes and 16 GB.
-- **A tree of a million tips:** seqpeeq draws it in 0.6 s; FigTree takes 29 s.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 1.4 s; Jalview takes 5.7 minutes and 15 GB, near
+  the 16 GB it was given.
+- **A tree of a million tips:** seqpeeq draws it in 0.6 s; FigTree takes 26 s.

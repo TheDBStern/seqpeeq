@@ -42,11 +42,22 @@ def format_bytes(b):
     return f"{b / 1e9:.1f} GB"
 
 
-def _cell(result, timeout, notes):
+def _heap_bytes(limit):
+    return int(limit.lower().removesuffix("g")) * 2**30
+
+
+def _cell(result, timeout, notes, limit="16g"):
     if result is None:
         return "–"
     if result["outcome"] == "ok":
-        return f"{format_seconds(result['median_seconds'])} · {format_bytes(result['max_rss'])}"
+        cell = f"{format_seconds(result['median_seconds'])} · {format_bytes(result['max_rss'])}"
+        if result["tool"] != "seqpeeq" and result["max_rss"] >= 0.95 * _heap_bytes(limit):
+            notes.append(f"{NAMES[result['tool']]} on `{result['file']}` reached its "
+                         f"{limit.upper().replace('G', ' GB')} heap limit. A Java program's memory grows "
+                         "toward the limit it is given, so this is not what it needs, and its time "
+                         "likely includes collecting garbage near the limit.")
+            cell += f"[^{len(notes)}]"
+        return cell
     label = {"timed out": f"timed out ({timeout / 60:g} min)"}.get(result["outcome"], result["outcome"])
     detail = " ".join(result["runs"][-1].get("detail", "").split()) or result["outcome"]
     notes.append(f"{NAMES[result['tool']]} on `{result['file']}`: {detail}".replace("|", "\\|"))
@@ -67,7 +78,8 @@ def tables(results, notes):
         for file in files:
             got = {r["tool"]: r for r in rows if r["file"] == file}
             size = next(r["file_bytes"] for r in rows if r["file"] == file)
-            cells = [_cell(got.get(t), timeout, notes) for t in tools]
+            cells = [_cell(got.get(t), timeout, notes, results.get("memory_limit", "16g"))
+                     for t in tools]
             out.append(f"| {FILES.get(file, file)} | {format_bytes(size)} | " + " | ".join(cells) + " |")
         out.append("")
     return out
@@ -170,9 +182,13 @@ def page(results, only):
         "- **seqpeeq reads a BAM by region.** It reads the window in view, through the index, and a sketch of",
         "  the whole contig in the background. IGV also reads by region. Neither number says how long a",
         "  tool takes to read every read.",
+        "- **Java's memory is partly the limit given.** A Java program's resident memory grows toward its",
+        "  heap limit before it collects garbage, so the Java tools' memory says what they used with",
+        f"  {memory} available, not the least they could manage with.",
         "- **The file cache.** Each tool's first run of a file may read it from disk; later runs find it",
         "  in memory, so a median of three is a cached run. Runs over a minute are run once and may be",
-        "  uncached. Here, seqpeeq's first, uncached open of the 3 GB alignment took 5.4 s against 1.4 s.",
+        "  uncached. On this machine, an uncached open of the 3 GB alignment by seqpeeq took 5.4 s, against",
+        "  1.4 s cached.",
         "- **IGV's start-up varies.** Its runs took either about 1.3 s or about 3.4 s, on any file, with",
         "  nothing in its log to tell them apart. Where two of a cell's three runs were slow, its median is",
         "  the slow one. `results.json` has every run.",

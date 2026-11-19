@@ -7,6 +7,7 @@ Files that already exist are kept unless --force is given.
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -141,11 +142,11 @@ def write_bam(dir, depth, seed, length=1_000_000, ref="ref.fa", name=None):
 
 
 def plan(only):
-    """(file name, function making it) for each file in the set `only`."""
-    jobs = [("tiny.fa", lambda d: write_alignment(d / "tiny.fa", 5, 20, 1)),
-            ("tiny.nwk", lambda d: write_tree(d / "tiny.nwk", 5, 1)),
-            ("tiny.bam", lambda d: write_bam(d, 2, 1, length=2000, ref="tiny_ref.fa",
-                                             name="tiny.bam"))]
+    """(file name, function making it) for each file in the set `only`.
+    Each function takes the folder and the name to write it under."""
+    jobs = [("tiny.fa", lambda d, n: write_alignment(d / n, 5, 20, 1)),
+            ("tiny.nwk", lambda d, n: write_tree(d / n, 5, 1)),
+            ("tiny.bam", lambda d, n: write_bam(d, 2, 1, length=2000, ref="tiny_ref.fa", name=n))]
     if only == "tiny":
         return jobs
     alns = list(ALIGNMENTS.items())
@@ -154,11 +155,11 @@ def plan(only):
     if only == "small":
         alns, trees, depths = alns[:1], trees[:1], depths[:1]
     for name, (rows, cols) in alns:
-        jobs.append((name, lambda d, n=name, r=rows, c=cols: write_alignment(d / n, r, c, 1)))
+        jobs.append((name, lambda d, n, r=rows, c=cols: write_alignment(d / n, r, c, 1)))
     for name, tips in trees:
-        jobs.append((name, lambda d, n=name, t=tips: write_tree(d / n, t, 1)))
+        jobs.append((name, lambda d, n, t=tips: write_tree(d / n, t, 1)))
     for depth in depths:
-        jobs.append((f"reads_{depth}x.bam", lambda d, x=depth: write_bam(d, x, 1)))
+        jobs.append((f"reads_{depth}x.bam", lambda d, n, x=depth: write_bam(d, x, 1, name=n)))
     return jobs
 
 
@@ -171,14 +172,22 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=True)
     for name, make in plan(args.only):
         path = args.out / name
-        if path.exists() and not args.force:
+        bam = name.endswith(".bam")
+        finished = path.exists() and (not bam or Path(f"{path}.bai").exists())
+        if finished and not args.force:
             print(f"kept {path}")
             continue
         if args.force and name.endswith(".bam"):
             # The reference comes from the same seed, so an existing one is reused.
             for stale in [path, Path(f"{path}.bai")]:
                 stale.unlink(missing_ok=True)
-        make(args.out)
+        # Written under a temporary name and renamed when done, so an
+        # interrupted run leaves nothing that looks finished.
+        part = name.removesuffix(".bam") + ".part" + (".bam" if bam else "")
+        make(args.out, part)
+        if bam:
+            os.replace(args.out / f"{part}.bai", Path(f"{path}.bai"))
+        os.replace(args.out / part, path)
         print(f"made {path} ({path.stat().st_size:,} bytes)", flush=True)
 
 
