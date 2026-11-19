@@ -1915,3 +1915,74 @@ fn a_replayed_session_stacks_the_same_way() {
     crate::replay(&text, &mut again).unwrap();
     assert_eq!(by_position(&again), vec![vec![0, 2]]);
 }
+
+/// The path of the reference attached to the BAM at `index`, if any.
+fn reference_path(s: &Session, index: usize) -> Option<PathBuf> {
+    let bam = s.datasets()[index].bam().unwrap();
+    bam.source().reference().map(|r| r.path().to_path_buf())
+}
+
+/// The fixture and a copy of its BAM, stacked.
+fn stacked_copy(data: &Path, cache: &Path) -> (Session, crate::bam::testing::Fixture) {
+    let f = fixture(data);
+    let mut s = session(cache);
+    open(&mut s, &f.bam).unwrap();
+    fs::copy(&f.bam, data.join("b.bam")).unwrap();
+    open(&mut s, &data.join("b.bam")).unwrap();
+    assert_eq!(s.stacks().len(), 1);
+    (s, f)
+}
+
+#[test]
+fn bam_ref_in_a_stack_attaches_to_every_member() {
+    let (data, cache) = dirs();
+    let (mut s, f) = stacked_copy(data.path(), cache.path());
+    let out = ex(&mut s, &format!("bam ref {}", f.reference.display())).unwrap();
+    assert_eq!(
+        out.message,
+        "attached ref.fa to reads.bam and b.bam (3 of 3 contigs)"
+    );
+    for index in 0..2 {
+        let bam = s.datasets()[index].bam().unwrap();
+        let reference = bam.source().reference().unwrap();
+        assert_eq!(reference.fetch("c1", 101, 110).unwrap(), b"ACGTACGTAC");
+    }
+}
+
+#[test]
+fn bam_ref_of_a_file_a_member_already_has_does_not_read_it_again() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let line = format!("bam ref {}", f.reference.display());
+    ex(&mut s, &line).unwrap();
+    fs::copy(&f.bam, data.path().join("b.bam")).unwrap();
+    open(&mut s, &data.path().join("b.bam")).unwrap();
+    let started = s.start(Command::parse_line(&line).unwrap()).unwrap();
+    let Started::Done(outcome) = started else {
+        panic!("the reference was read again");
+    };
+    assert_eq!(
+        outcome.message,
+        "attached ref.fa to reads.bam and b.bam (3 of 3 contigs)"
+    );
+    assert_eq!(reference_path(&s, 1), Some(f.reference.clone()));
+    assert_eq!(s.history().last().unwrap(), &line);
+}
+
+#[test]
+fn bam_ref_of_another_file_reads_it_for_every_member() {
+    let (data, cache) = dirs();
+    let (mut s, f) = stacked_copy(data.path(), cache.path());
+    ex(&mut s, &format!("bam ref {}", f.reference.display())).unwrap();
+    let short = data.path().join("short.fa");
+    fs::write(&short, ">c1\nACGT\n").unwrap();
+    let cmd = Command::parse_line(&format!("bam ref {}", short.display())).unwrap();
+    let Started::Running(job) = s.start(cmd).unwrap() else {
+        panic!("the new file was not read");
+    };
+    s.finish(job.run()).unwrap();
+    assert_eq!(reference_path(&s, 0), Some(short.clone()));
+    assert_eq!(reference_path(&s, 1), Some(short));
+}

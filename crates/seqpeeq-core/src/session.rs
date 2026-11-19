@@ -231,9 +231,9 @@ enum Work {
         dataset: u64,
         extraction: Box<TreeExtraction>,
     },
-    /// Read a reference FASTA's index, for `bam ref`.
+    /// Read a reference FASTA's index, for `bam ref`, for these BAMs.
     BamRef {
-        dataset: u64,
+        datasets: Vec<u64>,
         file: PathBuf,
     },
     /// Write a BAM region or a stretch of the reference.
@@ -296,9 +296,9 @@ impl Job {
                     whole: false,
                 })
             }
-            Work::BamRef { dataset, file } => {
+            Work::BamRef { datasets, file } => {
                 Reference::open(&file, &self.progress).map(|reference| Product::Attached {
-                    dataset,
+                    datasets,
                     reference: Box::new(reference),
                 })
             }
@@ -341,9 +341,9 @@ fn open_content(input: &Input, progress: &Progress) -> Result<(Content, Vec<Stri
 }
 
 enum Product {
-    /// A reference read for the BAM `dataset`.
+    /// A reference read for these BAMs.
     Attached {
-        dataset: u64,
+        datasets: Vec<u64>,
         reference: Box<Reference>,
     },
     Opened {
@@ -549,8 +549,29 @@ impl Session {
             Command::Bam(BamCmd::Ref { file }) => {
                 self.current_bam()?;
                 let dataset = self.datasets[self.current.expect("there is a current file")].id;
+                let datasets = self
+                    .stack_of(dataset)
+                    .map_or_else(|| vec![dataset], <[u64]>::to_vec);
+                // A member already holding this file lends it to the rest,
+                // so the FASTA is indexed once (as `--ref` asks after each
+                // BAM it opens).
+                let held = datasets.iter().find_map(|id| {
+                    let doc = self.datasets.iter().find(|d| d.id == *id)?.bam()?;
+                    let reference = doc.source().reference()?;
+                    same_file(reference.path(), &file).then(|| reference.clone())
+                });
+                if let Some(reference) = held {
+                    let finished = Finished {
+                        line,
+                        result: Ok(Product::Attached {
+                            datasets,
+                            reference: Box::new(reference),
+                        }),
+                    };
+                    return self.finish(finished).map(Started::Done);
+                }
                 let label = format!("reading {}", file_name(&file));
-                return Ok(self.hand_out(label, line, Work::BamRef { dataset, file }));
+                return Ok(self.hand_out(label, line, Work::BamRef { datasets, file }));
             }
             Command::Bam(mut cmd) if !matches!(cmd, BamCmd::Stack { .. } | BamCmd::Unstack) => {
                 if let BamCmd::ExportReads {
@@ -607,19 +628,35 @@ impl Session {
         let Finished { line, result } = finished;
         let now = (self.clock)();
         match result? {
-            Product::Attached { dataset, reference } => {
-                let Some(doc) = self.datasets.iter_mut().find(|d| d.id == dataset) else {
+            Product::Attached {
+                datasets,
+                reference,
+            } => {
+                let open: Vec<u64> = datasets
+                    .into_iter()
+                    .filter(|id| self.datasets.iter().any(|d| d.id == *id))
+                    .collect();
+                if open.is_empty() {
                     return Err(Error::Invalid(
                         "the BAM was closed while its reference was read".to_string(),
                     ));
-                };
-                let Content::Bam(bam) = &mut doc.content else {
-                    unreachable!("bam ref is handed out for a BAM");
-                };
+                }
                 if let Some(log) = &mut self.log {
                     log.record(&line, None, &now)?;
                 }
-                let message = bam.set_reference(*reference);
+                let named = names_joined(&self.names_of(&open));
+                let mut message = String::new();
+                for (i, id) in open.iter().enumerate() {
+                    let doc = self.datasets.iter_mut().find(|d| d.id == *id);
+                    let Some(Content::Bam(bam)) = doc.map(|d| &mut d.content) else {
+                        unreachable!("bam ref is handed out for BAMs");
+                    };
+                    // Members share their contigs, so the first says it.
+                    let said = bam.set_reference((*reference).clone(), &named);
+                    if i == 0 {
+                        message = said;
+                    }
+                }
                 self.history.push(line);
                 Ok(Outcome { message })
             }
