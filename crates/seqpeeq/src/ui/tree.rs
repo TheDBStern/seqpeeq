@@ -334,11 +334,10 @@ pub fn draw_tree(frame: &mut Frame, doc: &TreeDoc, view: &TreeView, header: &str
         if selected(view, y) {
             style = palette::SELECTED;
         }
-        if !row.collapsed
-            && matches
-                .is_some_and(|search| search.inside.get(row.node as usize).is_some_and(|&k| k > 0))
+        if matches
+            .is_some_and(|search| search.inside.get(row.node as usize).is_some_and(|&k| k > 0))
         {
-            style = style.add_modifier(Modifier::UNDERLINED);
+            style = style.patch(palette::MATCH);
         }
         if row.node == view.cursor {
             style = style.add_modifier(Modifier::REVERSED);
@@ -810,5 +809,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_match_on_screen_is_drawn_as_a_match() {
+        // Issue 8: every match is highlighted, not just the one gone to.
+        let (doc, mut view, _) = laid_out(T6, 40, 10);
+        view.search = Some(search(doc.get(), "D|E|A"));
+        view.cursor = doc.tree().tips()[0];
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let header = header_text("t.nwk", doc.get(), &view, None);
+        terminal
+            .draw(|frame| draw_tree(frame, doc.get(), &view, &header, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let style_of = |name: &str| {
+            let y = (0..10)
+                .find(|&y| {
+                    let line: String = (0..40).map(|x| buffer[(x, y)].symbol()).collect();
+                    line.trim_end().ends_with(&format!(" {name}"))
+                })
+                .unwrap_or_else(|| panic!("{name} is drawn"));
+            let x = (0..40)
+                .rev()
+                .find(|&x| buffer[(x, y)].symbol() == name)
+                .unwrap();
+            buffer[(x, y)].style()
+        };
+        for name in ["D", "E"] {
+            assert_eq!(style_of(name).fg, palette::MATCH.fg, "{name}");
+        }
+        assert_ne!(style_of("B").fg, palette::MATCH.fg);
+        // The cursor's tip (A) is still drawn as the cursor.
+        assert!(style_of("A").add_modifier.contains(Modifier::REVERSED));
     }
 }

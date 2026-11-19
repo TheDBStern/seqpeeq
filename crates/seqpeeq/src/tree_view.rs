@@ -248,10 +248,22 @@ impl TreeView {
         self.open.clear();
         let mut rows = 1;
         let mut heap = BinaryHeap::new();
+        // Clades holding search matches open before any without, so that
+        // as many matches as fit get rows of their own.
+        let inside = self
+            .search
+            .as_ref()
+            .filter(|search| search.revision == self.revision)
+            .map(|search| search.inside.clone());
+        let holds_match = |c: NodeId| {
+            inside
+                .as_ref()
+                .is_some_and(|inside| inside.get(c as usize).is_some_and(|&k| k > 0))
+        };
         let take = |view: &mut TreeView, ex: Expansion, heap: &mut BinaryHeap<_>| {
             view.open.extend(ex.opened);
             for c in ex.candidates {
-                heap.push((facts.tips(c), Reverse(facts.order(c)), c));
+                heap.push((holds_match(c), facts.tips(c), Reverse(facts.order(c)), c));
             }
             ex.added
         };
@@ -262,7 +274,7 @@ impl TreeView {
             rows += take(self, ex, &mut heap);
         }
         while rows < height
-            && let Some((_, _, c)) = heap.pop()
+            && let Some((_, _, _, c)) = heap.pop()
         {
             if let Some(ex) = self.expand(tree, c, &path, height - rows) {
                 rows += take(self, ex, &mut heap);
@@ -770,5 +782,52 @@ pub(crate) mod tests {
         assert_eq!(v.zoom, doc.tree().root(), "not the clade's complement");
         assert_eq!(v.select, None, "the selected clade holds other tips now");
         assert_eq!(v.cursor, c, "a tip is still itself");
+    }
+
+    /// A balanced tree of `2^depth` tips named t0, t1, ….
+    fn balanced(depth: u32) -> String {
+        fn clade(depth: u32, next: &mut u32) -> String {
+            if depth == 0 {
+                *next += 1;
+                return format!("t{}", *next - 1);
+            }
+            format!("({},{})", clade(depth - 1, next), clade(depth - 1, next))
+        }
+        format!("{};", clade(depth, &mut 0))
+    }
+
+    fn searched(doc: &Doc, pattern: &str, height: usize) -> TreeView {
+        let mut v = TreeView::new(doc.tree());
+        v.revision = doc.revision();
+        v.search = Some(TreeSearch::find(doc.get(), pattern).unwrap());
+        v.refit(doc.tree(), doc.facts(), height);
+        v
+    }
+
+    #[test]
+    fn a_search_opens_the_clades_that_hold_matches() {
+        let doc = doc(&balanced(6));
+        let v = searched(&doc, "^t(3|40|62)$", 16);
+        assert!(v.rows.len() <= 16);
+        let matches = v.search.as_ref().unwrap().matches.clone();
+        assert_eq!(matches.len(), 3);
+        for m in matches {
+            assert!(
+                v.rows.iter().any(|r| r.node == m && !r.collapsed),
+                "{:?} has its own row",
+                doc.tree().label(m)
+            );
+        }
+    }
+
+    #[test]
+    fn more_matches_than_rows_still_fit() {
+        let doc = doc(&balanced(6));
+        let v = searched(&doc, ".", 8);
+        assert!(v.rows.len() <= 8, "{}", v.rows.len());
+        let inside = &v.search.as_ref().unwrap().inside;
+        for r in v.rows.iter().filter(|r| r.collapsed) {
+            assert!(inside[r.node as usize] > 0);
+        }
     }
 }

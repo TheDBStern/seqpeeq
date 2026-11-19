@@ -11,6 +11,11 @@ pub const SHADE: Style = Style::new().bg(Color::Indexed(24)).fg(Color::Indexed(2
 pub const STRETCH: Style = Style::new().bg(Color::Indexed(23)).fg(Color::Indexed(255));
 
 /// Selected cells, names and ruler columns.
+/// A tip a search matched, or a collapsed clade holding one.
+pub const MATCH: Style = Style::new()
+    .fg(Color::Indexed(226))
+    .add_modifier(Modifier::BOLD);
+
 pub const SELECTED: Style = Style::new().bg(Color::Indexed(240)).fg(Color::Indexed(255));
 
 /// The style of one residue when colouring by residue: black on a colour
