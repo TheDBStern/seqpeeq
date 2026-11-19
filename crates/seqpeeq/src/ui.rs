@@ -310,7 +310,10 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         match view.over.last() {
             Some(Over::Axis(axis)) => read_axis::draw_axis(frame, app, axis, area),
             Some(Over::List(list)) => read_axis::draw_elsewhere(frame, app, list, area),
-            None => bam::draw_bam(frame, app, area),
+            None => match app.session.stack_of(app.session.datasets()[app.active].id) {
+                Some(members) => bam::draw_stack(frame, app, members, area),
+                None => bam::draw_bam(frame, app, area),
+            },
         }
         return;
     }
