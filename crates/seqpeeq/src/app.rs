@@ -1490,6 +1490,22 @@ impl App {
         self.act(Command::Msa(MsaCmd::Fill { rows, cols, with }));
     }
 
+    /// `w`: save the whole alignment or tree to a new file, whatever is
+    /// selected and wherever the cursor is.
+    fn start_save(&mut self) {
+        if self.tree().is_some() {
+            return self.open_prompt(
+                PromptKind::TreeOut {
+                    at: NodeSel::default(),
+                },
+                "",
+            );
+        }
+        if self.alignment().is_some() {
+            self.open_prompt(PromptKind::Command, "msa extract --out ");
+        }
+    }
+
     /// `e`: open the command line holding the extract for the selection,
     /// ready for the file name.
     fn start_extract(&mut self) {
@@ -1556,6 +1572,7 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => return self.delete(),
             KeyCode::Char('f') => return self.mode = Mode::FillChar,
             KeyCode::Char('e') => return self.start_extract(),
+            KeyCode::Char('w') => return self.start_save(),
             KeyCode::Char('u') => return self.act(Command::Undo),
             KeyCode::Char('U') => return self.act(Command::Redo),
             KeyCode::Char('r') => {
@@ -1796,6 +1813,7 @@ impl App {
             KeyCode::Char('U') => self.act(Command::Redo),
             KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
             KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
+            KeyCode::Char('w') => self.start_save(),
             KeyCode::Char('a') => self.show_sequences(),
             _ => {}
         }
@@ -4924,5 +4942,33 @@ mod tests {
         }
         assert_eq!(write(&mut fresh, "replayed"), made);
         assert_eq!(String::from_utf8(made.1).unwrap(), ">Z\nTT\n>Q\nCA\n");
+    }
+
+    // Issue 9: w saves the whole file.
+
+    #[test]
+    fn w_on_an_alignment_fills_the_whole_extract() {
+        let (mut app, _dir) = with_text(">a\nACGT\n>b\nACGA\n>c\nTTTT\n");
+        app.handle_event(&key('v'));
+        app.handle_event(&key('j'));
+        app.handle_event(&key('w'));
+        assert_eq!(typed(&app), Some("msa extract --out "));
+    }
+
+    #[test]
+    fn w_on_a_tree_saves_the_whole_tree_wherever_the_cursor_is() {
+        let (mut app, dir) = with_tree(T6);
+        for _ in 0..4 {
+            app.handle_event(&key('j'));
+        }
+        assert_ne!(tree_view(&app).cursor, shown_tree(&app).root());
+        app.handle_event(&key('w'));
+        let out = dir.path().join("all.nwk");
+        type_str(&mut app, out.to_str().unwrap());
+        enter(&mut app);
+        let written = fs::read_to_string(&out).unwrap();
+        for tip in ["A", "B", "C", "D", "E", "F"] {
+            assert!(written.contains(tip), "{tip} in {written}");
+        }
     }
 }

@@ -618,7 +618,9 @@ const HELP_ALIGNMENT: &[&str] = &[
     "Edit      d delete or gap   f fill   r rename",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z whole alignment and back",
-    "          u U undo redo   e extract to a file",
+    "          u U undo redo",
+    "          w save the whole alignment",
+    "          e extract the selection",
     "          c colours   [ ] name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
@@ -628,7 +630,8 @@ const HELP_ALIGNMENT: &[&str] = &[
 const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
-    "          d prune  e extract  r rename  o re-root",
+    "          d prune  r rename  o re-root",
+    "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo  a to the alignment",
 ];
 
@@ -1481,6 +1484,8 @@ pub(crate) mod tests {
         app.mode = Mode::Help;
         let screen = rows(&render(&app, 80, 24)).join("\n");
         for needle in [
+            "w save the whole alignment",
+            "e extract the selection",
             "hjkl",
             "PgUp",
             "Home",
@@ -1662,6 +1667,7 @@ pub(crate) mod tests {
     fn help_has_a_tree_section() {
         let help = HELP_TREE.join("\n");
         for text in [
+            "w save the whole tree   e extract the clade",
             "Enter open/close",
             "b lengths",
             "o re-root",
