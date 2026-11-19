@@ -128,7 +128,11 @@ Zoom      - out   + in   z view whole alignment
           msa delete-rows  delete-cols  fill  overwrite
           msa insert  remove  extract  rename
 ```
-- Colors are either: shade majority base (default) or color each base
+`c` steps through three color modes:
+
+- **shade the consensus** (the default): a base is shaded when at least half of its column has it;
+- **color each base** by its letter;
+- **no color**.
 
 ### Tree
 
@@ -136,11 +140,12 @@ Zoom      - out   + in   z view whole alignment
 Tree      jk rows  h parent  l back  Enter open/close
           + - z zoom  b lengths  / n N find  v select
           d prune  r rename  o re-root on branch
+          :tree reroot --midpoint  root at the midpoint
           w save the whole tree   e extract the clade
-          s ladderize  u U undo redo  a go to the alignment
+          s ladderize  u U undo redo
+          a go to the alignment
           p link to an open alignment
 ```
-Note: is there a midpoint root option?
 
 **Linking:** a tree is linked to an alignment when one has a sequence for every tip of the other. This happens on its
 own when you open the second file, or with `p` or `:tree link`. Once linked:
@@ -155,21 +160,41 @@ own when you open the second file, or with `p` or `:tree link`. Once linked:
 
 ```
 Move      arrows hjkl   Shift+arrows a screen
-          PgUp PgDn   Home End
-BAM       g go to position   ] [ covered   } { no coverage
-          m mate   s other part   ' back   c list contigs
-          - + z zoom   F toggle filtered   S toggle clips
+          PgUp PgDn   Home End   g go to position
+BAM       ] [ covered   } { no coverage   c list contigs
+          m mate   s other part   ' back
+          - + z zoom  F toggle filtered  S toggle clips
           click, drag select   Esc clear
           Space add the read under the cursor
                 to the selection
           drag the column numbers, v v  a stretch
           e export reads   E reference   to a file
-          a visualize all alignments for a read   
+          a visualize all alignments for a read
           A list all alignments for a read
           in those: S search the BAM   g go   / filter
 ```
 
-Note: Can we explain or show the colors here
+**What the reads look like:**
+
+| Mark | Meaning |
+|---|---|
+| `.` `,` | a base that matches the reference, on the forward or reverse strand |
+| `A` `c` … | a base that differs: upper case forward, lower case reverse, colored A green, C blue, G yellow, T red |
+| `*` | a deleted base |
+| `─` | a skipped stretch, such as an intron |
+| purple cell | bases are inserted just before it |
+| faint lower case | soft-clipped bases at a read's ends (`S` hides them) |
+| `━━━▸` `◂━━━` | a read zoomed out, with its strand |
+
+A read's color says what is unusual about it. The first of these that applies is used:
+
+- **magenta:** it is split, with a part aligned elsewhere;
+- **orange:** its mate is on another contig;
+- **blue:** it is paired but not a proper pair;
+- **no color:** none of these.
+
+A **dimmed** read has mapping quality 0, or is secondary, a duplicate or QC-failed. Dimmed reads don't count towards
+coverage. The blue bars along the top show coverage, and selected reads have a gray background.
 
 ### Every file type
 
