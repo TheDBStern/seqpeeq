@@ -349,6 +349,17 @@ pub struct Parked {
     pub back: usize,
 }
 
+/// Where a view is, as the BAMs of a stack share it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPlace {
+    pub contig: usize,
+    pub left: u64,
+    pub per_col: u64,
+    pub cursor: u64,
+    pub before_whole: Option<(u64, u64)>,
+    pub back: Vec<(usize, u64)>,
+}
+
 /// Where the user is in one BAM.
 #[derive(Debug, Clone)]
 pub struct BamView {
@@ -428,7 +439,7 @@ impl BamView {
         }
     }
 
-    fn cols(&self) -> u64 {
+    pub fn cols(&self) -> u64 {
         self.width.max(1) as u64
     }
 
@@ -524,18 +535,31 @@ impl BamView {
         self.place(contig, pos, length);
     }
 
-    /// Show where `leader` is, on this view's own `contig` (the leader's
-    /// contig, by name, in this BAM): its left edge, zoom, cursor and the
+    /// Where this view is, for the other BAMs of its stack to follow.
+    pub fn place_now(&self) -> StackPlace {
+        StackPlace {
+            contig: self.contig,
+            left: self.left,
+            per_col: self.per_col,
+            cursor: self.cursor,
+            before_whole: self.before_whole,
+            back: self.back.clone(),
+        }
+    }
+
+    /// Show `place` (another BAM's, with its contigs already turned into
+    /// this BAM's numbers): its contig, left edge, zoom, cursor and the
     /// way back from both. A new contig resets this view as `place` does;
     /// its rows, selection, stretch, filters and panels are its own.
-    pub fn follow(&mut self, leader: &BamView, contig: usize, length: u64) {
-        if contig != self.contig {
-            self.place(contig, leader.cursor, length);
+    pub fn follow(&mut self, place: StackPlace, length: u64) {
+        if place.contig != self.contig {
+            self.place(place.contig, place.cursor, length);
         }
-        self.left = leader.left;
-        self.per_col = leader.per_col;
-        self.cursor = leader.cursor;
-        self.before_whole = leader.before_whole;
+        self.left = place.left;
+        self.per_col = place.per_col;
+        self.cursor = place.cursor;
+        self.before_whole = place.before_whole;
+        self.back = place.back;
     }
 
     /// As [`go`](Self::go), without remembering.

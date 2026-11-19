@@ -1986,3 +1986,19 @@ fn bam_ref_of_another_file_reads_it_for_every_member() {
     assert_eq!(reference_path(&s, 0), Some(short.clone()));
     assert_eq!(reference_path(&s, 1), Some(short));
 }
+
+#[test]
+fn bam_ref_again_on_a_lone_bam_reads_the_file_again() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let line = format!("bam ref {}", f.reference.display());
+    ex(&mut s, &line).unwrap();
+    // The file may have changed since, so it is read, not reused.
+    let started = s.start(Command::parse_line(&line).unwrap()).unwrap();
+    assert!(
+        matches!(started, Started::Running(_)),
+        "the file was not read again"
+    );
+}

@@ -521,7 +521,10 @@ pub fn draw_stack(frame: &mut Frame, app: &App, members: &[u64], area: Rect) {
         let pass = app.passes.get(&(member.id, member_view.contig));
         draw_coverage(buf, rows.coverage, member_view, source, pass);
         let bases = bases_shown(member_view, length);
-        if member_view.loaded.is_none() && rows.reads.height > 0 {
+        // Zoomed out past reads, draw_reads says to zoom in; no read is
+        // coming then.
+        let past_reads = member_view.cols() * member_view.per_col >= READS_WIDTH;
+        if member_view.loaded.is_none() && !past_reads && rows.reads.height > 0 {
             let reads = rows.reads;
             buf.set_stringn(reads.x, reads.y, "reading…", reads.width as usize, dim());
         } else {
@@ -1506,5 +1509,35 @@ mod tests {
         let heights: Vec<usize> = datasets.iter().map(|d| app.bams[&d.id].height).collect();
         assert_eq!(heights[2], 1);
         assert!(heights[0] > 1 && heights[1] > 1, "{heights:?}");
+    }
+
+    #[test]
+    fn a_stack_zoomed_out_past_reads_says_to_zoom_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:248956422\n");
+        for i in 0..50 {
+            let start = 1_000_000 + i * 100;
+            sam.push_str(&format!(
+                "r{i}\t0\tchr1\t{start}\t60\t10M\t*\t0\t0\tACGTACGTAC\t*\n"
+            ));
+        }
+        let a = bam_from_sam(dir.path(), "a.bam", &sam);
+        let b = bam_from_sam(dir.path(), "b.bam", &sam);
+        let mut app = App::new(Session::new(None));
+        for path in [a, b] {
+            app.enqueue(Command::Open { path, kind: None });
+        }
+        settle(&mut app);
+        sized(&mut app, 80, 24);
+        let screen = rows(&render(&app, 80, 24));
+        assert!(
+            !screen.iter().any(|r| r.contains("reading…")),
+            "{screen:#?}"
+        );
+        let said = screen
+            .iter()
+            .filter(|r| r.starts_with("zoom in to see reads"))
+            .count();
+        assert_eq!(said, 2, "{screen:#?}");
     }
 }

@@ -110,11 +110,15 @@ impl App {
         });
         let body = self.bam_body();
         let stacked = self.stacked_reads(body);
+        let mut fresh = Vec::new();
         for dataset in self.session.datasets() {
             let Some(doc) = dataset.bam().filter(|_| open.contains(&dataset.id)) else {
                 continue;
             };
             let contigs = doc.source().contigs();
+            if !self.bams.contains_key(&dataset.id) {
+                fresh.push(dataset.id);
+            }
             let view = self.bams.entry(dataset.id).or_insert_with(|| {
                 let first = contigs
                     .iter()
@@ -143,59 +147,89 @@ impl App {
             }
         }
 
-        self.mirror_stacks();
+        self.mirror_stacks(&fresh);
 
         let Some(dataset) = self.session.datasets().get(self.active) else {
             return;
         };
         let id = dataset.id;
-        let Some(source) = dataset.bam().map(|b| b.source().clone()) else {
-            return;
-        };
-        let Some(view) = self.bams.get(&id) else {
-            return;
-        };
-        let contig = view.contig;
-        let length = source.contigs()[contig].length;
-
-        let done = self
-            .passes
-            .get(&(id, contig))
-            .is_some_and(|c| c.done_to >= length);
-        let running = self
-            .passing
-            .as_ref()
-            .is_some_and(|(d, c, _)| (*d, *c) == (id, contig));
-        if !done && !running && !self.pass_failed.contains(&(id, contig)) {
-            if let Some((d, c, progress)) = self.passing.take() {
-                progress.cancel();
-                // Unfinished, so not kept: it starts again when shown.
-                self.passes.remove(&(d, c));
-            }
-            let progress = Arc::new(Progress::new());
-            self.outbox.push(Request::Pass {
-                dataset: id,
-                contig,
-                source: source.clone(),
-                progress: progress.clone(),
-            });
-            self.passing = Some((id, contig, progress));
-        }
-
-        // The BAM shown first, then the rest of its stack, one at a time.
-        if !self.ask_window(id, true) {
+        if dataset.bam().is_none() || !self.bams.contains_key(&id) {
             return;
         }
+
+        // The BAM shown first, then the rest of its stack, one at a time:
+        // its coverage pass and window, then theirs.
+        let pass_done = self.ask_pass(id, true);
+        let window_done = self.ask_window(id, true);
         let others: Vec<u64> = self
             .session
             .stack_of(id)
             .map(|members| members.iter().copied().filter(|&m| m != id).collect())
             .unwrap_or_default();
-        for member in others {
-            if !self.ask_window(member, false) {
-                return;
+        if pass_done {
+            for &member in &others {
+                if !self.ask_pass(member, false) {
+                    break;
+                }
             }
         }
+        if window_done {
+            for member in others {
+                if !self.ask_window(member, false) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Start the coverage pass of BAM `id`'s contig in view, unless it is
+    /// done, running or failed; `take_over` cancels another pass for it,
+    /// else it waits for no pass to be running. Returns whether the pass
+    /// has finished (or cannot be had).
+    fn ask_pass(&mut self, id: u64, take_over: bool) -> bool {
+        let Some(source) = self
+            .session
+            .datasets()
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(Dataset::bam)
+            .map(|b| b.source().clone())
+        else {
+            return true;
+        };
+        let Some(view) = self.bams.get(&id) else {
+            return true;
+        };
+        let contig = view.contig;
+        let length = source.contigs()[contig].length;
+        let done = self
+            .passes
+            .get(&(id, contig))
+            .is_some_and(|c| c.done_to >= length);
+        if done || self.pass_failed.contains(&(id, contig)) {
+            return true;
+        }
+        let running = self
+            .passing
+            .as_ref()
+            .is_some_and(|(d, c, _)| (*d, *c) == (id, contig));
+        if running || (!take_over && self.passing.is_some()) {
+            return false;
+        }
+        if let Some((d, c, progress)) = self.passing.take() {
+            progress.cancel();
+            // Unfinished, so not kept: it starts again when shown.
+            self.passes.remove(&(d, c));
+        }
+        let progress = Arc::new(Progress::new());
+        self.outbox.push(Request::Pass {
+            dataset: id,
+            contig,
+            source,
+            progress: progress.clone(),
+        });
+        self.passing = Some((id, contig, progress));
+        false
     }
 
     /// The rows of reads of each BAM in a stack, by dataset id, as the
@@ -241,29 +275,42 @@ impl App {
     }
 
     /// Put every other BAM of the shown BAM's stack where it is: the same
-    /// contig (by name), place and zoom.
-    fn mirror_stacks(&mut self) {
-        let Some(leader) = self.session.datasets().get(self.active).map(|d| d.id) else {
+    /// contig (by name), place and zoom. A BAM whose view is new this turn
+    /// (`fresh`) has just joined, so it takes the stack's place instead.
+    pub(super) fn mirror_stacks(&mut self, fresh: &[u64]) {
+        let Some(shown) = self.session.datasets().get(self.active).map(|d| d.id) else {
             return;
         };
-        let Some(members) = self.session.stack_of(leader).map(<[u64]>::to_vec) else {
+        let Some(members) = self.session.stack_of(shown) else {
             return;
         };
-        let contigs_of = |id: u64| {
-            let datasets = self.session.datasets();
+        let leader = if fresh.contains(&shown) {
+            members
+                .iter()
+                .copied()
+                .find(|m| !fresh.contains(m) && self.bams.contains_key(m))
+                .unwrap_or(shown)
+        } else {
+            shown
+        };
+        let datasets = self.session.datasets();
+        let contigs_of = |id: u64| -> &[seqpeeq_core::bam::Contig] {
             let doc = datasets.iter().find(|d| d.id == id).and_then(Dataset::bam);
-            doc.map(|b| b.source().contigs().to_vec())
-                .unwrap_or_default()
+            doc.map_or(&[], |b| b.source().contigs())
         };
-        let Some(lead) = self.bams.get(&leader).cloned() else {
+        let Some(lead) = self.bams.get(&leader).map(BamView::place_now) else {
             return;
         };
         let theirs = contigs_of(leader);
-        for member in members.into_iter().filter(|&m| m != leader) {
+        for &member in members.iter().filter(|&&m| m != leader) {
             let mine = contigs_of(member);
+            // Stacked BAMs mostly list contigs in the same order.
             let index = |contig: usize| {
                 let name = &theirs.get(contig)?.name;
-                mine.iter().position(|c| &c.name == name)
+                match mine.get(contig) {
+                    Some(c) if &c.name == name => Some(contig),
+                    _ => mine.iter().position(|c| &c.name == name),
+                }
             };
             let Some(contig) = index(lead.contig) else {
                 continue;
@@ -273,9 +320,13 @@ impl App {
                 .iter()
                 .filter_map(|&(c, pos)| Some((index(c)?, pos)))
                 .collect();
+            let place = crate::bam_view::StackPlace {
+                contig,
+                back,
+                ..lead.clone()
+            };
             if let Some(view) = self.bams.get_mut(&member) {
-                view.follow(&lead, contig, mine[contig].length);
-                view.back = back;
+                view.follow(place, mine[contig].length);
             }
         }
     }
@@ -853,7 +904,7 @@ impl App {
                     MouseEventKind::Down(_) => {
                         let datasets = self.session.datasets();
                         if let Some(index) = datasets.iter().position(|d| d.id == member) {
-                            self.active = index;
+                            self.focus(index);
                         }
                     }
                     _ => {}
@@ -2898,5 +2949,134 @@ pub(crate) mod tests {
         settle(&mut app);
         assert_ne!(app.bams[&b].left, left);
         assert_eq!(app.bams[&a].left, app.bams[&b].left);
+    }
+
+    #[test]
+    fn a_bam_joining_a_stack_takes_its_place_and_keeps_the_way_back() {
+        let (mut app, dir) = with_bam();
+        go(&mut app, "c2:301");
+        go(&mut app, "c3:101");
+        let before = place_of(&app, 0);
+        let back = view(&app).back.clone();
+        assert_eq!(before.0, "c3");
+        assert_eq!(back.len(), 2);
+        let copy = dir.path().join("b.bam");
+        std::fs::copy(app.session.datasets()[0].path.clone(), &copy).unwrap();
+        open(&mut app, copy);
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        assert_eq!(place_of(&app, 0), before);
+        assert_eq!(place_of(&app, 1), before);
+        assert_eq!(views(&app)[0].back, back);
+        assert_eq!(views(&app)[1].back, back);
+    }
+
+    #[test]
+    #[ignore = "timing on testdata/; run with: cargo test --release -p seqpeeq -- --ignored timings_on"]
+    fn timings_on_a_stack_turn() {
+        use std::time::Instant;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let dir = tempfile::tempdir().unwrap();
+        for ext in ["bam", "bam.bai"] {
+            std::fs::copy(
+                data.join(format!("deep.{ext}")),
+                dir.path().join(format!("b.{ext}")),
+            )
+            .unwrap();
+        }
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 50));
+        open(&mut app, data.join("deep.bam"));
+        open(&mut app, dir.path().join("b.bam"));
+        settle(&mut app);
+        assert!(app.status.contains("stacked with"), "{}", app.status);
+        // As wide a window as still shows reads: 200 columns of 100 bases.
+        let id = id(&app);
+        let length = app.bam().unwrap().1.source().contigs()[0].length;
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 100;
+        v.place(0, 2_000_000, length);
+        settle(&mut app);
+        let reads = view(&app).reads().len();
+        assert!(reads > 10_000, "{reads}");
+        let turns = 200;
+        let started = Instant::now();
+        for _ in 0..turns {
+            app.pump();
+        }
+        let each = started.elapsed() / turns;
+        eprintln!("deep stacked: a turn with {reads} reads in the window {each:?}");
+        assert!(each < std::time::Duration::from_micros(500), "{each:?}");
+    }
+
+    #[test]
+    fn moves_then_a_change_of_focus_before_the_next_turn_are_kept() {
+        let (mut app, _dir) = two_stacked();
+        at_base_level(&mut app, 0, 101, 0);
+        let cursor = view(&app).cursor;
+        // Keys arriving together are handled before the next turn.
+        for _ in 0..30 {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        app.handle_event(&Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        settle(&mut app);
+        assert_eq!(place_of(&app, 0).3, cursor + 30);
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+
+        // And the same with a press on the other BAM's rows.
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        let other = layout.members[1].name;
+        assert_eq!(app.active, 0);
+        for _ in 0..10 {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        click(&mut app, (0, other.y));
+        settle(&mut app);
+        assert_eq!(app.active, 1);
+        assert_eq!(place_of(&app, 1).3, cursor + 40);
+        assert_eq!(place_of(&app, 0), place_of(&app, 1));
+    }
+
+    #[test]
+    fn every_member_gets_its_coverage_pass_the_shown_first() {
+        let (mut app, _dir) = two_stacked();
+        let (a, b) = (app.session.datasets()[0].id, id(&app));
+        let contig = view(&app).contig;
+        let done = |app: &App, id: u64| {
+            let length = app.bam().unwrap().1.source().contigs()[contig].length;
+            app.passes
+                .get(&(id, contig))
+                .is_some_and(|c| c.done_to >= length)
+        };
+        assert!(done(&app, b) && done(&app, a));
+
+        // Another contig: the shown BAM's pass is asked first, then the other.
+        go(&mut app, "c2:1");
+        app.passes.clear();
+        app.pump();
+        let passes = |held: &[Request]| -> Vec<u64> {
+            held.iter()
+                .filter_map(|r| match r {
+                    Request::Pass { dataset, .. } => Some(*dataset),
+                    _ => None,
+                })
+                .collect()
+        };
+        let held = requests(&mut app);
+        assert_eq!(passes(&held), [b]);
+        for request in held {
+            perform(request, &mut |done| app.handle_done(done));
+        }
+        app.pump();
+        let held = requests(&mut app);
+        assert_eq!(passes(&held), [a]);
+        deliver(&mut app, held);
     }
 }

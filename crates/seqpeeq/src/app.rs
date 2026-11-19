@@ -675,7 +675,7 @@ impl App {
                     && !(busy.queued && pending)
                     && let Some(current) = self.session.current()
                 {
-                    self.active = current;
+                    self.focus(current);
                 }
                 self.report(ended.map(|outcome| Some(outcome.message)), busy.queued);
             }
@@ -1860,7 +1860,7 @@ impl App {
                 ui::active_tab(self),
             );
             if let Some(tab) = ranges.iter().position(|r| r.contains(&mouse.column)) {
-                self.active = ui::tab_groups(self)[tab][0];
+                self.focus(ui::tab_groups(self)[tab][0]);
                 return;
             }
         }
@@ -2244,7 +2244,15 @@ impl App {
 
     /// Move one file right (`step` 1) or left (-1): through the BAMs of a
     /// stack first, then on to the next tab, wrapping at the ends.
+    /// Show the file at `index`. Moves made in a stack since the last turn
+    /// reach the rest of it first, so the BAM shown next leads from there.
+    fn focus(&mut self, index: usize) {
+        self.mirror_stacks(&[]);
+        self.active = index;
+    }
+
     fn step_tab(&mut self, step: isize) {
+        self.mirror_stacks(&[]);
         let groups = ui::tab_groups(self);
         let Some(tab) = groups.iter().position(|g| g.contains(&self.active)) else {
             return;
@@ -2318,7 +2326,7 @@ impl App {
                     }
                 }
                 if follow {
-                    self.active = self.session.current().unwrap_or(0);
+                    self.focus(self.session.current().unwrap_or(0));
                 }
                 Ok(Some(outcome.message))
             }

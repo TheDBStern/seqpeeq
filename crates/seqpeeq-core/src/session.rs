@@ -82,16 +82,17 @@ impl Dataset {
     }
 }
 
-/// Whether two paths name the same file.
 /// The most BAMs one stack holds.
 pub const STACK_LIMIT: usize = 3;
 
 /// Whether two BAMs have the same contigs, by name and length, in any
-/// order: the test for stacking them.
+/// order: the test for stacking them. Headers may list hundreds of
+/// thousands of contigs, so one side is looked up by name.
 fn same_contigs(a: &[Contig], b: &[Contig]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .all(|c| b.iter().any(|d| d.name == c.name && d.length == c.length))
+    let lengths = |contigs: &[Contig]| -> HashMap<String, u64> {
+        contigs.iter().map(|c| (c.name.clone(), c.length)).collect()
+    };
+    a.len() == b.len() && lengths(a) == lengths(b)
 }
 
 /// Names for a message: `a`, `a and b`, `a, b and c`.
@@ -103,6 +104,7 @@ fn names_joined(names: &[String]) -> String {
     }
 }
 
+/// Whether two paths name the same file.
 fn same_file(a: &Path, b: &Path) -> bool {
     a == b
         || matches!(
@@ -552,10 +554,11 @@ impl Session {
                 let datasets = self
                     .stack_of(dataset)
                     .map_or_else(|| vec![dataset], <[u64]>::to_vec);
-                // A member already holding this file lends it to the rest,
-                // so the FASTA is indexed once (as `--ref` asks after each
-                // BAM it opens).
-                let held = datasets.iter().find_map(|id| {
+                // Another member already holding this file lends it to the
+                // rest, so the FASTA is indexed once (as `--ref` asks after
+                // each BAM it opens). The current BAM asking again for its
+                // own file reads it again, as a BAM on its own does.
+                let held = datasets.iter().filter(|&&id| id != dataset).find_map(|id| {
                     let doc = self.datasets.iter().find(|d| d.id == *id)?.bam()?;
                     let reference = doc.source().reference()?;
                     same_file(reference.path(), &file).then(|| reference.clone())
@@ -3545,5 +3548,31 @@ mod tests {
         let (a, l) = (s.datasets()[0].id, s.datasets()[1].id);
         assert_eq!(s.shared_tips(l, a), Some((3, 4)));
         assert_eq!(s.shared_tips(a, l), None);
+    }
+
+    #[test]
+    fn matching_the_contigs_of_big_headers_is_quick() {
+        let contigs = |reverse: bool| {
+            let mut all: Vec<Contig> = (0..20_000)
+                .map(|i| Contig {
+                    name: format!("ENST{i:011}.1"),
+                    length: 1000 + i,
+                    mapped: None,
+                    unmapped: None,
+                })
+                .collect();
+            if reverse {
+                all.reverse();
+            }
+            all
+        };
+        let (a, b) = (contigs(false), contigs(true));
+        let started = std::time::Instant::now();
+        assert!(same_contigs(&a, &b));
+        let mut c = contigs(true);
+        c[0].length += 1;
+        assert!(!same_contigs(&a, &c));
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 }
