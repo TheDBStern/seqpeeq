@@ -25,6 +25,16 @@ pub fn bam_from_sam(dir: &Path, name: &str, sam_text: &str) -> PathBuf {
     path
 }
 
+/// Write `dir/name`: a BAM with these contigs (name, length) and no
+/// records.
+pub fn header_bam(dir: &Path, name: &str, contigs: &[(&str, u64)]) -> PathBuf {
+    let mut sam = String::from("@HD\tVN:1.6\tSO:coordinate\n");
+    for (contig, length) in contigs {
+        sam.push_str(&format!("@SQ\tSN:{contig}\tLN:{length}\n"));
+    }
+    bam_from_sam(dir, name, &sam)
+}
+
 /// The files [`fixture`] writes.
 pub struct Fixture {
     pub bam: PathBuf,

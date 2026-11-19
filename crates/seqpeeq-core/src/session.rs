@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned};
 
-use crate::bam::{BamDoc, BamExport, Reference};
+use crate::bam::{BamDoc, BamExport, Contig, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::{Alignment, Applied, Extraction, count, write};
@@ -83,6 +83,26 @@ impl Dataset {
 }
 
 /// Whether two paths name the same file.
+/// The most BAMs one stack holds.
+pub const STACK_LIMIT: usize = 3;
+
+/// Whether two BAMs have the same contigs, by name and length, in any
+/// order: the test for stacking them.
+fn same_contigs(a: &[Contig], b: &[Contig]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|c| b.iter().any(|d| d.name == c.name && d.length == c.length))
+}
+
+/// Names for a message: `a`, `a and b`, `a, b and c`.
+fn names_joined(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     a == b
         || matches!(
@@ -352,6 +372,9 @@ pub struct Session {
     clock: fn() -> Zoned,
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
+    /// BAMs shown as one stack, by dataset id, each in the order it was
+    /// formed; every stack has at least two.
+    stacks: Vec<Vec<u64>>,
     /// The id the next edit to two files will tag both its steps with.
     next_pair: u64,
     /// Where a BAM's index goes when the BAM's own folder cannot take it.
@@ -384,6 +407,7 @@ struct Checkpoint {
     /// current file and, for an edit to two files, the other one.
     snapshots: Vec<(usize, Snapshot)>,
     links: HashMap<u64, u64>,
+    stacks: Vec<Vec<u64>>,
 }
 
 enum Snapshot {
@@ -408,6 +432,7 @@ impl Session {
             log,
             clock,
             links: HashMap::new(),
+            stacks: Vec::new(),
             next_pair: 1,
             cache_dir: default_cache_dir(),
             replay_dir: None,
@@ -741,10 +766,12 @@ impl Session {
         });
         self.current = Some(self.datasets.len() - 1);
         self.history.push(line.to_string());
-        // A rule, not a logged command: replaying the opens links the same.
+        // Rules, not logged commands: replaying the opens links and
+        // stacks the same.
         let linked = self.auto_link(id);
+        let stacked = self.auto_stack(id);
         Ok(Outcome {
-            message: message + &linked,
+            message: message + &linked + &stacked,
         })
     }
 
@@ -784,6 +811,74 @@ impl Session {
                 file: d.path.clone(),
             }),
             _ => cmd,
+        }
+    }
+
+    /// The members of the stack holding the BAM with id `id`, in order.
+    pub fn stack_of(&self, id: u64) -> Option<&[u64]> {
+        self.stacks
+            .iter()
+            .find(|s| s.contains(&id))
+            .map(Vec::as_slice)
+    }
+
+    /// Every stack of BAMs, each as its members' ids in order.
+    pub fn stacks(&self) -> &[Vec<u64>] {
+        &self.stacks
+    }
+
+    /// The file names of the open files with these ids, in order.
+    fn names_of(&self, ids: &[u64]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|&id| self.datasets.iter().find(|d| d.id == id))
+            .map(Dataset::file_name)
+            .collect()
+    }
+
+    /// Stack the BAM just opened with the first open BAM, in file order,
+    /// that has the same contigs, if its stack has room. Returns what to
+    /// add to the open's message.
+    fn auto_stack(&mut self, opened: u64) -> String {
+        let Some(new) = self.datasets.iter().find(|d| d.id == opened) else {
+            return String::new();
+        };
+        let Some(contigs) = new.bam().map(|b| b.source().contigs()) else {
+            return String::new();
+        };
+        if contigs.is_empty() {
+            return String::new();
+        }
+        let new_name = new.file_name();
+        let mut full = None;
+        for other in &self.datasets {
+            let Some(theirs) = other.bam().map(|b| b.source().contigs()) else {
+                continue;
+            };
+            if other.id == opened || !same_contigs(contigs, theirs) {
+                continue;
+            }
+            let members = match self.stack_of(other.id) {
+                // Only the first member stands for its stack.
+                Some(members) if members[0] != other.id => continue,
+                Some(members) => members.to_vec(),
+                None => vec![other.id],
+            };
+            if members.len() >= STACK_LIMIT {
+                full.get_or_insert(other.file_name());
+                continue;
+            }
+            let names = names_joined(&self.names_of(&members));
+            match self.stacks.iter_mut().find(|s| s[0] == members[0]) {
+                Some(stack) => stack.push(opened),
+                None => self.stacks.push(vec![other.id, opened]),
+            }
+            return format!("; stacked with {names}");
+        }
+        match full {
+            Some(first) => format!(
+                "; {first}'s stack already holds {STACK_LIMIT} BAMs, so {new_name} opens on its own"
+            ),
+            None => String::new(),
         }
     }
 
@@ -904,6 +999,7 @@ impl Session {
             current: self.current,
             snapshots,
             links: self.links.clone(),
+            stacks: self.stacks.clone(),
         }
     }
 
@@ -917,6 +1013,7 @@ impl Session {
         }
         self.current = checkpoint.current;
         self.links = checkpoint.links;
+        self.stacks = checkpoint.stacks;
         for (index, snapshot) in checkpoint.snapshots {
             match (snapshot, &mut self.datasets[index].content) {
                 (Snapshot::Msa(layer), Content::Msa(alignment)) => alignment.restore(layer),
@@ -1511,6 +1608,15 @@ impl Session {
                 name_of(tree),
                 name_of(aln)
             ));
+        }
+        if let Some(at) = self.stacks.iter().position(|s| s.contains(&dataset.id)) {
+            self.stacks[at].retain(|&id| id != dataset.id);
+            if self.stacks[at].len() < 2 {
+                self.stacks.remove(at);
+                message.push_str("; the stack is dissolved");
+            } else {
+                message.push_str(&format!("; {} leaves its stack", dataset.file_name()));
+            }
         }
         let applied = Applied {
             message,

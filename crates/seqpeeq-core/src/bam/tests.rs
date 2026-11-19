@@ -9,7 +9,7 @@ use noodles::csi;
 use noodles::csi::BinningIndex as _;
 use noodles::csi::binning_index::ReferenceSequence as _;
 
-use super::testing::{bam_from_sam, fixture};
+use super::testing::{bam_from_sam, fixture, header_bam};
 use crate::{Command, Error, Outcome, Session, Started};
 
 /// A session with no log whose cache folder is `cache`.
@@ -1716,4 +1716,109 @@ fn an_xa_entry_whose_nm_is_not_a_number_is_skipped() {
     assert_eq!(q.alts.len(), 1);
     assert_eq!(q.alts[0].place.pos, 501);
     assert_eq!(q.alts_skipped, 2);
+}
+
+/// The fixture's contigs, for header-only BAMs that stack with it.
+const FIXTURE_CONTIGS: [(&str, u64); 3] = [("c1", 1000), ("c2", 500), ("c3", 300)];
+
+#[test]
+fn bams_with_the_same_contigs_stack_on_open_in_any_order() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let other = header_bam(
+        data.path(),
+        "b.bam",
+        &[("c3", 300), ("c1", 1000), ("c2", 500)],
+    );
+    let out = open(&mut s, &other).unwrap();
+    assert!(
+        out.message.ends_with("; stacked with reads.bam"),
+        "{}",
+        out.message
+    );
+    let (a, b) = (s.datasets()[0].id, s.datasets()[1].id);
+    assert_eq!(s.stack_of(a), Some(&[a, b][..]));
+    assert_eq!(s.stack_of(b), Some(&[a, b][..]));
+    assert_eq!(s.stacks(), &[vec![a, b]]);
+}
+
+#[test]
+fn bams_with_other_contigs_do_not_stack() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let fewer = header_bam(data.path(), "b.bam", &[("c1", 1000), ("c2", 500)]);
+    let longer = header_bam(
+        data.path(),
+        "c.bam",
+        &[("c1", 1000), ("c2", 500), ("c3", 301)],
+    );
+    for path in [fewer, longer] {
+        let out = open(&mut s, &path).unwrap();
+        assert!(!out.message.contains("stacked"), "{}", out.message);
+    }
+    assert!(s.stacks().is_empty());
+    assert_eq!(s.stack_of(s.datasets()[0].id), None);
+}
+
+#[test]
+fn a_fourth_matching_bam_opens_on_its_own() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    let mut messages = Vec::new();
+    for name in ["b.bam", "c.bam", "d.bam"] {
+        let path = header_bam(data.path(), name, &FIXTURE_CONTIGS);
+        messages.push(open(&mut s, &path).unwrap().message);
+    }
+    assert!(
+        messages[0].ends_with("; stacked with reads.bam"),
+        "{}",
+        messages[0]
+    );
+    assert!(
+        messages[1].ends_with("; stacked with reads.bam and b.bam"),
+        "{}",
+        messages[1]
+    );
+    assert!(
+        messages[2]
+            .ends_with("; reads.bam's stack already holds 3 BAMs, so d.bam opens on its own"),
+        "{}",
+        messages[2]
+    );
+    assert_eq!(s.stacks().len(), 1);
+    assert_eq!(s.stacks()[0].len(), 3);
+}
+
+#[test]
+fn closing_a_member_leaves_the_stack_and_a_stack_of_one_dissolves() {
+    let (data, cache) = dirs();
+    let f = fixture(data.path());
+    let mut s = session(cache.path());
+    open(&mut s, &f.bam).unwrap();
+    for name in ["b.bam", "c.bam"] {
+        open(&mut s, &header_bam(data.path(), name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    let ids: Vec<u64> = s.datasets().iter().map(|d| d.id).collect();
+    ex(&mut s, "use 2").unwrap();
+    let out = ex(&mut s, "close").unwrap();
+    assert!(
+        out.message.contains("; b.bam leaves its stack"),
+        "{}",
+        out.message
+    );
+    assert_eq!(s.stacks(), &[vec![ids[0], ids[2]]]);
+    ex(&mut s, "use 2").unwrap();
+    let out = ex(&mut s, "close").unwrap();
+    assert!(
+        out.message.contains("; the stack is dissolved"),
+        "{}",
+        out.message
+    );
+    assert!(s.stacks().is_empty());
 }
