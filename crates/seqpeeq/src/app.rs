@@ -1896,6 +1896,12 @@ impl App {
             KeyCode::Char('u') => self.act(Command::Undo),
             KeyCode::Char('U') => self.act(Command::Redo),
             KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
+            // The midpoint is a property of the whole tree, not of the cursor.
+            KeyCode::Char('O') => self.act(Command::Tree(TreeCmd::Reroot {
+                at: NodeSel::default(),
+                outgroup: Vec::new(),
+                midpoint: true,
+            })),
             KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
             KeyCode::Char('w') => self.start_save(),
             KeyCode::Char('a') => self.show_sequences(),
@@ -4776,6 +4782,33 @@ mod tests {
         assert_eq!(last(&app), "undo");
         type_str(&mut app, "U");
         assert_eq!(last(&app), "redo");
+    }
+
+    #[test]
+    fn capital_o_roots_at_the_midpoint_wherever_the_cursor_is() {
+        let (mut app, dir) = with_tree("((A:1,B:1):1,(C:1,D:8):1);");
+        put_cursor(&mut app, "A");
+        type_str(&mut app, "O");
+        assert_eq!(last(&app), "tree reroot --midpoint");
+        // The longest path is A to D (11); its midpoint lies on D's branch.
+        let out = dir.path().join("rooted.nwk");
+        run_typed(&mut app, &format!("tree extract --out {}", out.display()));
+        let rooted = fs::read_to_string(out).unwrap();
+        assert!(rooted.contains("D:5.5"), "{rooted}");
+    }
+
+    #[test]
+    fn capital_o_without_branch_lengths_says_why_and_logs_nothing() {
+        let (mut app, _dir) = with_tree("((A,B),(C,D));");
+        let before = app.session.history().len();
+        type_str(&mut app, "O");
+        assert!(
+            app.status
+                .contains("midpoint rooting needs every branch length"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.session.history().len(), before);
     }
 
     #[test]

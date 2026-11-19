@@ -140,7 +140,7 @@ Zoom      - out   + in   z view whole alignment
 Tree      jk rows  h parent  l back  Enter open/close
           + - z zoom  b lengths  / n N find  v select
           d prune  r rename  o re-root on branch
-          :tree reroot --midpoint  root at the midpoint
+          O re-root at the midpoint
           w save the whole tree   e extract the clade
           s ladderize  u U undo redo
           a go to the alignment
