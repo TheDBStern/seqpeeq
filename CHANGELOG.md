@@ -9,6 +9,8 @@ All notable changes to seqpeeq are listed here. The format follows
 ### Added
 
 - `O` in a tree re-roots it at the midpoint of its longest path, like `:tree reroot --midpoint`.
+- BAMs with the same contigs open as one stack under a shared ruler and reference, moving together (`Tab` moves
+  between them; `bam stack`, `bam unstack`).
 
 ### Changed
 
