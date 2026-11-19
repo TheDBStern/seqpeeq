@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Lightweight terminal viewer and editor for alignments, trees and mapped reads"
 
 [dependencies]
+shlex.workspace = true
 seqpeeq-core.workspace = true
 clap.workspace = true
 anyhow.workspace = true

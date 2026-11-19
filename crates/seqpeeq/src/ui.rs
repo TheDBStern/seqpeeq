@@ -663,6 +663,7 @@ const HELP_SHARED: &[&str] = &[
     "View      Tab next file   L log   ? help   q quit",
     "Commands  :  open FILE   close   use N   undo   redo",
     "          :rescue FILE if the log has failed",
+    "          Tab completes a file name after :tree link",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -794,10 +795,7 @@ pub(crate) mod tests {
 
     /// The `:` line holding `text`, with the cursor at its end.
     fn command_line(text: &str) -> Mode {
-        Mode::Prompt(Prompt {
-            kind: PromptKind::Command,
-            line: LineEdit::new(text),
-        })
+        Mode::Prompt(Prompt::new(PromptKind::Command, LineEdit::new(text)))
     }
 
     pub(crate) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -980,10 +978,7 @@ pub(crate) mod tests {
         for _ in 0..4 {
             line.key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         }
-        app.mode = Mode::Prompt(Prompt {
-            kind: PromptKind::Command,
-            line,
-        });
+        app.mode = Mode::Prompt(Prompt::new(PromptKind::Command, line));
         let mut terminal = render(&app, 60, 12);
         assert_eq!(
             terminal.get_cursor_position().unwrap(),
@@ -1493,6 +1488,7 @@ pub(crate) mod tests {
         for needle in [
             "w save the whole alignment",
             "e extract the selection",
+            "Tab completes a file name after :tree link",
             "hjkl",
             "PgUp",
             "Home",

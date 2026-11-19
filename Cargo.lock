@@ -1859,6 +1859,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "seqpeeq-core",
+ "shlex",
  "signal-hook 0.4.6",
  "tempfile",
  "unicode-width",
