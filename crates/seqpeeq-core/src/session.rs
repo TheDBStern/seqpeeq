@@ -82,6 +82,15 @@ impl Dataset {
     }
 }
 
+/// Whether two paths name the same file.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
 /// A path's last part, for messages.
 fn file_name(path: &Path) -> String {
     match path.file_name() {
@@ -439,6 +448,7 @@ impl Session {
         if let Some(label) = &self.busy {
             return Err(Error::Invalid(format!("still busy: {label}")));
         }
+        let cmd = self.resolve_link(cmd);
         let line = cmd.to_line()?;
         // The log is replayed from this text, so it must mean this command.
         if Command::parse_line(&line).ok().as_ref() != Some(&cmd) {
@@ -731,7 +741,146 @@ impl Session {
         });
         self.current = Some(self.datasets.len() - 1);
         self.history.push(line.to_string());
-        Ok(Outcome { message })
+        // A rule, not a logged command: replaying the opens links the same.
+        let linked = self.auto_link(id);
+        Ok(Outcome {
+            message: message + &linked,
+        })
+    }
+
+    /// How many of `tree`'s tips have a sequence in `alignment`, and how
+    /// many tips it has; `None` unless the ids are an open tree and an
+    /// open alignment.
+    pub fn shared_tips(&self, tree: u64, alignment: u64) -> Option<(usize, usize)> {
+        let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
+        let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
+        let names: HashSet<&str> = (0..msa.rows()).map(|row| msa.name(row)).collect();
+        let tree = doc.tree();
+        let tips = tree.tips();
+        let shared = tips
+            .iter()
+            .filter(|&&n| tree.label(n).is_some_and(|l| names.contains(l)))
+            .count();
+        Some((shared, tips.len()))
+    }
+
+    /// `tree link NAME`, where NAME is no open file's path but the file
+    /// name of exactly one open alignment, becomes `tree link PATH` before
+    /// it is logged, so the log always names the file it linked.
+    fn resolve_link(&self, cmd: Command) -> Command {
+        let Command::Tree(TreeCmd::Link { file }) = &cmd else {
+            return cmd;
+        };
+        if self.datasets.iter().any(|d| same_file(&d.path, file)) {
+            return cmd;
+        }
+        let name = file.to_string_lossy();
+        let mut named = self
+            .datasets
+            .iter()
+            .filter(|d| d.msa().is_some() && d.file_name() == name);
+        match (named.next(), named.next()) {
+            (Some(d), None) => Command::Tree(TreeCmd::Link {
+                file: d.path.clone(),
+            }),
+            _ => cmd,
+        }
+    }
+
+    /// Link the file just opened to the one open file of the other kind
+    /// that matches it fully: an alignment with a sequence for every tip of
+    /// a tree. Returns what to add to the open's message: the link, or a
+    /// hint when the match is ambiguous or partial.
+    fn auto_link(&mut self, opened: u64) -> String {
+        let Some(new) = self.datasets.iter().find(|d| d.id == opened) else {
+            return String::new();
+        };
+        let tree_opened = new.tree().is_some();
+        if !tree_opened && new.msa().is_none() {
+            return String::new();
+        }
+        // (tree, alignment, tips with a sequence, tips) for each candidate.
+        let mut pairs = Vec::new();
+        // (alignment, its tree) for full matches already linked to a tree.
+        let mut taken = Vec::new();
+        for other in &self.datasets {
+            let (tree, alignment) = if tree_opened {
+                (new, other)
+            } else {
+                (other, new)
+            };
+            if other.id == opened || self.links.contains_key(&tree.id) {
+                continue;
+            }
+            let Some((shared, tips)) = self.shared_tips(tree.id, alignment.id) else {
+                continue;
+            };
+            // An alignment that already has a tree is not linked to a
+            // second by itself: `msa rename --tree` needs exactly one.
+            let linked_to = self.trees_linked_to(alignment.id);
+            if tree_opened && shared == tips && !linked_to.is_empty() {
+                let to = self
+                    .datasets
+                    .iter()
+                    .find(|d| d.id == linked_to[0])
+                    .map_or_else(String::new, Dataset::file_name);
+                taken.push((alignment.file_name(), to));
+                continue;
+            }
+            if shared > 0 {
+                pairs.push((tree, alignment, shared, tips));
+            }
+        }
+        let other_name = |(tree, alignment, _, _): &(&Dataset, &Dataset, usize, usize)| {
+            if tree_opened {
+                alignment.file_name()
+            } else {
+                tree.file_name()
+            }
+        };
+        let full: Vec<_> = pairs.iter().filter(|p| p.2 == p.3).collect();
+        match full.as_slice() {
+            [one] => {
+                let (tree, alignment) = (one.0.id, one.1.id);
+                let name = other_name(one);
+                self.links.insert(tree, alignment);
+                format!("; linked to {name}")
+            }
+            [] => match (taken.as_slice(), pairs.as_slice()) {
+                ([(alignment, tree)], _) => {
+                    format!(
+                        "; {alignment} has every tip but is linked to {tree}: :tree link {alignment}"
+                    )
+                }
+                ([], [one]) => {
+                    let (shared, tips) = (one.2, one.3);
+                    let command = format!(":tree link {}", one.1.file_name());
+                    let from = if tree_opened { "" } else { " from its tab" };
+                    format!(
+                        "; {} shares {shared} of {tips} names: {command}{from}",
+                        other_name(one)
+                    )
+                }
+                _ => String::new(),
+            },
+            many => {
+                let names: Vec<String> = many.iter().map(|p| other_name(p)).collect();
+                let (last, rest) = names.split_last().expect("two or more");
+                let (both, what) = match (many.len(), tree_opened) {
+                    (2, true) => ("both have every tip", ":tree link FILE"),
+                    (_, true) => ("all have every tip", ":tree link FILE"),
+                    (2, false) => (
+                        "both have a sequence for every tip",
+                        ":tree link FILE from a tree's tab",
+                    ),
+                    (_, false) => (
+                        "all have a sequence for every tip",
+                        ":tree link FILE from a tree's tab",
+                    ),
+                };
+                format!("; {} and {last} {both}: {what}", rest.join(", "))
+            }
+        }
     }
 
     fn checkpoint(&self, cmd: &Command) -> Checkpoint {
@@ -1230,14 +1379,7 @@ impl Session {
     fn link(&mut self, file: &Path) -> Result<Applied> {
         self.current_tree()?;
         let index = self.current.expect("there is a current tree");
-        let same = |path: &Path| {
-            path == file
-                || matches!(
-                    (std::fs::canonicalize(path), std::fs::canonicalize(file)),
-                    (Ok(a), Ok(b)) if a == b
-                )
-        };
-        let Some(target) = self.datasets.iter().find(|d| same(&d.path)) else {
+        let Some(target) = self.datasets.iter().find(|d| same_file(&d.path, file)) else {
             return Err(Error::Invalid(format!(
                 "{} is not open; open it first",
                 file.display()
@@ -1930,6 +2072,7 @@ mod tests {
         let (_keep, dir) = trees();
         let mut s = opened(&dir, &["a.fa", "t.nwk"]);
         let tree = s.datasets()[1].id;
+        ex(&mut s, "tree unlink").unwrap();
         assert_eq!(s.link_summary(tree), None);
         ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap();
         let got = s.link_summary(tree).unwrap();
@@ -2116,6 +2259,8 @@ mod tests {
         let lines = [
             format!("open {}", dir.join("a.fa").display()),
             format!("open {}", dir.join("t.nwk").display()),
+            // The pair links by itself on open; unlink it to link it again.
+            "tree unlink".to_string(),
             format!("tree link {}", dir.join("a.fa").display()),
         ];
         let room = |count: usize| {
@@ -2126,14 +2271,14 @@ mod tests {
             }
             limited_log(buffer.lock().unwrap().len() + 10).0
         };
-        let mut s = Session::with_clock(Some(room(2)), fixed);
-        for line in &lines[..2] {
+        let mut s = Session::with_clock(Some(room(3)), fixed);
+        for line in &lines[..3] {
             ex(&mut s, line).unwrap();
         }
-        assert!(matches!(ex(&mut s, &lines[2]), Err(Error::Log { .. })));
+        assert!(matches!(ex(&mut s, &lines[3]), Err(Error::Log { .. })));
         assert_eq!(s.link_of(s.datasets()[1].id), None);
 
-        let mut s = Session::with_clock(Some(room(3)), fixed);
+        let mut s = Session::with_clock(Some(room(4)), fixed);
         for line in &lines {
             ex(&mut s, line).unwrap();
         }
@@ -3042,5 +3187,149 @@ mod tests {
             ex(&mut s, "undo").unwrap();
             assert_eq!(names(&s), ["A", "A", "B"], "{line}");
         }
+    }
+
+    // Issue 7: linking by name, and by itself.
+
+    #[test]
+    fn a_tree_links_to_the_one_alignment_that_has_every_tip() {
+        let (_keep, dir) = trees();
+        let mut s = Session::new(None);
+        s.execute(open(&dir.join("a.fa"))).unwrap();
+        let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
+        assert!(out.message.ends_with("; linked to a.fa"), "{}", out.message);
+        assert_eq!(s.link_of(s.datasets()[1].id), Some(s.datasets()[0].id));
+    }
+
+    #[test]
+    fn an_alignment_opened_after_its_tree_links_to_it() {
+        let (_keep, dir) = trees();
+        let mut s = Session::new(None);
+        s.execute(open(&dir.join("t.nwk"))).unwrap();
+        let out = s.execute(open(&dir.join("a.fa"))).unwrap();
+        assert!(
+            out.message.ends_with("; linked to t.nwk"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[0].id), Some(s.datasets()[1].id));
+    }
+
+    #[test]
+    fn a_partial_match_says_how_many_and_how_to_link() {
+        let (_keep, dir) = trees();
+        let mut s = Session::new(None);
+        s.execute(open(&dir.join("a.fa"))).unwrap();
+        let out = s.execute(open(&dir.join("l.nwk"))).unwrap();
+        assert!(
+            out.message
+                .ends_with("; a.fa shares 3 of 4 names: :tree link a.fa"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[1].id), None);
+
+        // The same pair the other way round: the command is run from the tree.
+        let mut s = Session::new(None);
+        s.execute(open(&dir.join("l.nwk"))).unwrap();
+        let out = s.execute(open(&dir.join("a.fa"))).unwrap();
+        assert!(
+            out.message
+                .ends_with("; l.nwk shares 3 of 4 names: :tree link a.fa from its tab"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[0].id), None);
+    }
+
+    #[test]
+    fn two_full_matches_link_nothing_and_say_so() {
+        let (_keep, dir) = trees();
+        fs::write(dir.join("b.fa"), ">A\nAC\n>B\nGG\n>C\nTT\n").unwrap();
+        let mut s = Session::new(None);
+        s.execute(open(&dir.join("a.fa"))).unwrap();
+        s.execute(open(&dir.join("b.fa"))).unwrap();
+        let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
+        assert!(
+            out.message
+                .ends_with("; a.fa and b.fa both have every tip: :tree link FILE"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[2].id), None);
+    }
+
+    #[test]
+    fn tree_link_takes_an_open_alignments_file_name() {
+        let (_keep, dir) = trees();
+        let mut s = opened(&dir, &["l.nwk", "a.fa"]);
+        ex(&mut s, "use 1").unwrap();
+        let err = ex(&mut s, "tree link b.fa").unwrap_err();
+        assert!(
+            err.to_string().contains("is not open; open it first"),
+            "{err}"
+        );
+        let out = ex(&mut s, "tree link a.fa").unwrap();
+        assert!(
+            out.message.starts_with("linked l.nwk to a.fa"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[0].id), Some(s.datasets()[1].id));
+        let path = s.datasets()[1].path.clone();
+        assert_eq!(
+            Command::parse_line(s.history().last().unwrap()).unwrap(),
+            Command::Tree(TreeCmd::Link { file: path })
+        );
+    }
+
+    #[test]
+    fn a_replayed_session_links_the_same_way() {
+        let (_keep, dir) = trees();
+        let log = dir.join("s.log");
+        let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+        for name in ["a.fa", "t.nwk", "l.nwk"] {
+            s.execute(open(&dir.join(name))).unwrap();
+        }
+        ex(&mut s, "tree link a.fa").unwrap();
+        let links = |s: &Session| -> Vec<Option<u64>> {
+            s.datasets().iter().map(|d| s.link_of(d.id)).collect()
+        };
+        let a = s.datasets()[0].id;
+        assert_eq!(links(&s), vec![None, Some(a), Some(a)]);
+
+        let text = fs::read_to_string(&log).unwrap();
+        let mut again = Session::new(None);
+        crate::replay(&text, &mut again).unwrap();
+        let a = again.datasets()[0].id;
+        assert_eq!(links(&again), vec![None, Some(a), Some(a)]);
+    }
+
+    #[test]
+    fn a_second_tree_does_not_link_to_a_linked_alignment() {
+        // Two trees linked to one alignment make `msa rename --tree`
+        // refuse, so only the first links by itself.
+        let (_keep, dir) = trees();
+        fs::write(dir.join("t2.nwk"), "(A,(B,C));").unwrap();
+        let mut s = opened(&dir, &["a.fa", "t.nwk"]);
+        let out = s.execute(open(&dir.join("t2.nwk"))).unwrap();
+        assert!(
+            out.message
+                .ends_with("; a.fa has every tip but is linked to t.nwk: :tree link a.fa"),
+            "{}",
+            out.message
+        );
+        assert_eq!(s.link_of(s.datasets()[2].id), None);
+        ex(&mut s, "use 1").unwrap();
+        ex(&mut s, "msa rename --rows 1 --to Q --tree").unwrap();
+    }
+
+    #[test]
+    fn shared_tips_counts_tips_with_a_sequence() {
+        let (_keep, dir) = trees();
+        let s = opened(&dir, &["a.fa", "l.nwk"]);
+        let (a, l) = (s.datasets()[0].id, s.datasets()[1].id);
+        assert_eq!(s.shared_tips(l, a), Some((3, 4)));
+        assert_eq!(s.shared_tips(a, l), None);
     }
 }

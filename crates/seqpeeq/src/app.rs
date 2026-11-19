@@ -26,6 +26,7 @@ use crate::zoom::{self, Scale};
 
 mod axis;
 pub(crate) mod bam;
+pub(crate) mod link;
 
 pub enum Mode {
     Normal,
@@ -40,6 +41,8 @@ pub enum Mode {
     Help,
     /// `c` on a BAM tab: picking a contig.
     Contigs(Box<crate::bam_view::ContigList>),
+    /// `p` on a tree tab: picking the alignment to link to.
+    Links(Box<link::LinkList>),
 }
 
 /// How typed characters go into a row.
@@ -63,6 +66,71 @@ pub enum Confirm {
 pub struct Prompt {
     pub kind: PromptKind,
     pub line: LineEdit,
+    /// The names Tab is stepping through, if it was the last key.
+    completing: Option<Completion>,
+}
+
+impl Prompt {
+    /// A line of this kind holding `line`.
+    pub fn new(kind: PromptKind, line: LineEdit) -> Prompt {
+        Prompt {
+            kind,
+            line,
+            completing: None,
+        }
+    }
+}
+
+/// Tab after `tree link `: what was typed, and the name it has reached.
+struct Completion {
+    /// The line up to the name.
+    lead: String,
+    /// What was typed of the name.
+    prefix: String,
+    /// Which of the names starting with `prefix` is on the line.
+    index: usize,
+}
+
+/// Step the name after `tree link ` through the open alignments' file
+/// names that start with what was typed: forward for Tab, back for
+/// Shift-Tab. Anywhere else, or with the cursor inside the line, nothing.
+fn complete(prompt: &mut Prompt, names: &[String], step: isize) {
+    let text = prompt.line.text();
+    if prompt.line.cursor() != text.len() {
+        return;
+    }
+    let (lead, prefix, at) = match prompt.completing.take() {
+        Some(c) => (c.lead, c.prefix, Some(c.index)),
+        None => {
+            let Some(rest) = text.trim_start().strip_prefix("tree link ") else {
+                return;
+            };
+            let prefix = rest.trim_start();
+            if prefix.contains(char::is_whitespace) {
+                return;
+            }
+            let lead = text[..text.len() - prefix.len()].to_string();
+            (lead, prefix.to_string(), None)
+        }
+    };
+    let matching: Vec<&String> = names.iter().filter(|n| n.starts_with(&prefix)).collect();
+    if matching.is_empty() {
+        return;
+    }
+    let count = matching.len() as isize;
+    let index = match at {
+        Some(i) => (i as isize + step).rem_euclid(count),
+        None if step > 0 => 0,
+        None => count - 1,
+    } as usize;
+    let name = shlex::try_quote(matching[index])
+        .map_or_else(|_| matching[index].clone(), |q| q.into_owned());
+    prompt.line.set(&format!("{lead}{name}"));
+    prompt.completing = Some(Completion {
+        lead,
+        prefix,
+        index,
+    });
 }
 
 /// What a line being typed is for.
@@ -790,6 +858,12 @@ impl App {
                 let mut view = TreeView::new(doc.tree());
                 view.revision = doc.revision();
                 self.trees.insert(id, view);
+            } else if let Some(view) = self.trees.get_mut(&id)
+                && view.revision != doc.revision()
+            {
+                // Follow the edit before measuring: the layout reads the
+                // rows, which may hold nodes the edit removed.
+                view.repair(doc.tree(), doc.facts(), doc.revision());
             }
             let height = self.tree_height(id).unwrap_or(1);
             let doc = self.session.datasets().iter().find(|d| d.id == id);
@@ -807,9 +881,6 @@ impl App {
                     view.cursor = first.node;
                 }
                 view.refit(tree, facts, height);
-            } else if view.revision != doc.revision() {
-                view.height = height;
-                view.repair(tree, facts, doc.revision());
             } else if view.height != height {
                 view.refit(tree, facts, height);
             }
@@ -968,17 +1039,31 @@ impl App {
                     };
                     self.submit(prompt);
                 }
+                KeyCode::Tab | KeyCode::BackTab if matches!(prompt.kind, PromptKind::Command) => {
+                    let names: Vec<String> = self
+                        .session
+                        .datasets()
+                        .iter()
+                        .filter(|d| d.msa().is_some())
+                        .filter_map(|d| Some(d.path.file_name()?.to_string_lossy().into_owned()))
+                        .collect();
+                    let step = if key.code == KeyCode::Tab { 1 } else { -1 };
+                    complete(prompt, &names, step);
+                }
                 KeyCode::Up if matches!(prompt.kind, PromptKind::Command) => {
+                    prompt.completing = None;
                     if let Some(older) = self.history.older(prompt.line.text()) {
                         prompt.line.set(older);
                     }
                 }
                 KeyCode::Down if matches!(prompt.kind, PromptKind::Command) => {
+                    prompt.completing = None;
                     if let Some(newer) = self.history.newer() {
                         prompt.line.set(newer);
                     }
                 }
                 _ => {
+                    prompt.completing = None;
                     prompt.line.key(key);
                 }
             },
@@ -1004,6 +1089,7 @@ impl App {
             }
             Mode::Help => self.mode = Mode::Normal,
             Mode::Contigs(_) => self.contigs_key(key),
+            Mode::Links(_) => self.links_key(key),
         }
     }
 
@@ -1487,6 +1573,22 @@ impl App {
         self.act(Command::Msa(MsaCmd::Fill { rows, cols, with }));
     }
 
+    /// `w`: save the whole alignment or tree to a new file, whatever is
+    /// selected and wherever the cursor is.
+    fn start_save(&mut self) {
+        if self.tree().is_some() {
+            return self.open_prompt(
+                PromptKind::TreeOut {
+                    at: NodeSel::default(),
+                },
+                "",
+            );
+        }
+        if self.alignment().is_some() {
+            self.open_prompt(PromptKind::Command, "msa extract --out ");
+        }
+    }
+
     /// `e`: open the command line holding the extract for the selection,
     /// ready for the file name.
     fn start_extract(&mut self) {
@@ -1553,6 +1655,7 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => return self.delete(),
             KeyCode::Char('f') => return self.mode = Mode::FillChar,
             KeyCode::Char('e') => return self.start_extract(),
+            KeyCode::Char('w') => return self.start_save(),
             KeyCode::Char('u') => return self.act(Command::Undo),
             KeyCode::Char('U') => return self.act(Command::Redo),
             KeyCode::Char('r') => {
@@ -1684,6 +1787,7 @@ impl App {
             Some(end) => (&text[..end], &text[end..]),
             None => (text, ""),
         };
+        prompt.completing = None;
         prompt.line.insert(first);
         if !rest.trim().is_empty() {
             self.status = "pasted text was cut at its first line break".to_string();
@@ -1693,10 +1797,7 @@ impl App {
     /// Start typing a line, with `text` already on it.
     fn open_prompt(&mut self, kind: PromptKind, text: &str) {
         self.history.reset();
-        self.mode = Mode::Prompt(Prompt {
-            kind,
-            line: LineEdit::new(text),
-        });
+        self.mode = Mode::Prompt(Prompt::new(kind, LineEdit::new(text)));
     }
 
     /// Act on a line that was entered.
@@ -1744,6 +1845,9 @@ impl App {
         }
         if matches!(self.mode, Mode::Contigs(_)) {
             return self.contigs_mouse(mouse);
+        }
+        if matches!(self.mode, Mode::Links(_)) {
+            return self.links_mouse(mouse);
         }
         if !matches!(self.mode, Mode::Normal) {
             return;
@@ -1793,7 +1897,9 @@ impl App {
             KeyCode::Char('U') => self.act(Command::Redo),
             KeyCode::Char('s') => self.act(Command::Tree(TreeCmd::Ladderize { reverse: false })),
             KeyCode::Char('d' | 'o' | 'r' | 'e') => self.tree_act(key.code),
+            KeyCode::Char('w') => self.start_save(),
             KeyCode::Char('a') => self.show_sequences(),
+            KeyCode::Char('p') => self.open_links(),
             _ => {}
         }
     }
@@ -4921,5 +5027,93 @@ mod tests {
         }
         assert_eq!(write(&mut fresh, "replayed"), made);
         assert_eq!(String::from_utf8(made.1).unwrap(), ">Z\nTT\n>Q\nCA\n");
+    }
+
+    // Issue 9: w saves the whole file.
+
+    #[test]
+    fn w_on_an_alignment_fills_the_whole_extract() {
+        let (mut app, _dir) = with_text(">a\nACGT\n>b\nACGA\n>c\nTTTT\n");
+        app.handle_event(&key('v'));
+        app.handle_event(&key('j'));
+        app.handle_event(&key('w'));
+        assert_eq!(typed(&app), Some("msa extract --out "));
+    }
+
+    #[test]
+    fn w_on_a_tree_saves_the_whole_tree_wherever_the_cursor_is() {
+        let (mut app, dir) = with_tree(T6);
+        for _ in 0..4 {
+            app.handle_event(&key('j'));
+        }
+        assert_ne!(tree_view(&app).cursor, shown_tree(&app).root());
+        app.handle_event(&key('w'));
+        let out = dir.path().join("all.nwk");
+        type_str(&mut app, out.to_str().unwrap());
+        enter(&mut app);
+        let written = fs::read_to_string(&out).unwrap();
+        for tip in ["A", "B", "C", "D", "E", "F"] {
+            assert!(written.contains(tip), "{tip} in {written}");
+        }
+    }
+
+    // Tab completes an open alignment's name after `tree link`.
+
+    /// An app with `names` open, each a two-sequence alignment.
+    fn with_alignments(names: &[&str]) -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Session::new(None));
+        for name in names {
+            let path = dir.path().join(name);
+            fs::write(&path, ">A\nAC\n>B\nAG\n").unwrap();
+            open_file(&mut app, &path);
+        }
+        (app, dir)
+    }
+
+    #[test]
+    fn tab_completes_an_open_alignment_after_tree_link() {
+        let (mut app, _dir) = with_alignments(&["full.fa", "part.fa"]);
+        type_str(&mut app, ":tree link p");
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(typed(&app), Some("tree link part.fa"));
+    }
+
+    #[test]
+    fn tab_cycles_and_shift_tab_goes_back() {
+        let (mut app, _dir) = with_alignments(&["full.fa", "part.fa"]);
+        type_str(&mut app, ":tree link ");
+        for want in ["full.fa", "part.fa", "full.fa"] {
+            app.handle_event(&press(KeyCode::Tab));
+            assert_eq!(typed(&app), Some(format!("tree link {want}").as_str()));
+        }
+        app.handle_event(&press(KeyCode::BackTab));
+        assert_eq!(typed(&app), Some("tree link part.fa"));
+    }
+
+    #[test]
+    fn tab_quotes_a_name_with_a_space() {
+        let (mut app, _dir) = with_alignments(&["my aln.fa"]);
+        type_str(&mut app, ":tree link m");
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(typed(&app), Some("tree link 'my aln.fa'"));
+    }
+
+    #[test]
+    fn tab_elsewhere_does_nothing() {
+        let (mut app, _dir) = with_alignments(&["full.fa"]);
+        type_str(&mut app, ":use ");
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(typed(&app), Some("use "));
+    }
+
+    #[test]
+    fn typing_after_a_completion_starts_over() {
+        let (mut app, _dir) = with_alignments(&["full.fa", "part.fa"]);
+        type_str(&mut app, ":tree link ");
+        app.handle_event(&press(KeyCode::Tab));
+        type_str(&mut app, "x");
+        app.handle_event(&press(KeyCode::Tab));
+        assert_eq!(typed(&app), Some("tree link full.fax"));
     }
 }

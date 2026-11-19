@@ -2,6 +2,7 @@
 
 pub mod bam;
 pub mod grid;
+pub mod link;
 pub mod overview;
 pub mod read_axis;
 pub mod tree;
@@ -174,6 +175,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         && !regions.body.is_empty()
     {
         bam::draw_contigs(frame, app, list, regions.body);
+    }
+    if let Mode::Links(list) = &app.mode
+        && !regions.body.is_empty()
+    {
+        link::draw_links(frame, app, list);
     }
 }
 
@@ -618,7 +624,9 @@ const HELP_ALIGNMENT: &[&str] = &[
     "Edit      d delete or gap   f fill   r rename",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z whole alignment and back",
-    "          u U undo redo   e extract to a file",
+    "          u U undo redo",
+    "          w save the whole alignment",
+    "          e extract the selection",
     "          c colours   [ ] name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
@@ -628,8 +636,10 @@ const HELP_ALIGNMENT: &[&str] = &[
 const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
-    "          d prune  e extract  r rename  o re-root",
+    "          d prune  r rename  o re-root",
+    "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo  a to the alignment",
+    "          p link to an open alignment",
 ];
 
 /// The keys of a BAM tab.
@@ -653,6 +663,7 @@ const HELP_SHARED: &[&str] = &[
     "View      Tab next file   L log   ? help   q quit",
     "Commands  :  open FILE   close   use N   undo   redo",
     "          :rescue FILE if the log has failed",
+    "          Tab completes a file name after :tree link",
     "Mouse     wheel on the column numbers scrolls sideways",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
@@ -784,10 +795,7 @@ pub(crate) mod tests {
 
     /// The `:` line holding `text`, with the cursor at its end.
     fn command_line(text: &str) -> Mode {
-        Mode::Prompt(Prompt {
-            kind: PromptKind::Command,
-            line: LineEdit::new(text),
-        })
+        Mode::Prompt(Prompt::new(PromptKind::Command, LineEdit::new(text)))
     }
 
     pub(crate) fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -970,10 +978,7 @@ pub(crate) mod tests {
         for _ in 0..4 {
             line.key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         }
-        app.mode = Mode::Prompt(Prompt {
-            kind: PromptKind::Command,
-            line,
-        });
+        app.mode = Mode::Prompt(Prompt::new(PromptKind::Command, line));
         let mut terminal = render(&app, 60, 12);
         assert_eq!(
             terminal.get_cursor_position().unwrap(),
@@ -1481,6 +1486,9 @@ pub(crate) mod tests {
         app.mode = Mode::Help;
         let screen = rows(&render(&app, 80, 24)).join("\n");
         for needle in [
+            "w save the whole alignment",
+            "e extract the selection",
+            "Tab completes a file name after :tree link",
             "hjkl",
             "PgUp",
             "Home",
@@ -1662,6 +1670,8 @@ pub(crate) mod tests {
     fn help_has_a_tree_section() {
         let help = HELP_TREE.join("\n");
         for text in [
+            "p link to an open alignment",
+            "w save the whole tree   e extract the clade",
             "Enter open/close",
             "b lengths",
             "o re-root",
@@ -1730,5 +1740,44 @@ pub(crate) mod tests {
         let (mut bam, _dir) = crate::app::bam::tests::with_bam();
         let screen = help_screen(&mut bam, 30, 8);
         assert!(screen.contains("help: B"), "{screen}");
+    }
+
+    /// A balanced tree of `2^depth` tips named t0, t1, ….
+    fn balanced(depth: u32) -> String {
+        fn clade(depth: u32, next: &mut u32) -> String {
+            if depth == 0 {
+                *next += 1;
+                return format!("t{}", *next - 1);
+            }
+            format!("({},{})", clade(depth - 1, next), clade(depth - 1, next))
+        }
+        format!("{};", clade(depth, &mut 0))
+    }
+
+    #[test]
+    fn pruning_again_and_again_on_a_short_screen_does_not_crash() {
+        // Issue 6: a collapsed row of a node a prune had removed was laid
+        // out before the view followed the edit.
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nwk");
+        std::fs::write(&path, balanced(6)).unwrap();
+        let mut app = with_file(path.to_str().unwrap());
+        app.resize(ratatui::layout::Size::new(80, 12));
+        settle(&mut app);
+        let key = |app: &mut App, c: char| {
+            app.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        };
+        for _ in 0..20 {
+            key(&mut app, 'j');
+            key(&mut app, 'd');
+            settle(&mut app);
+            render(&app, 80, 12);
+        }
+        let tips = app.tree().unwrap().1.tree().tips().len();
+        assert!(tips < 64, "the prunes ran: {tips} tips left");
     }
 }
