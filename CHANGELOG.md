@@ -14,6 +14,13 @@ All notable changes to seqpeeq are listed here. The format follows
 
 - The help pages are reworded to match the README.
 
+### Fixed
+
+- A reference FASTA with blank lines between its sequences, as when genomes are pasted into one file, now opens
+  (`--ref`, `bam ref`) and exports (`bam export-ref`). Spaces ending a line are no longer read as bases, a sequence
+  with no bases is left out as `samtools faidx` leaves it out, and a file that still cannot be read says which line
+  is wrong and how to rewrap it.
+
 ## [0.1.0] - 2026-11-18
 
 The first release: one terminal program to view and edit alignments, trees and mapped reads, with every change

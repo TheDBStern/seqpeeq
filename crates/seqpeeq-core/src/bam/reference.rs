@@ -88,8 +88,6 @@ const REWRAP: &str = "Rewrap the file, for example with seqkit seq -w 60";
 /// A sequence being indexed.
 struct Open {
     name: String,
-    /// The line its header is on.
-    header: u64,
     /// Where its first base is.
     position: u64,
     length: u64,
@@ -109,17 +107,12 @@ enum Last {
 }
 
 impl Open {
-    fn record(self) -> std::result::Result<fasta::fai::Record, Problem> {
-        let (Some(line_bases), Some(line_width)) = (
-            std::num::NonZero::new(self.line_bases),
-            std::num::NonZero::new(self.line_width),
-        ) else {
-            return Err(Problem::Bad(format!(
-                "{} (line {}) has no bases",
-                self.name, self.header
-            )));
-        };
-        Ok(fasta::fai::Record::new(
+    /// Its index record; none for a sequence with no bases, which
+    /// `samtools faidx` leaves out too.
+    fn record(self) -> Option<fasta::fai::Record> {
+        let line_bases = std::num::NonZero::new(self.line_bases)?;
+        let line_width = std::num::NonZero::new(self.line_width)?;
+        Some(fasta::fai::Record::new(
             self.name,
             self.length,
             self.position,
@@ -129,9 +122,70 @@ impl Open {
     }
 }
 
+/// One line of a FASTA, without its bases.
+enum Line {
+    /// A `>` line, whose text is left in the header buffer.
+    Header,
+    /// Any other line: how many bytes it has up to its last that is not
+    /// whitespace (none for a blank line), and whether whitespace comes
+    /// before that.
+    Bases { bases: u64, spaced: bool },
+}
+
+/// Read the next line and its width with the line end; none at the end of
+/// the file. Only a header is kept: a sequence line, which may be a whole
+/// chromosome, is counted as it streams past.
+fn read_line(
+    reader: &mut impl io::BufRead,
+    header: &mut Vec<u8>,
+    progress: &Progress,
+) -> std::result::Result<Option<(Line, u64)>, Problem> {
+    match reader.fill_buf()?.first() {
+        None => return Ok(None),
+        Some(b'>') => {
+            header.clear();
+            let width = reader.read_until(b'\n', header)? as u64;
+            return Ok(Some((Line::Header, width)));
+        }
+        Some(_) => {}
+    }
+    let (mut width, mut bases, mut first_space) = (0u64, 0u64, None);
+    loop {
+        if progress.is_cancelled() {
+            return Err(Problem::Cancelled);
+        }
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        let (text, ends) = match memchr::memchr(b'\n', buf) {
+            Some(i) => (&buf[..i], true),
+            None => (buf, false),
+        };
+        if let Some(i) = text.iter().rposition(|b| !b.is_ascii_whitespace()) {
+            bases = width + i as u64 + 1;
+        }
+        if first_space.is_none()
+            && let Some(i) = text.iter().position(u8::is_ascii_whitespace)
+        {
+            first_space = Some(width + i as u64);
+        }
+        let used = text.len() + usize::from(ends);
+        reader.consume(used);
+        width += used as u64;
+        if ends {
+            break;
+        }
+    }
+    let spaced = first_space.is_some_and(|at| at < bases);
+    Ok(Some((Line::Bases { bases, spaced }, width)))
+}
+
 /// Index a plain FASTA as `samtools faidx` does: every line of a sequence
-/// but its last holds the same number of bases. Blank lines may follow a
-/// sequence's last line (as when genomes are pasted into one file), since
+/// but its last holds the same number of bases, and whitespace ending a
+/// line is not a base. It is a little more lenient: blank lines may come
+/// before a sequence's first bases or after its last (as when genomes are
+/// pasted into one file), and its last line may end differently, since
 /// reading a stretch never goes past a sequence's length.
 fn index(
     mut reader: impl io::BufRead,
@@ -139,55 +193,42 @@ fn index(
 ) -> std::result::Result<Vec<fasta::fai::Record>, Problem> {
     let mut records = Vec::new();
     let mut open: Option<Open> = None;
-    let mut line = Vec::new();
+    let mut header = Vec::new();
     let (mut at, mut number) = (0u64, 0u64);
-    loop {
-        line.clear();
-        let width = reader.read_until(b'\n', &mut line)? as u64;
-        if width == 0 {
-            break;
-        }
+    while let Some((line, width)) = read_line(&mut reader, &mut header, progress)? {
         at += width;
         number += 1;
-        if number % (1 << 16) == 0 && progress.is_cancelled() {
-            return Err(Problem::Cancelled);
-        }
-        let text = line.strip_suffix(b"\n").unwrap_or(&line);
-        let text = text.strip_suffix(b"\r").unwrap_or(text);
-        if let Some(header) = text.strip_prefix(b">") {
-            if let Some(done) = open.take() {
-                records.push(done.record()?);
+        let (bases, spaced) = match line {
+            Line::Bases { bases, spaced } => (bases, spaced),
+            Line::Header => {
+                records.extend(open.take().and_then(Open::record));
+                let text = String::from_utf8_lossy(&header[1..]);
+                let Some(name) = text.split_ascii_whitespace().next() else {
+                    return Err(Problem::Bad(format!(
+                        "the header on line {number} has no name"
+                    )));
+                };
+                open = Some(Open {
+                    name: name.to_string(),
+                    position: at,
+                    length: 0,
+                    line_bases: 0,
+                    line_width: 0,
+                    last: None,
+                });
+                continue;
             }
-            if progress.is_cancelled() {
-                return Err(Problem::Cancelled);
-            }
-            let header = String::from_utf8_lossy(header);
-            let Some(name) = header.split_ascii_whitespace().next() else {
-                return Err(Problem::Bad(format!(
-                    "the header on line {number} has no name"
-                )));
-            };
-            open = Some(Open {
-                name: name.to_string(),
-                header: number,
-                position: at,
-                length: 0,
-                line_bases: 0,
-                line_width: 0,
-                last: None,
-            });
-            continue;
-        }
-        let blank = text.iter().all(u8::is_ascii_whitespace);
+        };
         let Some(seq) = open.as_mut() else {
-            if blank {
+            if bases == 0 {
                 continue;
             }
             return Err(Problem::Bad(format!(
                 "line {number} comes before the first > header"
             )));
         };
-        if blank {
+        let name = &seq.name;
+        if bases == 0 {
             if seq.line_bases == 0 {
                 // Before the first bases: they start after it.
                 seq.position = at;
@@ -196,7 +237,11 @@ fn index(
             }
             continue;
         }
-        let name = &seq.name;
+        if spaced {
+            return Err(Problem::Bad(format!(
+                "line {number} (in {name}) has a space or tab among its bases. {REWRAP}"
+            )));
+        }
         match seq.last {
             None => {}
             Some((line, Last::Blank)) => {
@@ -205,16 +250,15 @@ fn index(
                 )));
             }
             Some((line, Last::Short(bases))) => {
-                return Err(short(line, name, bases, seq.line_bases));
+                return Err(wrong_length(line, name, bases, seq.line_bases));
             }
             Some((line, Last::Ending)) => {
                 return Err(Problem::Bad(format!(
-                    "line {line} (in {name}) ends differently from {name}'s first line \
-                     (\\r\\n and \\n are mixed). {REWRAP}"
+                    "line {line} (in {name}) ends differently from {name}'s first line, in its \
+                     line end or trailing spaces. {REWRAP}"
                 )));
             }
         }
-        let bases = text.len() as u64;
         seq.length += bases;
         if seq.line_bases == 0 {
             seq.line_bases = bases;
@@ -222,22 +266,21 @@ fn index(
             continue;
         }
         if bases > seq.line_bases {
-            return Err(short(number, name, bases, seq.line_bases));
+            return Err(wrong_length(number, name, bases, seq.line_bases));
         } else if bases < seq.line_bases {
             seq.last = Some((number, Last::Short(bases)));
         } else if width != seq.line_width {
-            // Another line end, or none at the end of the file.
+            // Another line end or trailing spaces, or none at the end of
+            // the file.
             seq.last = Some((number, Last::Ending));
         }
     }
-    if let Some(done) = open {
-        records.push(done.record()?);
-    }
+    records.extend(open.and_then(Open::record));
     Ok(records)
 }
 
-/// A line of the wrong length inside a sequence.
-fn short(line: u64, name: &str, bases: u64, first: u64) -> Problem {
+/// A line inside a sequence with more or fewer bases than its first.
+fn wrong_length(line: u64, name: &str, bases: u64, first: u64) -> Problem {
     Problem::Bad(format!(
         "line {line} (in {name}) has {bases} bases, but {name}'s first line has {first}; \
          only a sequence's last line may be shorter. {REWRAP}"
@@ -352,7 +395,9 @@ impl Reference {
                 break;
             }
             for &b in &chunk[..n] {
-                if b != b'\n' && b != b'\r' {
+                // Line ends, and any whitespace ending a line, are not
+                // bases.
+                if !b.is_ascii_whitespace() {
                     bases.push(b);
                     if bases.len() == want {
                         break;
@@ -438,9 +483,68 @@ mod tests {
     fn mixed_line_ends_inside_a_sequence_are_refused() {
         assert_eq!(
             open(">a\nACGT\r\nACGT\nAC\n").unwrap_err(),
-            "not a readable FASTA: line 3 (in a) ends differently from a's first line (\\r\\n \
-             and \\n are mixed). Rewrap the file, for example with seqkit seq -w 60"
+            "not a readable FASTA: line 3 (in a) ends differently from a's first line, in its \
+             line end or trailing spaces. Rewrap the file, for example with seqkit seq -w 60"
         );
+    }
+
+    #[test]
+    fn blank_lines_before_a_sequences_first_bases_are_allowed() {
+        let r = open(">a\n\nACGT\nAC\n>b\n\r\n \t\nGG\n").unwrap();
+        assert_eq!(r.fetch("a", 1, 9).unwrap(), b"ACGTAC");
+        assert_eq!(r.fetch("b", 1, 9).unwrap(), b"GG");
+    }
+
+    #[test]
+    fn trailing_spaces_are_not_bases() {
+        // As samtools faidx reads them.
+        let r = open(">a\nACGT \nACGT \nAC\n").unwrap();
+        assert_eq!(r.fetch("a", 1, 99).unwrap(), b"ACGTACGTAC");
+        assert_eq!(r.fetch("a", 4, 6).unwrap(), b"TAC");
+    }
+
+    #[test]
+    fn a_fai_for_trailing_spaces_reads_without_them() {
+        // The .fai samtools faidx writes for this file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ref.fa");
+        std::fs::write(&path, ">a\nACGT \nACGT \nAC\n").unwrap();
+        std::fs::write(dir.path().join("ref.fa.fai"), "a\t10\t3\t4\t6\n").unwrap();
+        let r = Reference::open(&path, &Progress::new()).unwrap();
+        assert_eq!(r.fetch("a", 1, 99).unwrap(), b"ACGTACGTAC");
+    }
+
+    #[test]
+    fn a_space_among_bases_is_refused() {
+        assert_eq!(
+            open(">a\nAC GT\nACGT\n").unwrap_err(),
+            "not a readable FASTA: line 2 (in a) has a space or tab among its bases. \
+             Rewrap the file, for example with seqkit seq -w 60"
+        );
+        assert_eq!(
+            open(">a\nACGT\n \t\nACGT\n").unwrap_err(),
+            "not a readable FASTA: line 3 (in a) is blank, but more of a follows it. \
+             Rewrap the file, for example with seqkit seq -w 60"
+        );
+    }
+
+    #[test]
+    fn a_sequence_with_no_bases_is_left_out() {
+        // As samtools faidx leaves it out of its .fai.
+        let r = open(">a\n>b\nTTTT\n>c\n\n").unwrap();
+        assert!(!r.has("a") && !r.has("c"));
+        assert_eq!(r.fetch("b", 1, 4).unwrap(), b"TTTT");
+    }
+
+    #[test]
+    fn indexing_stops_when_cancelled() {
+        let progress = Progress::new();
+        progress.cancel();
+        let text = ">a\nACGT\n".repeat(10);
+        assert!(matches!(
+            index(text.as_bytes(), &progress),
+            Err(Problem::Cancelled)
+        ));
     }
 
     #[test]
@@ -448,10 +552,6 @@ mod tests {
         assert_eq!(
             open("ACGT\n>a\nACGT\n").unwrap_err(),
             "not a readable FASTA: line 1 comes before the first > header"
-        );
-        assert_eq!(
-            open(">a\n>b\nACGT\n").unwrap_err(),
-            "not a readable FASTA: a (line 1) has no bases"
         );
         assert_eq!(
             open(">\nACGT\n").unwrap_err(),
