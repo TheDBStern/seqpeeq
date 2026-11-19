@@ -113,7 +113,9 @@ impl BamExport {
                     clip: *clip,
                 },
             )?))),
-            BamCmd::Ref { .. } => unreachable!("bam ref is not an export"),
+            BamCmd::Ref { .. } | BamCmd::Stack { .. } | BamCmd::Unstack => {
+                unreachable!("only exports are planned here")
+            }
         }
     }
 

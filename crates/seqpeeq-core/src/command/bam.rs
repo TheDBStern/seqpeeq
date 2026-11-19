@@ -47,6 +47,13 @@ pub enum BamCmd {
         #[arg(long)]
         everywhere: bool,
     },
+    /// Stack the current BAM with an open BAM that has the same contigs.
+    Stack {
+        /// The open BAM: its path, or just its file name
+        file: PathBuf,
+    },
+    /// Split the current BAM's stack back into separate tabs.
+    Unstack,
     /// Write a stretch of the reference to a new FASTA.
     ExportRef {
         /// contig:start-end, or a contig's name for all of it
@@ -64,13 +71,16 @@ impl BamCmd {
             BamCmd::ExportRegion { .. } => "export-region",
             BamCmd::ExportRef { .. } => "export-ref",
             BamCmd::ExportReads { .. } => "export-reads",
+            BamCmd::Stack { .. } => "stack",
+            BamCmd::Unstack => "unstack",
         }
     }
 
     pub(super) fn write(&self, words: &mut Words) -> Result<()> {
         words.word(self.name());
         match self {
-            BamCmd::Ref { file } => words.positional(path_word(file)?),
+            BamCmd::Ref { file } | BamCmd::Stack { file } => words.positional(path_word(file)?),
+            BamCmd::Unstack => {}
             BamCmd::ExportRegion { region, out } | BamCmd::ExportRef { region, out } => {
                 words.flag("--out", path_word(out)?);
                 words.positional(region);

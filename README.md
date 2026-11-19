@@ -302,6 +302,8 @@ step. Type them after `:` in the interface. The examples here start from names l
 | `bam export-region REGION --out FILE` | Write every record overlapping a region to a new BAM, with its index. |
 | `bam export-reads [--region REGION] [--name NAME … \| --names-file FILE] [--with-mates] [--clip] [--everywhere] --out FILE` | Write reads to a new BAM, FASTA or FASTQ, chosen by `--out`'s extension. See below. |
 | `bam export-ref REGION --out FILE` | Write a stretch of the reference to a new FASTA. |
+| `bam stack FILE` | Stack the current BAM with an open BAM that has the same contigs. |
+| `bam unstack` | Split the current BAM's stack back into tabs. |
 
 The options of `bam export-reads`:
 

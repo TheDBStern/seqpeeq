@@ -10,7 +10,7 @@ use noodles::csi::BinningIndex as _;
 use noodles::csi::binning_index::ReferenceSequence as _;
 
 use super::testing::{bam_from_sam, fixture, header_bam};
-use crate::{Command, Error, Outcome, Session, Started};
+use crate::{BamCmd, Command, Error, Outcome, Session, Started};
 
 /// A session with no log whose cache folder is `cache`.
 fn session(cache: &Path) -> Session {
@@ -1821,4 +1821,97 @@ fn closing_a_member_leaves_the_stack_and_a_stack_of_one_dissolves() {
         out.message
     );
     assert!(s.stacks().is_empty());
+}
+
+/// A session with the fixture's reads.bam and, for each name, a
+/// header-only BAM with the fixture's contigs, opened in that order.
+fn stacked(data: &Path, cache: &Path, names: &[&str]) -> Session {
+    let f = fixture(data);
+    let mut s = session(cache);
+    open(&mut s, &f.bam).unwrap();
+    for name in names {
+        open(&mut s, &header_bam(data, name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    s
+}
+
+#[test]
+fn unstack_splits_and_stack_joins_again() {
+    let (data, cache) = dirs();
+    let mut s = stacked(data.path(), cache.path(), &["b.bam"]);
+    let (a, b) = (s.datasets()[0].id, s.datasets()[1].id);
+    let out = ex(&mut s, "bam unstack").unwrap();
+    assert_eq!(out.message, "unstacked reads.bam and b.bam");
+    assert!(s.stacks().is_empty());
+    let out = ex(&mut s, "bam stack reads.bam").unwrap();
+    assert_eq!(out.message, "stacked b.bam with reads.bam");
+    assert_eq!(s.stacks(), &[vec![a, b]]);
+    let path = s.datasets()[0].path.clone();
+    assert_eq!(
+        Command::parse_line(s.history().last().unwrap()).unwrap(),
+        Command::Bam(BamCmd::Stack { file: path })
+    );
+}
+
+#[test]
+fn stack_and_unstack_say_why_they_cannot() {
+    let (data, cache) = dirs();
+    let mut s = stacked(data.path(), cache.path(), &["b.bam", "c.bam", "d.bam"]);
+    let err = |s: &mut Session, line: &str| ex(s, line).unwrap_err().to_string();
+    // d.bam opened on its own: the stack was full.
+    assert_eq!(err(&mut s, "bam unstack"), "d.bam is not stacked");
+    assert_eq!(
+        err(&mut s, "bam stack reads.bam"),
+        "reads.bam's stack already holds 3 BAMs"
+    );
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "a BAM cannot be stacked with itself"
+    );
+    ex(&mut s, "use 2").unwrap();
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "b.bam is already stacked; bam unstack first"
+    );
+    fs::write(data.path().join("t.nwk"), "(A,B);").unwrap();
+    open(&mut s, &data.path().join("t.nwk")).unwrap();
+    open(
+        &mut s,
+        &header_bam(data.path(), "e.bam", &[("c1", 1000), ("x", 5)]),
+    )
+    .unwrap();
+    assert_eq!(err(&mut s, "bam stack t.nwk"), "t.nwk is not an open BAM");
+    assert_eq!(
+        err(&mut s, "bam stack d.bam"),
+        "e.bam's contigs differ from d.bam's; a stack needs the same contigs, by name and length"
+    );
+}
+
+#[test]
+fn a_replayed_session_stacks_the_same_way() {
+    let (data, cache) = dirs();
+    let log = data.path().join("s.log");
+    let f = fixture(data.path());
+    let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+    s.set_cache_dir(cache.path().to_path_buf());
+    open(&mut s, &f.bam).unwrap();
+    for name in ["b.bam", "c.bam"] {
+        open(&mut s, &header_bam(data.path(), name, &FIXTURE_CONTIGS)).unwrap();
+    }
+    ex(&mut s, "bam unstack").unwrap();
+    ex(&mut s, "use 3").unwrap();
+    ex(&mut s, "bam stack reads.bam").unwrap();
+    let by_position = |s: &Session| -> Vec<Vec<usize>> {
+        let at = |id: &u64| s.datasets().iter().position(|d| d.id == *id).unwrap();
+        s.stacks()
+            .iter()
+            .map(|m| m.iter().map(at).collect())
+            .collect()
+    };
+    assert_eq!(by_position(&s), vec![vec![0, 2]]);
+
+    let text = fs::read_to_string(&log).unwrap();
+    let mut again = session(cache.path());
+    crate::replay(&text, &mut again).unwrap();
+    assert_eq!(by_position(&again), vec![vec![0, 2]]);
 }
