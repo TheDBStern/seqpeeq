@@ -1836,7 +1836,7 @@ mod tests {
         assert_eq!(s.history(), [format!("open {}", fa.display())]);
         let text = fs::read_to_string(&log).unwrap();
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines[0], "# seqpeeq 0.1.0");
+        assert_eq!(lines[0], format!("# seqpeeq {}", env!("CARGO_PKG_VERSION")));
         assert_eq!(lines[1], "# started 2026-11-15T16:05:03-08:00");
         assert!(lines[2].starts_with("# cwd /"), "{}", lines[2]);
         assert_eq!(lines[3], "# 2026-11-15T16:05:03-08:00");

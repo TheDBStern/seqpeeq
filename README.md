@@ -61,7 +61,7 @@ The GitHub releases have:
 Download, check and unpack one in a terminal:
 
 ```sh
-v=v0.1.0
+v=v0.2.0
 t=aarch64-apple-darwin           # on Linux: t=x86_64-unknown-linux-musl
 f=seqpeeq-$v-$t.tar.gz
 curl -fLO https://github.com/TheDBStern/seqpeeq/releases/download/$v/$f
