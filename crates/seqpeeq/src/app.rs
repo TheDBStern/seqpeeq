@@ -17,7 +17,8 @@ use seqpeeq_core::{
 use crate::bam_view::{BamView, Loaded, Want};
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
-    Axis, Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Shape, Typed, parse_goto,
+    Axis, Cell, Colouring, MsaView, Pending, Picked, Region, Search, SelKind, Shape, Typed,
+    parse_goto,
 };
 use crate::tree_view::{TreeSearch, TreeView, common_ancestor};
 use crate::ui;
@@ -1984,21 +1985,32 @@ impl App {
             return;
         };
         let (tree, facts) = (doc.tree(), doc.facts());
-        let n = view.picked.first().copied().unwrap_or(view.cursor);
         let name = |n| tree.label(n).unwrap_or_default();
-        let tips = facts.tips(n) as usize;
-        let names: std::collections::HashSet<String> = tree
-            .preorder_from(n)
-            .into_iter()
-            .filter(|&n| tree.is_tip(n))
-            .map(|n| name(n).to_string())
-            .collect();
-        let search = Search {
-            pattern: format!(
-                "tips of {} … {}",
-                name(facts.first_tip(n)),
-                name(facts.last_tip(n))
+        let (tips, pattern) = match view.picked[..] {
+            [] | [_] => {
+                let n = view.picked.first().copied().unwrap_or(view.cursor);
+                let tips: Vec<NodeId> = tree
+                    .preorder_from(n)
+                    .into_iter()
+                    .filter(|&n| tree.is_tip(n))
+                    .collect();
+                let pattern = format!(
+                    "tips of {} … {}",
+                    name(facts.first_tip(n)),
+                    name(facts.last_tip(n))
+                );
+                (tips, pattern)
+            }
+            _ => (
+                view.picked_tips(tree),
+                format!("tips of {} picks", view.picked.len()),
             ),
+        };
+        let names: std::collections::HashSet<String> =
+            tips.iter().map(|&n| name(n).to_string()).collect();
+        let tips = tips.len();
+        let search = Search {
+            pattern,
             matches: Vec::new(),
             revision: alignment.revision(),
             names: Some(Arc::new(names)),
@@ -2016,12 +2028,18 @@ impl App {
             matches.iter().map(|&row| alignment.name(row)).collect();
         let have = if tips == 1 { "tip has" } else { "tips have" };
         let message = format!(
-            "{} of {tips} {have} a sequence; n N step through them",
+            "{} of {tips} {have} a sequence; e extract  d delete  n N step",
             found.len()
         );
         let first = matches[0];
+        let rows = Ranges::new(matches.iter().map(|&row| row..row + 1));
         self.active = index;
         if let Some(view) = self.views.get_mut(&linked) {
+            view.clear_selection();
+            view.picked = rows.map(|ranges| Picked {
+                axis: Axis::Rows,
+                ranges,
+            });
             view.search = Some(Search { matches, ..search });
         }
         self.go_to_match(Some((0, first)));
@@ -5100,6 +5118,27 @@ mod tests {
     }
 
     #[test]
+    fn a_with_two_picks_selects_both_clades_rows() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n>D\nTT\n");
+        put_cursor(&mut app, "A");
+        type_str(&mut app, " ");
+        put_cursor(&mut app, "C");
+        type_str(&mut app, " a");
+        assert_eq!(view_of(&app).search.as_ref().unwrap().matches, [0, 2]);
+        assert_eq!(selected(&app), "1,3 × -");
+        assert_eq!(
+            app.status,
+            "2 of 2 tips have a sequence; e extract  d delete  n N step"
+        );
+        type_str(&mut app, "e");
+        assert_eq!(prompt_text(&app), ":msa extract --rows 1,3 --out ");
+        app.handle_event(&press(KeyCode::Esc));
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "msa delete-rows --rows 1,3");
+    }
+
+    #[test]
     fn a_marks_the_clades_sequences_in_the_linked_alignment() {
         let (mut app, dir) = with_tree("((A,B),(C,X));");
         link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n>D\nTT\n");
@@ -5109,9 +5148,10 @@ mod tests {
         assert_eq!(view.search.as_ref().unwrap().matches, [2]);
         assert_eq!(view.cursor.row, 2);
         assert_eq!(alignment.name(2), "C");
+        assert_eq!(selected(&app), "3 × -", "the rows are selected too");
         assert_eq!(
             app.status,
-            "1 of 2 tips have a sequence; n N step through them"
+            "1 of 2 tips have a sequence; e extract  d delete  n N step"
         );
         run_typed(&mut app, "msa rename --rows 3 --to Q");
         type_str(&mut app, "n");
