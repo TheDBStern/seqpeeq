@@ -92,7 +92,7 @@ seqpeeq aln.fa          # open an alignment (also: tree.nwk, reads.bam, or sever
 4. Press `w` to save the whole alignment to a new file. Type its name at the prompt and press Enter.
 5. Press `q` to quit.
 
-You can select reads, bases, or clades by clicking and dragging. Hold a drag across a BAM's reads past their edge and they scroll on, selecting as they go. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
+You can select reads, bases, or clades by clicking and dragging. Right-click, or press Space, on sequence names, column numbers or tree tips to pick several that aren't next to each other. Hold a drag across a BAM's reads past their edge and they scroll on, selecting as they go. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
 
 Session logs are saved in the current folder as `seqpeeq-YYYYMMDD-HHMMSS.log`. To rerun a session without the interface:
 
@@ -118,12 +118,12 @@ Move      arrows hjkl   Shift+arrows jumps
           PgUp PgDn   Home End   g go to
           / search names   n N next, previous
 Select    drag   right-click extends   v V C   Esc clear
-Edit      d delete or gap   f fill   r rename
+          Space, right-click a name or number  pick
+Edit      d delete/gap   f fill   e extract   r rename
           many: msa rename --regex RE --replace TEXT
           i insert (shifts)   R type over   Esc stop
 Zoom      - out   + in   z view whole alignment
           u U undo redo   w save the whole alignment
-          e extract the selection
           c change colors   [ ] adjust name width
           msa delete-rows  delete-cols  fill  overwrite
           msa insert  remove  extract  rename
@@ -139,12 +139,13 @@ Zoom      - out   + in   z view whole alignment
 ```
 Tree      jk rows  h parent  l back  Enter open/close
           + - z zoom  b lengths  / n N find  v select
+          Space, right-click  pick several clades
           d prune  r rename  o re-root on branch
           O re-root at the midpoint
           many: tree rename --regex RE --replace TEXT
           w save the whole tree   e extract the clade
           s ladderize  u U undo redo
-          a go to the alignment
+          a select their sequences in the alignment
           p link to an open alignment
 ```
 

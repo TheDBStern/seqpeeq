@@ -635,12 +635,12 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          PgUp PgDn   Home End   g go to",
     "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
-    "Edit      d delete or gap   f fill   r rename",
+    "          Space, right-click a name or number  pick",
+    "Edit      d delete/gap   f fill   e extract   r rename",
     "          many: msa rename --regex RE --replace TEXT",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo   w save the whole alignment",
-    "          e extract the selection",
     "          c change colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
@@ -650,12 +650,13 @@ const HELP_ALIGNMENT: &[&str] = &[
 const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
+    "          Space, right-click  pick several clades",
     "          d prune  r rename  o re-root on branch",
     "          O re-root at the midpoint",
     "          many: tree rename --regex RE --replace TEXT",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo",
-    "          a go to the alignment",
+    "          a select their sequences in the alignment",
     "          p link to an open alignment",
 ];
 
@@ -1560,7 +1561,7 @@ pub(crate) mod tests {
         let screen = rows(&render(&app, 80, 24)).join("\n");
         for needle in [
             "w save the whole alignment",
-            "e extract the selection",
+            "e extract",
             "Tab completes a file name after :tree link",
             "hjkl",
             "PgUp",
@@ -1758,7 +1759,8 @@ pub(crate) mod tests {
             "Enter open/close",
             "b lengths",
             "o re-root on branch",
-            "a go to the alignment",
+            "a select their sequences in the alignment",
+            "Space, right-click  pick several clades",
             "O re-root at the midpoint",
             "many: tree rename --regex RE --replace TEXT",
         ] {
@@ -1775,6 +1777,7 @@ pub(crate) mod tests {
             "c change colors",
             "[ ] adjust name width",
             "many: msa rename --regex RE --replace TEXT",
+            "Space, right-click a name or number  pick",
         ] {
             assert!(help.contains(text), "{text}");
         }
