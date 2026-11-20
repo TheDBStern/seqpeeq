@@ -183,8 +183,9 @@ BAM       ] [ covered   } { no coverage   c list contigs
 | `*` | a deleted base |
 | `─` | a skipped stretch, such as an intron |
 | purple cell | bases are inserted just before it |
-| faint lower case | soft-clipped bases at a read's ends (`S` hides them) |
+| faint lower case | soft-clipped bases at a read's ends, colored by base (`S` hides them) |
 | `━━━▸` `◂━━━` | a read zoomed out, with its strand |
+| gray `─━━━▸─` | a zoomed-out read's soft-clipped ends (`S` hides them) |
 
 A read's color says what is unusual about it. The first of these that applies is used:
 

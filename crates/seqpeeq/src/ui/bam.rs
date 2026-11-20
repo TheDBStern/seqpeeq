@@ -872,13 +872,18 @@ fn draw_read(
     read: &Read,
     bases: &HashMap<u64, u8>,
 ) {
-    let mut style = palette::read(read_kind(read));
-    if read.mapq == 0 || !read.counts() {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    if view.selected.contains(&ReadId::of(read)) {
-        style = style.patch(palette::SELECTED);
-    }
+    let faint = read.mapq == 0 || !read.counts();
+    let selected = view.selected.contains(&ReadId::of(read));
+    let finish = |mut style: Style| {
+        if faint {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        if selected {
+            style = style.patch(palette::SELECTED);
+        }
+        style
+    };
+    let style = finish(palette::read(read_kind(read)));
     let end = view.end(length);
     let at = |pos: u64| {
         view.col_of(pos)
@@ -887,6 +892,16 @@ fn draw_read(
     };
     let reverse = read.reverse();
     if view.per_col > 1 {
+        let (from, to) = view.span(read);
+        let clip = finish(palette::read(read_kind(read)).patch(palette::CLIP));
+        for (a, b) in [(from, read.start.saturating_sub(1)), (read.end + 1, to)] {
+            let (a, b) = (a.max(view.left), b.min(end));
+            if let (true, Some(first), Some(last)) = (a <= b, at(a), at(b)) {
+                for x in first..=last {
+                    put(buf, x, y, '─', clip);
+                }
+            }
+        }
         let (a, b) = (read.start.max(view.left), read.end.min(end));
         if a > b {
             return;
@@ -940,7 +955,7 @@ fn draw_read(
             Piece::Inserted { before, .. } => inserted.push(before),
             Piece::Clipped { pos, base } if !view.hide_clips => {
                 if let Some(x) = at(pos) {
-                    let faint = style.add_modifier(Modifier::DIM);
+                    let faint = style.patch(palette::base(base)).add_modifier(Modifier::DIM);
                     put(buf, x, y, base.to_ascii_lowercase() as char, faint);
                 }
             }
@@ -1086,6 +1101,61 @@ mod tests {
                 .modifier
                 .contains(ratatui::style::Modifier::DIM)
         );
+    }
+
+    /// The cells of the screen row holding `mark`, with their symbols.
+    fn row_with<'a>(buffer: &'a Buffer, mark: &str) -> Vec<&'a ratatui::buffer::Cell> {
+        let area = buffer.area;
+        (area.y..area.y + area.height)
+            .map(|y| {
+                (area.x..area.x + area.width)
+                    .map(|x| &buffer[(x, y)])
+                    .collect::<Vec<_>>()
+            })
+            .find(|row| row.iter().any(|c| c.symbol() == mark))
+            .unwrap_or_else(|| panic!("no row holds {mark}"))
+    }
+
+    #[test]
+    fn zoomed_out_reads_show_their_clips_until_hidden() {
+        let sam = format!("{HEAD}k\t0\tc\t101\t60\t20S40M20S\t*\t0\t0\t*\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        let id = id(&app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = 2;
+        view.left = 1;
+        view.repack();
+        settle(&mut app);
+        let terminal = render(&app, 80, 14);
+        let row = row_with(terminal.backend().buffer(), "━");
+        let text: String = row.iter().map(|c| c.symbol()).collect();
+        let clip: Vec<_> = row.iter().filter(|c| c.symbol() == "─").collect();
+        assert_eq!(clip.len(), 20, "10 columns of clip at each end: {text}");
+        assert!(clip.iter().all(|c| c.fg == palette::CLIP.fg.unwrap()));
+        assert!(text.contains("─━") && text.contains("━▸─"), "{text}");
+
+        app.bams.get_mut(&id).unwrap().hide_clips = true;
+        app.bams.get_mut(&id).unwrap().repack();
+        let terminal = render(&app, 80, 14);
+        let row = row_with(terminal.backend().buffer(), "━");
+        assert!(!row.iter().any(|c| c.symbol() == "─"), "S hides them");
+    }
+
+    #[test]
+    fn clipped_bases_are_coloured_by_base() {
+        let sam = format!("{HEAD}k\t0\tc\t11\t60\t3S5M\t*\t0\t0\tACGAAAAA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        base_level_at(&mut app, 1);
+        let terminal = render(&app, 80, 14);
+        let row = row_with(terminal.backend().buffer(), "g");
+        for (letter, base) in [("a", b'A'), ("c", b'C'), ("g", b'G')] {
+            let cell = row.iter().find(|c| c.symbol() == letter).unwrap();
+            assert_eq!(cell.fg, palette::base(base).fg.unwrap(), "{letter}");
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "{letter} stays faint"
+            );
+        }
     }
 
     #[test]
