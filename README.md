@@ -6,27 +6,27 @@
 </h1>
 
 **seqpeeq** is a lightweight, terminal-based viewer of the following file types:
-- **multiple sequence alignments** (aligned FASTA);
-- **phylogenetic trees** (Newick);
-- **mapped reads** (sorted BAM).
+- **multiple sequence alignments** (aligned FASTA)
+- **phylogenetic trees** (Newick)
+- **mapped reads** (sorted BAM)
+
+It's for getting things done, not making figures
 
 #### Cool features: 
-- Easily open and process large file (see [benchmarks.md](docs/benchmarks.md))
+- Easily open and process large files (see [Benchmarks](#benchmarks))
 - Extract regions of an MSA
-- Extract or prune clades of a phylogeny.
+- Extract or prune clades of a phylogeny
 - Edit and delete bases, rows, columns, and seq names of an MSA
-- Link an MSA to a phylogeny to jointly edit both and extract sequences associated with a tips in a tree
-- Export reads, regions, or reference of a BAM file
+- Link a phylogeny to its MSA to jointly edit both and extract sequences associated with selected tips
+- Select and export regions of a BAM file in fasta, fastq, and BAM formats
 - Follow multi-mapped and split reads everywhere they align in a BAM
 - Jump to the next covered or 0-coverage region in a BAM
 
-**Input files are never changed.** Every result is written to a new file and seqpeeq refuses to overwrite a
-  file that already exists.
+**Input files are never mofidied.** Every result is written to a new file and files can't be overwritten.
 
-**Every change is logged.** Each command is written to a session log, which `seqpeeq replay` runs again to make the
-  same files.
+**Every change is logged.** Each command is written to a session log, which can be re-run with `seqpeeq replay`.
 
-## Install
+## Installation
 
 ### Conda environment
 
@@ -51,7 +51,7 @@ If you have a Rust toolchain already:
 cargo install --git https://github.com/TheDBStern/seqpeeq seqpeeq
 ```
 
-### Prebuilt program
+### Prebuilt
 
 The GitHub releases have:
 
@@ -62,11 +62,11 @@ Download, check and unpack one in a terminal:
 
 ```sh
 v=v0.2.0
-t=aarch64-apple-darwin           # on Linux: t=x86_64-unknown-linux-musl
+t=aarch64-apple-darwin           # on Linux use t=x86_64-unknown-linux-musl
 f=seqpeeq-$v-$t.tar.gz
 curl -fLO https://github.com/TheDBStern/seqpeeq/releases/download/$v/$f
 curl -fLO https://github.com/TheDBStern/seqpeeq/releases/download/$v/$f.sha256
-shasum -a 256 -c $f.sha256       # on Linux: sha256sum -c $f.sha256
+shasum -a 256 -c $f.sha256       # on Linux use sha256sum -c $f.sha256
 tar xzf $f
 ```
 
@@ -74,7 +74,7 @@ Then move `seqpeeq-$v-$t/seqpeeq` to a folder on your `PATH`, such as `~/.local/
 
 **On a Mac, download with `curl` as above, not with a browser.** 
 Fetching with `curl`, building with `cargo` or
-installing with conda should work fine. If you did use a browser, you can run this:
+installing with conda should work fine. If you did use a browser, you can run this to make it runnable:
 
 ```sh
 xattr -d com.apple.quarantine seqpeeq
@@ -92,7 +92,7 @@ seqpeeq aln.fa          # open an alignment (also: tree.nwk, reads.bam, or sever
 4. Press `w` to save the whole alignment to a new file. Type its name at the prompt and press Enter.
 5. Press `q` to quit.
 
-You can select reads, bases, or clades by clicking and dragging. Right-click, or press Space, on sequence names, column numbers or tree tips to pick several that aren't next to each other. Hold a drag across a BAM's reads past their edge and they scroll on, selecting as they go. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
+You can select reads, bases, or clades by clicking and dragging. Right-click, or press Space, on sequence names, column numbers or tree tips to pick several that aren't next to each other. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
 
 Session logs are saved in the current folder as `seqpeeq-YYYYMMDD-HHMMSS.log`. To rerun a session without the interface:
 
@@ -104,12 +104,12 @@ Other ways to run it:
 
 - `seqpeeq reads.bam --ref genome.fa` opens a BAM with its reference.
 - `seqpeeq run 'open aln.fa' 'msa delete-cols --cols 1-100' 'msa extract --out trimmed.fa'` runs commands with no
-  interface, as a script would.
+  interface (see [Commands](#commands)).
 - In the interface, `?` shows the keys for the tab in view, and `:` takes any command below.
 
 ## Keys
 
-`?` shows these pages in the program, for the kind of file in view.
+`?` pulls up the help menu for the open file type
 
 ### Alignment
 
@@ -128,11 +128,11 @@ Zoom      - out   + in   z view whole alignment
           msa delete-rows  delete-cols  fill  overwrite
           msa insert  remove  extract  rename
 ```
-`c` steps through three color modes:
+`c` cycles through three color modes:
 
-- **shade the consensus** (the default): a base is shaded when at least half of its column has it;
-- **color each base** by its letter;
-- **no color**.
+- **shade the majority base** (the default)
+- **color each base** by its letter
+- **no color**
 
 ### Tree
 
@@ -149,12 +149,12 @@ Tree      jk rows  h parent  l back  Enter open/close
           p link to an open alignment
 ```
 
-**Linking:** a tree is linked to an alignment when one has a sequence for every tip of the other. This happens on its
+**Linking:** a tree is linked to an alignment all the tips names match the MSA names. This happens on its
 own when you open the second file, or with `p` or `:tree link`. Once linked:
 
-- the alignment's rows follow the tree's order;
-- pruning a clade in the tree also deletes its sequences;
-- renaming a tip or a sequence renames it in both.
+- the alignment's rows follow the tree's order
+- pruning a clade in the tree also deletes its sequences
+- renaming a tip or a sequence renames it in both
 
 `:tree unlink` undoes the link.
 
@@ -175,45 +175,33 @@ BAM       ] [ covered   } { no coverage   c list contigs
           in those: S search the BAM   g go   / filter
 ```
 
-`g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. Write a name holding `:` in
-braces: `{HLA:01}:100`. In the `g` line, Tab finishes the contig name typed so far. If several contigs still match,
-it opens the contig list, filtered by what was typed; Enter puts the contig picked back on the line, to go there or
-add a position.
+`g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. If a contig has ':' in it's name, put it in braces like: `{HLA:01}:100`. Tab-completion works when selecting a contig name.
 
 **What the reads look like:**
 
 | Mark | Meaning |
 |---|---|
 | `.` `,` | a base that matches the reference, on the forward or reverse strand |
-| `A` `c` … | a base that differs: upper case forward, lower case reverse, colored A green, C blue, G yellow, T red |
-| `*` | a deleted base |
-| `─` | a skipped stretch, such as an intron |
-| purple cell | bases are inserted just before it |
-| faint lower case | soft-clipped bases at a read's ends, colored by base (`S` hides them) |
-| `━━━▸` `◂━━━` | a read zoomed out, with its strand |
-| gray `─━━━▸─` | a zoomed-out read's soft-clipped ends (`S` hides them) |
+| `A` `c` … | a mismatch relative to the reference; upper case forward, lower case reverse, colored A green, C blue, G yellow, T red |
+| `*` | a deletion |
+| `─` | a skipped stretch |
+| purple cell | insertion just before this position |
+| faint lower case | soft-clipped bases, colored by base (hide with `S`) |
+| `━━━▸` `◂━━━` | a zoomed-out read |
+| gray `─━━━▸─` | a zoomed-out read's soft-clipped ends (hide with `S`) |
 
-A read's color says what is unusual about it. The first of these that applies is used:
+Reads are colored as follows:
 
-- **magenta:** it is split, with a part aligned elsewhere;
-- **orange:** its mate is on another contig;
-- **blue:** it is paired but not a proper pair;
+- **magenta:** split, with part aligned elsewhere;
+- **orange:** mate is on another contig;
+- **blue:** paired but not a proper pair;
 - **no color:** none of these.
 
 A **dimmed** read has mapping quality 0, or is secondary, a duplicate or QC-failed. Dimmed reads don't count towards
 coverage. The blue bars along the top show coverage, and selected reads have a gray background.
 
-**Several BAMs:** BAMs mapped to the same reference can be seen one above another, to compare samples at one spot or
-to see assembled contigs over the reads.
+**Up to three BAMs can be stacked at once** if their headers share the same contig names.
 
-- BAMs whose headers list the same contigs, by name and length in any order, open as one stack of up to 3, with or
-  without `--ref`. So `seqpeeq a.bam b.bam --ref ref.fa` opens straight into a stack on one tab.
-- The stack shares one ruler and one reference row, and moves as one: moving, zooming and jumping in one BAM moves
-  them all.
-- Each BAM has its own name line, coverage and reads. Rows go to the BAMs whose reads need them, so a BAM of contigs
-  takes only a row or two.
-- One BAM has the focus, marked `▸`. Keys and commands act on it. `Tab` and `Shift+Tab` move the focus through the
-  stack and then on to the next tab, and a click focuses the BAM under it. The wheel scrolls the BAM under it.
 - `:bam ref FILE` attaches the reference to every BAM in the stack.
 - `:bam unstack` splits the stack back into tabs, and `:bam stack FILE` stacks the current BAM with another open one.
 
@@ -264,7 +252,7 @@ Each applies to the current file: the one opened last, or chosen with `use`.
 Rows can be chosen with `--rows`, with `--name NAME` (exact; repeatable), or with `--match REGEX` (searched for in
 names).
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `msa delete-rows --rows … \| --name … \| --match …` | Remove sequences. |
 | `msa delete-cols --cols COLS` | Remove columns. |
@@ -277,7 +265,7 @@ names).
 
 ### Trees
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `tree extract [clade] --out FILE [--seqs FILE] [--wrap N]` | Write a clade, or the whole tree with no clade given, to a new file. With `--seqs`, also write its tips' sequences from the linked alignment. |
 | `tree prune clade [--seqs]` | Remove a clade. `--seqs` also deletes its sequences from the linked alignment. |
@@ -316,7 +304,7 @@ step. Type them after `:` in the interface. The examples here start from names l
 
 ### BAMs
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `bam ref FILE` | Attach a reference FASTA to the current BAM, or to every BAM in its stack, for reference bases, mismatches and `export-ref`. |
 | `bam export-region REGION --out FILE` | Write every record overlapping a region to a new BAM, with its index. |
@@ -336,10 +324,10 @@ The options of `bam export-reads`:
 **The log file:**
 
 - Each session writes `seqpeeq-YYYYMMDD-HHMMSS.log` in the current folder.
-  - `--log PATH` puts it elsewhere.
-  - `--no-log` writes none.
-  - Logs aren't written if no command is run.
-  - An existing log is never overwritten or added to.
+  - `--log PATH` to write it to PATH instead.
+  - `--no-log` to turn of logging.
+  - Logs aren't written if no commands are run.
+  - An existing log is never overwritten or ammended.
 - Every command, opens included, one per line, with timestamps and notes as `#` comments are saved in the log.
   - Scrolling, zooming and selecting are not logged.
   - Undo and redo are logged, so a replay follows exactly what happened.
@@ -349,12 +337,12 @@ The options of `bam export-reads`:
 
 **Replaying:**
 
-- Since outputs are never overwritten, replay into a folder where the log's output files don't exist yet. Moving or
+- Since outputs are never overwritten, you should `replay` into a folder where the log's output files don't exist yet. Moving or
   deleting the earlier outputs also works.
 - Paths are kept as they were typed, so relative paths are read from the folder you replay in. Copy the inputs
   there, or give full paths when you work.
 
-**If the log fails:** when the log can't be written (a full disk, say), seqpeeq refuses further changes rather than
+**If the log fails:** when the log can't be written (a full disk, e.g.), seqpeeq refuses further changes rather than
 make ones it can't record. `:rescue FILE` still saves the current alignment, so no work is lost.
 
 ## Limits
@@ -369,8 +357,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, 
 size.
 For example, on an Apple M2 laptop:
 
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 0.65 s; Jalview takes 6.5 minutes and 15 GB,
-  near the 16 GB it was given.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in 0.65 s; Jalview takes 6.5 minutes and 15 GB.
 - **A tree of a million tips:** seqpeeq draws it in 0.44 s; FigTree takes 26 s.
 
 ## Changes
