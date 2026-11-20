@@ -92,7 +92,7 @@ seqpeeq aln.fa          # open an alignment (also: tree.nwk, reads.bam, or sever
 4. Press `w` to save the whole alignment to a new file. Type its name at the prompt and press Enter.
 5. Press `q` to quit.
 
-You can select reads, bases, or clades by clicking and dragging. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
+You can select reads, bases, or clades by clicking and dragging. Hold a drag across a BAM's reads past their edge and they scroll on, selecting as they go. Fast-move by holding Shift. Left-right scroll in BAMs or MSAs by hovering over the reference coordinates and scrolling up or down with the mouse wheel / trackpad.
 
 Session logs are saved in the current folder as `seqpeeq-YYYYMMDD-HHMMSS.log`. To rerun a session without the interface:
 

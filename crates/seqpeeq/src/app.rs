@@ -344,9 +344,8 @@ pub struct App {
     pub pass_failed: HashSet<(u64, usize)>,
     /// The window being read for a BAM view.
     pub reading: Option<bam::Reading>,
-    /// Where a drag across a BAM's reads started: the first and last
-    /// positions of its column, and its row of reads.
-    pub bam_drag: Option<((u64, u64), usize)>,
+    /// A drag across a BAM's reads, while the button is held.
+    pub bam_drag: Option<bam::BamDrag>,
     /// The span of the column pressed on the ruler band, for a drag there
     /// to mark a stretch.
     pub ruler_drag: Option<(u64, u64)>,
@@ -937,6 +936,7 @@ impl App {
             || self.jumping.is_some()
             || !self.gathering.is_empty()
             || self.searches.values().any(|s| s.running.is_some())
+            || self.bam_drag.as_ref().is_some_and(|d| d.edge != (0, 0))
     }
 
     /// Show how a command went. `None` means it is running in the
@@ -993,6 +993,7 @@ impl App {
                 // Esc lets go of the selection if there is one; otherwise it
                 // stops the work running in the background.
                 KeyCode::Esc => {
+                    self.bam_drag = None;
                     if self.bam_esc() {
                         return;
                     }

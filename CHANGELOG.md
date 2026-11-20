@@ -15,6 +15,8 @@ All notable changes to seqpeeq are listed here. The format follows
 
 - Soft-clipped bases are colored by base at base level, and zoomed-out reads show their clipped ends as gray
   tails. `S` hides clips at both zoom levels.
+- A drag across a BAM's reads held past their edge keeps scrolling that way and selecting, so a selection can be
+  larger than the screen.
 
 ## [0.2.0] - 2026-11-19
 

@@ -108,6 +108,7 @@ fn turns(
         while let Some(done) = worker.poll() {
             app.handle_done(done);
         }
+        app.tick(std::time::Instant::now());
     }
     Ok(())
 }

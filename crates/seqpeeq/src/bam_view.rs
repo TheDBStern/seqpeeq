@@ -820,6 +820,19 @@ impl BamView {
             .unwrap_or_default()
     }
 
+    /// The packed row `read` is on, if it is loaded and shown.
+    pub fn row_of(&self, read: &ReadId) -> Option<usize> {
+        let reads = self.reads();
+        let is = |r: &Read| {
+            (r.start, r.end, r.flags, r.contig) == (read.start, read.end, read.flags, read.contig)
+                && r.name == read.name
+        };
+        self.packed
+            .rows
+            .iter()
+            .position(|row| row.iter().any(|&i| is(&reads[i])))
+    }
+
     /// The read drawn at column `col` of screen row `row` of reads.
     pub fn read_at(&self, col: usize, row: usize) -> Option<usize> {
         self.read_in_row(self.top + row, self.span_of(col))
