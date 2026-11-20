@@ -489,8 +489,13 @@ pub fn info_text(app: &App) -> (String, String) {
             parts.push(format!("length {length}"));
         }
         left = parts.join(" · ");
-        if let Some(select) = view.select {
-            right.push(format!("selected: {}", tips(facts.tips(select))));
+        match view.picked[..] {
+            [] => {}
+            [one] => right.push(format!("selected: {}", tips(facts.tips(one)))),
+            _ => {
+                let count = view.picked_tips(tree).len() as u32;
+                right.push(format!("selected: {}", tips(count)));
+            }
         }
         if doc.is_modified() {
             right.push("unsaved".to_string());

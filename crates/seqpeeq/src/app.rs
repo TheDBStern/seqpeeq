@@ -998,9 +998,9 @@ impl App {
                         return;
                     }
                     if let Some((_, view)) = self.tree_view_mut()
-                        && view.select.is_some()
+                        && !view.picked.is_empty()
                     {
-                        view.select = None;
+                        view.picked.clear();
                     } else if let Some(view) = self.view_mut().filter(|view| view.has_selection()) {
                         view.clear_selection();
                     } else if let Some((_, view)) = self
@@ -1896,7 +1896,8 @@ impl App {
             KeyCode::Char('-') => view.zoom_out(tree, facts),
             KeyCode::Char('z') => view.zoom_whole(tree, facts),
             KeyCode::Char('b') => view.equal = !view.equal,
-            KeyCode::Char('v') => view.select = Some(view.cursor),
+            KeyCode::Char('v') => view.pick_only(view.cursor),
+            KeyCode::Char(' ') => view.toggle_pick(view.cursor),
             KeyCode::Char('/') => self.open_prompt(PromptKind::Search, ""),
             KeyCode::Char('n') => self.search_step(true),
             KeyCode::Char('N') => self.search_step(false),
@@ -1923,7 +1924,17 @@ impl App {
             return;
         };
         let (tree, facts) = (doc.tree(), doc.facts());
-        let n = view.select.unwrap_or(view.cursor);
+        if let [_, _, ..] = view.picked[..] {
+            let KeyCode::Char(key) = code else {
+                return;
+            };
+            let picks = view.picked.len();
+            self.status = format!(
+                "error: {key} acts on one clade; a takes the {picks} picks to the alignment"
+            );
+            return;
+        }
+        let n = view.picked.first().copied().unwrap_or(view.cursor);
         let at = tree.sel_for(n, facts);
         // A linked pair is kept matched: the gesture edits both files.
         let seqs = self.session.link_of(dataset.id).is_some();
@@ -1973,7 +1984,7 @@ impl App {
             return;
         };
         let (tree, facts) = (doc.tree(), doc.facts());
-        let n = view.select.unwrap_or(view.cursor);
+        let n = view.picked.first().copied().unwrap_or(view.cursor);
         let name = |n| tree.label(n).unwrap_or_default();
         let tips = facts.tips(n) as usize;
         let names: std::collections::HashSet<String> = tree
@@ -2110,8 +2121,9 @@ impl App {
         );
     }
 
-    /// The mouse on the tree tab: click selects, right-click or
-    /// Shift-click extends, the wheel moves the cursor three rows.
+    /// The mouse on the tree tab: click selects, right-click picks or
+    /// unpicks, Shift-click widens the last pick, the wheel moves the
+    /// cursor three rows.
     fn tree_mouse(&mut self, mouse: &MouseEvent) {
         const ROWS: isize = 3;
         let screen = ratatui::layout::Rect::new(0, 0, self.screen.width, self.screen.height);
@@ -2121,24 +2133,25 @@ impl App {
         };
         let (tree, facts) = (doc.tree(), doc.facts());
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        let extend = match mouse.kind {
+        let button = match mouse.kind {
             MouseEventKind::ScrollUp => return view.step(tree, facts, -ROWS),
             MouseEventKind::ScrollDown => return view.step(tree, facts, ROWS),
-            MouseEventKind::Down(MouseButton::Left) => shift,
-            MouseEventKind::Down(MouseButton::Right) => true,
+            MouseEventKind::Down(button) => button,
             _ => return,
         };
         let layout = ui::tree::tree_layout(body, doc, view);
         let Some(n) = ui::tree::hit(&layout, doc, view, mouse.column, mouse.row) else {
             return;
         };
-        if extend {
-            let from = view.select.unwrap_or(view.cursor);
-            view.select = Some(common_ancestor(tree, facts, from, n));
-        } else {
-            view.select = Some(n);
-            view.cursor = n;
-            view.refit(tree, facts, view.height);
+        match button {
+            MouseButton::Right => view.toggle_pick(n),
+            MouseButton::Left if shift => view.extend_last(tree, facts, n),
+            MouseButton::Left => {
+                view.pick_only(n);
+                view.cursor = n;
+                view.refit(tree, facts, view.height);
+            }
+            MouseButton::Middle => {}
         }
     }
 
@@ -4720,16 +4733,67 @@ mod tests {
     #[test]
     fn clicks_select_extend_and_escape_clears() {
         let (mut app, _dir) = with_tree(T6);
+        let (a, c) = (tip_of(&app, "A"), tip_of(&app, "C"));
         click_node(&mut app, "A", NONE, LEFT);
-        assert_eq!(tree_view(&app).select, Some(tip_of(&app, "A")));
+        assert_eq!(tree_view(&app).picked, [a]);
         click_node(&mut app, "B", KeyModifiers::SHIFT, LEFT);
-        assert_eq!(tree_view(&app).select, Some(parent_of(&app, "A")));
+        assert_eq!(tree_view(&app).picked, [parent_of(&app, "A")]);
         click_node(&mut app, "C", NONE, MouseButton::Right);
-        assert_eq!(tree_view(&app).select, Some(root_of(&app)));
+        assert_eq!(tree_view(&app).picked, [parent_of(&app, "A"), c]);
+        click_node(&mut app, "C", NONE, MouseButton::Right);
+        assert_eq!(tree_view(&app).picked, [parent_of(&app, "A")]);
+        click_node(&mut app, "C", NONE, MouseButton::Right);
+        click_node(&mut app, "D", KeyModifiers::SHIFT, LEFT);
+        assert_eq!(
+            tree_view(&app).picked,
+            [parent_of(&app, "A"), parent_of(&app, "C")],
+            "Shift-click widens the last pick"
+        );
         app.handle_event(&press(KeyCode::Esc));
-        assert_eq!(tree_view(&app).select, None);
+        assert!(tree_view(&app).picked.is_empty());
         type_str(&mut app, "v");
-        assert_eq!(tree_view(&app).select, Some(tree_view(&app).cursor));
+        assert_eq!(tree_view(&app).picked, [tree_view(&app).cursor]);
+    }
+
+    #[test]
+    fn space_toggles_picks_and_the_count_is_their_tips() {
+        let (mut app, _dir) = with_tree(T6);
+        put_cursor(&mut app, "A");
+        type_str(&mut app, " ");
+        put_cursor(&mut app, "D");
+        type_str(&mut app, " ");
+        assert_eq!(tree_view(&app).picked.len(), 2);
+        assert!(ui::info_text(&app).1.contains("selected: 2 tips"));
+        let ab = parent_of(&app, "A");
+        put_cursor_on(&mut app, ab);
+        type_str(&mut app, " ");
+        assert!(
+            ui::info_text(&app).1.contains("selected: 3 tips"),
+            "A is counted once: {}",
+            ui::info_text(&app).1
+        );
+        type_str(&mut app, " ");
+        assert_eq!(tree_view(&app).picked.len(), 2, "Space again unpicks");
+    }
+
+    #[test]
+    fn several_picks_refuse_d_o_r_e() {
+        let (mut app, _dir) = with_tree(T6);
+        put_cursor(&mut app, "A");
+        type_str(&mut app, " ");
+        put_cursor(&mut app, "D");
+        type_str(&mut app, " ");
+        let before = last(&app).to_string();
+        for key in ['d', 'o', 'r', 'e'] {
+            type_str(&mut app, &key.to_string());
+            assert_eq!(
+                app.status,
+                format!("error: {key} acts on one clade; a takes the 2 picks to the alignment")
+            );
+            assert!(matches!(app.mode, Mode::Normal), "{key}");
+            assert_eq!(last(&app), before, "{key} logged nothing");
+        }
+        assert_eq!(shown_tree(&app).tips().len(), 6, "nothing was pruned");
     }
 
     #[test]

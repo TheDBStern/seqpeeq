@@ -175,15 +175,12 @@ fn geometry(doc: &TreeDoc, view: &TreeView, branch_width: usize) -> Geometry {
     g
 }
 
-/// Whether row `y` is in the selected clade.
+/// Whether row `y` is in a picked clade.
 fn selected(view: &TreeView, y: usize) -> bool {
-    match view.select {
-        Some(s) => match view.extent.get(&s) {
-            Some(&(first, last)) => (first..=last).contains(&y),
-            None => view.rows[y].node == s,
-        },
-        None => false,
-    }
+    view.picked.iter().any(|s| match view.extent.get(s) {
+        Some(&(first, last)) => (first..=last).contains(&y),
+        None => view.rows[y].node == *s,
+    })
 }
 
 const UP: u8 = 1;
