@@ -6,6 +6,7 @@
 //! `seqpeeq run` takes, so the three can never drift apart.
 
 pub mod bam;
+pub mod help;
 pub mod msa;
 pub mod tree;
 
