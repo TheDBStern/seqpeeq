@@ -147,6 +147,8 @@ Tree      jk rows  h parent  l back  Enter open/close
           s ladderize  u U undo redo
           a select their sequences in the alignment
           p link to an open alignment
+          tree extract  prune  reroot  ladderize  rename
+          tree link  unlink
 ```
 
 **Linking:** a tree is linked to an alignment all the tips names match the MSA names. This happens on its
@@ -167,12 +169,13 @@ BAM       ] [ covered   } { no coverage   c list contigs
           m mate   s other part   ' back
           - + z zoom  F toggle filtered  S toggle clips
           click, drag, Space select   Esc clear
-          Tab next BAM in a stack   :bam unstack
+          Tab next BAM in a stack   :bam stack  unstack
           drag the column numbers, v v  a stretch
           e export reads   E reference   to a file
           a visualize all alignments for a read
           A list all alignments for a read
           in those: S search the BAM   g go   / filter
+          bam ref export-region export-reads export-ref
 ```
 
 `g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. If a contig has ':' in it's name, put it in braces like: `{HLA:01}:100`. Tab-completion works when selecting a contig name.
@@ -209,7 +212,7 @@ coverage. The blue bars along the top show coverage, and selected reads have a g
 
 ```
 View      Tab next file   L log   ? help   q quit
-Commands  :  open FILE   close   use N   undo   redo
+Commands  :open close use undo redo   :CMD -h details
           :rescue FILE if the log has failed
           Tab completes a file name after :tree link
 Mouse     wheel on the column numbers scrolls sideways
@@ -228,6 +231,9 @@ The same commands work in four places:
 - in `seqpeeq replay`.
 
 Each applies to the current file: the one opened last, or chosen with `use`.
+
+Add `-h` or `--help` to a command after `:` to see its help, e.g. `:msa fill -h`. `:msa -h`, `:tree -h` and `:bam -h`
+list each file type's commands, and `:help` lists them all. `seqpeeq run "msa fill -h"` prints the same help.
 
 **Naming things in commands:**
 

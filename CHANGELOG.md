@@ -15,6 +15,10 @@ All notable changes to seqpeeq are listed here. The format follows
   command such as `msa delete-rows --rows 1,3`.
 - Several tips or clades of a tree can be picked with `Space` or right-click. `a` then selects all their sequences
   in the linked alignment.
+- `:COMMAND -h` (or `--help`) shows a command's help, as in the README: how to write it, what it does, and what its
+  options and names mean. `:msa -h`, `:tree -h` and `:bam -h` list a file type's commands, and `:help` lists them
+  all. `seqpeeq run "COMMAND -h"` prints the same help and runs nothing.
+- `?` names every command for the file in view.
 
 ### Changed
 

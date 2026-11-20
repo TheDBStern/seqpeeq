@@ -661,6 +661,8 @@ const HELP_TREE: &[&str] = &[
     "          s ladderize  u U undo redo",
     "          a select their sequences in the alignment",
     "          p link to an open alignment",
+    "          tree extract  prune  reroot  ladderize  rename",
+    "          tree link  unlink",
 ];
 
 /// The keys of a BAM tab.
@@ -671,18 +673,19 @@ const HELP_BAM: &[&str] = &[
     "          m mate   s other part   ' back",
     "          - + z zoom  F toggle filtered  S toggle clips",
     "          click, drag, Space select   Esc clear",
-    "          Tab next BAM in a stack   :bam unstack",
+    "          Tab next BAM in a stack   :bam stack  unstack",
     "          drag the column numbers, v v  a stretch",
     "          e export reads   E reference   to a file",
     "          a visualize all alignments for a read",
     "          A list all alignments for a read",
     "          in those: S search the BAM   g go   / filter",
+    "          bam ref export-region export-reads export-ref",
 ];
 
 /// The keys every tab has, after its own.
 const HELP_SHARED: &[&str] = &[
     "View      Tab next file   L log   ? help   q quit",
-    "Commands  :  open FILE   close   use N   undo   redo",
+    "Commands  :open close use undo redo   :CMD -h details",
     "          :rescue FILE if the log has failed",
     "          Tab completes a file name after :tree link",
     "Mouse     wheel on the column numbers scrolls sideways",
@@ -1043,6 +1046,32 @@ pub(crate) mod tests {
     fn command_help(line: &str) -> Mode {
         let page = seqpeeq_core::help_request(line).unwrap().unwrap();
         Mode::CommandHelp(crate::app::CommandHelp::new(page))
+    }
+
+    #[test]
+    fn each_help_page_names_its_commands_and_how_to_get_details() {
+        use seqpeeq_core::command::help::ENTRIES;
+        for (group, page) in [
+            ("msa", HELP_ALIGNMENT),
+            ("tree", HELP_TREE),
+            ("bam", HELP_BAM),
+        ] {
+            let words: Vec<&str> = page
+                .iter()
+                .chain(HELP_SHARED)
+                .flat_map(|l| l.split(|c: char| c.is_whitespace() || c == ':'))
+                .collect();
+            for entry in ENTRIES {
+                // "msa fill" → in the msa page as "fill"; "open" → in every page.
+                let name = match entry.path.split_once(' ') {
+                    Some((g, name)) if g == group => name,
+                    Some(_) => continue,
+                    None => entry.path,
+                };
+                assert!(words.contains(&name), "{group} help lacks {:?}", entry.path);
+            }
+        }
+        assert!(HELP_SHARED.iter().any(|l| l.contains("-h")));
     }
 
     #[test]
@@ -1969,7 +1998,7 @@ pub(crate) mod tests {
         let mut none = App::new(Session::new(None));
         let screen = help_screen(&mut none, 80, 24);
         assert!(screen.contains("┌help─"), "{screen}");
-        assert!(screen.contains("open FILE"));
+        assert!(screen.contains(":open close use undo redo"), "{screen}");
         for lacks in ["m mate", "msa delete-rows", "o re-root"] {
             assert!(!screen.contains(lacks), "{lacks}\n{screen}");
         }
