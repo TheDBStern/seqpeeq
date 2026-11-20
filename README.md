@@ -251,7 +251,7 @@ Each applies to the current file: the one opened last, or chosen with `use`.
 Rows can be chosen with `--rows`, with `--name NAME` (exact; repeatable), or with `--match REGEX` (searched for in
 names).
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `msa delete-rows --rows … \| --name … \| --match …` | Remove sequences. |
 | `msa delete-cols --cols COLS` | Remove columns. |
@@ -264,7 +264,7 @@ names).
 
 ### Trees
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `tree extract [clade] --out FILE [--seqs FILE] [--wrap N]` | Write a clade, or the whole tree with no clade given, to a new file. With `--seqs`, also write its tips' sequences from the linked alignment. |
 | `tree prune clade [--seqs]` | Remove a clade. `--seqs` also deletes its sequences from the linked alignment. |
@@ -303,7 +303,7 @@ step. Type them after `:` in the interface. The examples here start from names l
 
 ### BAMs
 
-| Command | What it does |
+| Command | Explanation |
 |---|---|
 | `bam ref FILE` | Attach a reference FASTA to the current BAM, or to every BAM in its stack, for reference bases, mismatches and `export-ref`. |
 | `bam export-region REGION --out FILE` | Write every record overlapping a region to a new BAM, with its index. |
@@ -323,10 +323,10 @@ The options of `bam export-reads`:
 **The log file:**
 
 - Each session writes `seqpeeq-YYYYMMDD-HHMMSS.log` in the current folder.
-  - `--log PATH` puts it elsewhere.
-  - `--no-log` writes none.
-  - Logs aren't written if no command is run.
-  - An existing log is never overwritten or added to.
+  - `--log PATH` to write it to PATH instead.
+  - `--no-log` to turn of logging.
+  - Logs aren't written if no commands are run.
+  - An existing log is never overwritten or ammended.
 - Every command, opens included, one per line, with timestamps and notes as `#` comments are saved in the log.
   - Scrolling, zooming and selecting are not logged.
   - Undo and redo are logged, so a replay follows exactly what happened.
@@ -336,12 +336,12 @@ The options of `bam export-reads`:
 
 **Replaying:**
 
-- Since outputs are never overwritten, replay into a folder where the log's output files don't exist yet. Moving or
+- Since outputs are never overwritten, you should `replay` into a folder where the log's output files don't exist yet. Moving or
   deleting the earlier outputs also works.
 - Paths are kept as they were typed, so relative paths are read from the folder you replay in. Copy the inputs
   there, or give full paths when you work.
 
-**If the log fails:** when the log can't be written (a full disk, say), seqpeeq refuses further changes rather than
+**If the log fails:** when the log can't be written (a full disk, e.g.), seqpeeq refuses further changes rather than
 make ones it can't record. `:rescue FILE` still saves the current alignment, so no work is lost.
 
 ## Limits
@@ -356,8 +356,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with IGV, 
 size.
 For example, on an Apple M2 laptop:
 
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq shows it in 0.65 s; Jalview takes 6.5 minutes and 15 GB,
-  near the 16 GB it was given.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in 0.65 s; Jalview takes 6.5 minutes and 15 GB.
 - **A tree of a million tips:** seqpeeq draws it in 0.44 s; FigTree takes 26 s.
 
 ## Changes
