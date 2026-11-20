@@ -360,9 +360,12 @@ pub struct App {
     pub gathering: Vec<(u64, String, Arc<Progress>)>,
     /// Lines entered on the command line.
     history: History,
-    /// Whether the left button went down on the grid and is still held, so
-    /// that mouse movement is a drag across it.
+    /// Whether a button went down on the grid and is still held, so that
+    /// mouse movement is a drag across it.
     dragging: bool,
+    /// Whether that button is the right one, picking sequences or columns:
+    /// the run it picks is kept as picks when it comes up.
+    picking: bool,
 }
 
 impl App {
@@ -398,6 +401,7 @@ impl App {
             gathering: Vec::new(),
             history: History::default(),
             dragging: false,
+            picking: false,
         }
     }
 
@@ -2181,6 +2185,7 @@ impl App {
         };
         let screen = grid::screen_shape(&layout);
         let was_dragging = self.dragging;
+        let mut picking = self.picking;
         let Some(view) = self.view_mut() else {
             return;
         };
@@ -2192,6 +2197,7 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if !shift => {
                 dragging = at != Hit::Outside;
+                picking = false;
                 match at {
                     Hit::Cell(cell) => {
                         view.cursor = cell;
@@ -2233,6 +2239,7 @@ impl App {
                     view.cursor = at;
                     view.start_run(kind);
                     dragging = true;
+                    picking = true;
                 }
             }
             MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
@@ -2289,10 +2296,18 @@ impl App {
                 }
                 view.snap();
             }
-            MouseEventKind::Up(MouseButton::Left | MouseButton::Right) => dragging = false,
+            MouseEventKind::Up(MouseButton::Left | MouseButton::Right) => {
+                dragging = false;
+                // A right-click or right-drag picks: the cursor moving on
+                // afterwards does not stretch it.
+                if std::mem::take(&mut picking) {
+                    view.fold(aln);
+                }
+            }
             _ => {}
         }
         self.dragging = dragging;
+        self.picking = picking;
     }
 
     /// Move one file right (`step` 1) or left (-1): through the BAMs of a
@@ -3466,6 +3481,21 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_picks_one_and_the_cursor_does_not_stretch_it() {
+        let (mut app, _dir) = with_trio();
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 0));
+        type_str(&mut app, "jj");
+        assert_eq!(selected(&app), "1 × -");
+        type_str(&mut app, " ");
+        assert_eq!(selected(&app), "1,3 × -");
+        // A right-press on a cell still extends the block it is part of.
+        press_at(&mut app, LEFT, |a| at(a, 0, 1));
+        press_at(&mut app, MouseButton::Right, |a| at(a, 1, 2));
+        type_str(&mut app, "l");
+        assert_eq!(selected(&app), "1-2 × 2-4");
+    }
+
+    #[test]
     fn a_left_click_starts_over() {
         let (mut app, _dir) = with_trio();
         press_at(&mut app, MouseButton::Right, |a| name_at(a, 0));
@@ -4121,6 +4151,40 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal), "{key}");
             assert_eq!(app.status, "zoom in to edit", "{key}");
         }
+    }
+
+    /// How many cells on screen are shaded as selected, line by line.
+    fn shaded_lines(app: &App, width: u16, height: u16) -> Vec<usize> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .filter(|&x| buffer[(x, y)].bg == crate::palette::SELECTED.bg.unwrap())
+                    .count()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn picks_off_a_lines_first_row_are_shown_zoomed_out() {
+        let (mut app, _dir) = with_text(&tall());
+        type_str(&mut app, "j "); // row 2 alone
+        type_str(&mut app, "z");
+        assert!(view(&app).scale.rows > 1, "{:?}", view(&app).scale);
+        let shaded = shaded_lines(&app, 80, 12);
+        let rows_shown = shaded.iter().any(|&n| n > 0);
+        // A column picked off a cell's first column too.
+        let (mut app, _dir) = with_text(&wide());
+        type_str(&mut app, "lC z");
+        assert!(view(&app).scale.cols > 1, "{:?}", view(&app).scale);
+        assert!(rows_shown, "the line holding row 2 is shaded: {shaded:?}");
+        assert!(
+            shaded_lines(&app, 80, 12).iter().any(|&n| n > 0),
+            "the cell holding column 2 is shaded"
+        );
     }
 
     #[test]
