@@ -11,7 +11,7 @@ use ratatui::layout::Size;
 use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Read, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
-    Progress, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
+    Progress, Ranges, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
 };
 
 use crate::bam_view::{BamView, Loaded, Want};
@@ -1625,7 +1625,7 @@ impl App {
             return;
         }
         let rows = Region {
-            rows: Some(row..row + 1),
+            rows: Ranges::one(row..row + 1),
             cols: None,
         };
         self.act(Command::Msa(MsaCmd::Rename {
@@ -3319,8 +3319,8 @@ mod tests {
         assert_eq!(
             view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
-                rows: Some(0..2),
-                cols: Some(2..5)
+                rows: Ranges::one(0..2),
+                cols: Ranges::one(2..5)
             })
         );
 
@@ -3328,7 +3328,7 @@ mod tests {
         assert_eq!(
             view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
-                rows: Some(1..2),
+                rows: Ranges::one(1..2),
                 cols: None
             })
         );
@@ -3336,7 +3336,7 @@ mod tests {
         assert_eq!(
             view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
-                rows: Some(1..3),
+                rows: Ranges::one(1..3),
                 cols: None
             })
         );
@@ -3348,7 +3348,7 @@ mod tests {
             view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
                 rows: None,
-                cols: Some(3..7)
+                cols: Ranges::one(3..7)
             })
         );
         type_str(&mut app, "d");
@@ -3372,8 +3372,8 @@ mod tests {
             assert_eq!(
                 view(&app).region(Shape::of(app.alignment().unwrap().0)),
                 Some(Region {
-                    rows: Some(0..3),
-                    cols: Some(1..4)
+                    rows: Ranges::one(0..3),
+                    cols: Ranges::one(1..4)
                 })
             );
         }
@@ -3433,8 +3433,8 @@ mod tests {
         assert_eq!(
             view(&app).region(Shape::of(app.alignment().unwrap().0)),
             Some(Region {
-                rows: Some(0..5),
-                cols: Some(40..44)
+                rows: Ranges::one(0..5),
+                cols: Ranges::one(40..44)
             })
         );
     }

@@ -2,7 +2,6 @@
 //! is shown. Pure state: nothing here draws or reads the terminal.
 
 use std::collections::HashSet;
-use std::ops::Range;
 use std::sync::Arc;
 
 use seqpeeq_core::{Alignment, MsaCmd, Ranges, RowSel, View};
@@ -61,30 +60,27 @@ pub struct Select {
     pub anchor: Cell,
 }
 
-/// Rows and columns, counted from 0 and half-open. `None` means all of
-/// them.
+/// Rows and columns, counted from 0. `None` means all of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
-    pub rows: Option<Range<usize>>,
-    pub cols: Option<Range<usize>>,
+    pub rows: Option<Ranges>,
+    pub cols: Option<Ranges>,
 }
 
 impl Region {
     /// The flags that name this region in a command: `--rows` and `--cols`,
     /// counted from 1.
     pub fn flags(&self) -> (RowSel, Option<Ranges>) {
-        let ranges = |range: &Range<usize>| Ranges::new(std::iter::once(range.clone()));
         let rows = RowSel {
-            rows: self.rows.as_ref().and_then(ranges),
+            rows: self.rows.clone(),
             ..RowSel::default()
         };
-        (rows, self.cols.as_ref().and_then(ranges))
+        (rows, self.cols.clone())
     }
 
     pub fn contains(&self, cell: Cell) -> bool {
-        let within = |range: &Option<Range<usize>>, at: usize| {
-            range.as_ref().is_none_or(|range| range.contains(&at))
-        };
+        let within =
+            |ranges: &Option<Ranges>, at: usize| ranges.as_ref().is_none_or(|r| r.contains(at));
         within(&self.rows, cell.row) && within(&self.cols, cell.col)
     }
 }
@@ -322,8 +318,10 @@ impl MsaView {
             let end = ((a.max(b) / per + 1) * per).min(limit);
             (a.min(b) / per * per).min(end)..end
         };
-        let rows = span(anchor.row, self.cursor.row, self.scale.rows, aln.rows);
-        let cols = span(anchor.col, self.cursor.col, self.scale.cols, aln.cols);
+        // Nothing to select in an empty alignment; `None` in a region would
+        // mean every row or column.
+        let rows = Ranges::one(span(anchor.row, self.cursor.row, self.scale.rows, aln.rows))?;
+        let cols = Ranges::one(span(anchor.col, self.cursor.col, self.scale.cols, aln.cols))?;
         Some(match kind {
             SelKind::Block => Region {
                 rows: Some(rows),
@@ -346,8 +344,8 @@ impl MsaView {
         let Cell { row, col } = self.cursor;
         let Scale { rows, cols } = self.scale;
         self.region(aln).unwrap_or(Region {
-            rows: Some(row..(row + rows).min(aln.rows)),
-            cols: Some(col..(col + cols).min(aln.cols)),
+            rows: Ranges::one(row..(row + rows).min(aln.rows)),
+            cols: Ranges::one(col..(col + cols).min(aln.cols)),
         })
     }
 
@@ -561,16 +559,16 @@ mod tests {
         assert_eq!(
             view.region(aln),
             Some(Region {
-                rows: Some(0..10),
-                cols: Some(8..48)
+                rows: Ranges::one(0..10),
+                cols: Ranges::one(8..48)
             })
         );
         view.select = None;
         assert_eq!(
             view.target(aln),
             Region {
-                rows: Some(8..10),
-                cols: Some(40..48)
+                rows: Ranges::one(8..10),
+                cols: Ranges::one(40..48)
             }
         );
     }
@@ -727,8 +725,8 @@ mod tests {
         assert_eq!(
             view.target(aln),
             Region {
-                rows: Some(4..5),
-                cols: Some(6..7)
+                rows: Ranges::one(4..5),
+                cols: Ranges::one(6..7)
             }
         );
         view.select = Some(Select {
@@ -737,8 +735,8 @@ mod tests {
         });
         view.move_by(-2, -3, aln);
         let block = Region {
-            rows: Some(2..5),
-            cols: Some(3..7),
+            rows: Ranges::one(2..5),
+            cols: Ranges::one(3..7),
         };
         assert_eq!(view.region(aln), Some(block.clone()));
         assert_eq!(view.target(aln), block);
@@ -749,7 +747,7 @@ mod tests {
         assert_eq!(
             view.region(aln),
             Some(Region {
-                rows: Some(2..8),
+                rows: Ranges::one(2..8),
                 cols: None
             })
         );
@@ -761,7 +759,7 @@ mod tests {
             view.region(aln),
             Some(Region {
                 rows: None,
-                cols: Some(3..4)
+                cols: Ranges::one(3..4)
             })
         );
     }
@@ -769,15 +767,15 @@ mod tests {
     #[test]
     fn a_region_names_itself_in_flags_counted_from_one() {
         let region = Region {
-            rows: Some(1..4),
-            cols: Some(17..30),
+            rows: Ranges::one(1..4),
+            cols: Ranges::one(17..30),
         };
         let (rows, cols) = region.flags();
         assert_eq!(rows.rows.unwrap().to_string(), "2-4");
         assert_eq!(cols.unwrap().to_string(), "18-30");
         let columns = Region {
             rows: None,
-            cols: Some(0..1),
+            cols: Ranges::one(0..1),
         };
         let (rows, cols) = columns.flags();
         assert!(rows.is_empty());
