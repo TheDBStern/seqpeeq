@@ -62,16 +62,19 @@ fn starts_with_any_case(name: &str, typed: &str) -> bool {
 fn common_prefix<'a>(first: &'a str, rest: &[&str]) -> &'a str {
     let mut end = first.len();
     for other in rest {
+        // Where they differ, or where `other` runs out, counted in
+        // characters: the same letter in another case may take more or
+        // fewer bytes.
+        let mut theirs = other.chars();
         let shared = first
             .char_indices()
-            .zip(other.chars())
-            .find(|((_, a), b)| !a.to_lowercase().eq(b.to_lowercase()))
-            .map_or_else(|| first.len().min(other.len()), |((i, _), _)| i);
+            .find(|&(_, a)| {
+                theirs
+                    .next()
+                    .is_none_or(|b| !a.to_lowercase().eq(b.to_lowercase()))
+            })
+            .map_or(first.len(), |(i, _)| i);
         end = end.min(shared);
-    }
-    // `other.len()` may fall inside one of `first`'s characters.
-    while !first.is_char_boundary(end) {
-        end -= 1;
     }
     &first[..end]
 }
@@ -585,10 +588,12 @@ impl App {
         let Mode::Prompt(prompt) = &self.mode else {
             return;
         };
-        let text = prompt.line.text().to_string();
-        if prompt.line.cursor() != text.len() {
+        let line = prompt.line.text().to_string();
+        if prompt.line.cursor() != line.len() {
             return;
         }
+        // As the line is read when entered.
+        let text = line.trim().to_string();
         let (typed, braced) = match text.strip_prefix('{') {
             Some(rest) if rest.contains('}') => return,
             Some(rest) => (rest, true),
@@ -626,7 +631,7 @@ impl App {
         if list.rows(contigs).is_empty() {
             list.all = true;
         }
-        list.back_to = Some(text);
+        list.back_to = Some(line);
         self.mode = Mode::Contigs(Box::new(list));
     }
 
@@ -2259,9 +2264,9 @@ pub(crate) mod tests {
     #[test]
     fn tab_in_g_finishes_a_contig_name() {
         let (mut app, _dir) = with_names();
-        keys(&mut app, "gsc");
+        keys(&mut app, "g sc ");
         press(&mut app, KeyCode::Tab);
-        assert_eq!(line(&app), "scaffold_9", "the only one");
+        assert_eq!(line(&app), "scaffold_9", "the only one, spaces aside");
         press(&mut app, KeyCode::Enter);
         settle(&mut app);
         assert_eq!(view(&app).contig, 5);
@@ -2330,6 +2335,11 @@ pub(crate) mod tests {
         assert_eq!(common_prefix("chr10", &["chr1"]), "chr1");
         assert_eq!(common_prefix("ab", &["xy"]), "");
         assert_eq!(common_prefix("é1", &["É2"]), "é");
+        // The Kelvin sign is a K of three bytes; ẞ is ß's capital.
+        assert_eq!(common_prefix("kx", &["\u{212A}"]), "k");
+        assert_eq!(common_prefix("\u{212A}x", &["k"]), "\u{212A}");
+        assert_eq!(common_prefix("ßx", &["ẞ"]), "ß");
+        assert_eq!(common_prefix("chr", &["chr"]), "chr");
         assert_eq!(quoted("HLA:01"), "{HLA:01}");
     }
 
