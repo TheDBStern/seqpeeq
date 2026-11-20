@@ -1829,6 +1829,12 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) {
+        // A release, or the pointer moving with no button held (the button
+        // was let go where the terminal did not see it), ends a drag
+        // across a BAM's reads, whatever mode it comes in.
+        if matches!(mouse.kind, MouseEventKind::Up(_) | MouseEventKind::Moved) {
+            self.bam_drag = None;
+        }
         if matches!(self.mode, Mode::Edit(_)) {
             self.wheel(mouse);
             // A press ends the run being typed and puts the cursor there.
