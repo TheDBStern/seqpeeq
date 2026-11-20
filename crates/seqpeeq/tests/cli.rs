@@ -438,3 +438,32 @@ fn a_tree_session_replays_to_the_same_files() {
         );
     }
 }
+
+#[test]
+fn run_prints_a_commands_help_and_runs_nothing() {
+    let dir = setup();
+    let out = seqpeeq(
+        dir.path(),
+        &["run", "--log", "x.log", "msa fill -h", "open a.fa"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("msa fill [rows] [--cols COLS] --with CHAR"),
+        "{text}"
+    );
+    assert!(!text.contains("opened"), "{text}");
+    assert!(!dir.path().join("x.log").exists());
+}
+
+#[test]
+fn run_help_for_an_unknown_command_fails() {
+    let dir = setup();
+    let out = seqpeeq(dir.path(), &["run", "msa foo -h"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("no command 'msa foo'"),
+        "{}",
+        stderr(&out)
+    );
+}
