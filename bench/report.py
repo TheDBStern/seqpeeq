@@ -97,21 +97,6 @@ def only_tables(only):
     return out
 
 
-def _uncached(results):
-    """A sentence on seqpeeq's first, uncached open of the largest
-    alignment, when its first run was clearly slower than the median."""
-    alns = [r for r in results["results"] if r["tool"] == "seqpeeq" and r["kind"] == "msa"
-            and r["outcome"] == "ok" and len(r["runs"]) > 1]
-    if not alns:
-        return ""
-    big = max(alns, key=lambda r: r["file_bytes"])
-    first, median = big["runs"][0]["seconds"], big["median_seconds"]
-    if first < 1.5 * median:
-        return ""
-    return (f" Here, seqpeeq's first run of `{big['file']}`, read from disk, took"
-            f" {format_seconds(first)} against {format_seconds(median)}.")
-
-
 def page(results, only):
     machine, versions = results["machine"], results["versions"]
     timeout = results.get("timeout_seconds", 600)
@@ -120,12 +105,9 @@ def page(results, only):
     lines = [
         "# Benchmarks",
         "",
-        "How long seqpeeq takes to open a file and show it, and how much memory it uses, beside the tools it",
-        "stands in for: Jalview for alignments, FigTree for trees and IGV for BAMs. The files are random but",
+        "Comparing times for opening files. Jalview for alignments, FigTree for trees and IGV for BAMs."
+        " The files are random but",
         "seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10× to 1,000× read depth.",
-        "",
-        "seqpeeq does things these tools don't, and they do things seqpeeq doesn't. The comparison shows only",
-        "what opening the same file costs in each.",
         "",
         "## Machine",
         "",
@@ -138,10 +120,9 @@ def page(results, only):
         "**What is timed:** the wall time from launch until the tool has shown the file, and the peak",
         "memory (the largest resident size the operating system reports for the process).",
         "",
-        "- **Jalview** runs headless with `--open FILE --close`: it reads the alignment in and exits. It is",
-        "  timed to its exit. It saves no image, because `--image`",
-        "  draws the whole alignment shrunk onto one picture, far more work than its window does, while",
-        "  seqpeeq draws one screen. Skipping the drawing favours Jalview slightly.",
+        "- **Jalview** is run headless with `--open FILE --close`: it reads the alignment in and exits. It is",
+        "  timed to its exit. It doesn't save an image, because `--image`",
+        "  draws the whole alignment shrunk onto one picture, which is a lot of work.",
         "- **FigTree** draws the tree to a 1200 × 800 PNG (`-graphic PNG`) and exits. It is timed to its exit.",
         f"- **IGV** runs a batch script: load the reference and the BAM, go to `{WINDOW_TEXT}`, save a",
         "  snapshot, exit. It is timed to its exit.",
@@ -165,10 +146,10 @@ def page(results, only):
         "- **Start-up:** the first row of each table is a tiny file, so it shows each tool's start-up cost,",
         "  most of it the Java virtual machine's for the three Java tools.",
         "- **Repeats:** each number is the median of 3 runs, or of 1 run when the first takes over a minute.",
-        f"- **Limits:** each run stops after {timeout / 60:g} minutes. A tool that runs out of memory, crashes",
-        "  or hits the limit is recorded as such, with the reason in a note.",
+        f"- **Limits:** each run stops after {timeout / 60:g} minutes. If a tool runs out of memory, crashes",
+        "  or hits the limit, that's recorded as such, with the reason in a note.",
         "- **Build:** seqpeeq is built with `--release`, for the machine's own CPU. All four tools run",
-        "  natively; none is translated (as an x86_64 program on Apple silicon would be).",
+        "  natively.",
         "",
         "## Results",
         "",
@@ -179,7 +160,7 @@ def page(results, only):
     lines += [
         "## seqpeeq only",
         "",
-        "Steps with no counterpart above, timed inside seqpeeq (`bench_timings_on_the_benchmark_files`).",
+        "seqpeeq-unique features timed inside seqpeeq (`bench_timings_on_the_benchmark_files`).",
         "Each is timed to the frame that shows it. Rows marked *background* are work seqpeeq hands to a",
         "worker thread while the screen stays live: the column counts behind its colouring, and the summary",
         "behind the zoomed-out overview.",
@@ -187,29 +168,6 @@ def page(results, only):
     ]
     lines += [line.replace("| background: ", "| *background:* ") for line in only_tables(only)]
     lines += [
-        "## What the numbers do and don't show",
-        "",
-        "- **Opening is not using.** A script that opens a file and exits is not someone scrolling, zooming",
-        "  and selecting in a window. The numbers say how soon each tool can show a file, not how it feels",
-        "  to work in.",
-        "- **seqpeeq maps an alignment rather than copying it.** Its resident memory counts the pages of the",
-        "  file it has read, which the operating system can drop and reread. That is why its memory on a",
-        "  large alignment is near the file's size, though it never holds a copy.",
-        "- **seqpeeq reads a BAM by region.** It reads the window in view, through the index, and a sketch of",
-        "  the whole contig in the background. IGV also reads by region. Neither number says how long a",
-        "  tool takes to read every read.",
-        "- **Java's memory is partly the limit given.** A Java program's resident memory grows toward its",
-        "  heap limit before it collects garbage, so the Java tools' memory says what they used with",
-        f"  {memory} available, not the least they could manage with.",
-        "- **The file cache.** Each tool's first run of a file may read it from disk; later runs find it",
-        "  in memory, so a median of three is a cached run. Runs over a minute are run once and may be",
-        "  uncached." + _uncached(results),
-        "- **IGV's start-up varies.** Its runs took either about 1.3 s or about 3.4 s, on any file, with",
-        "  nothing in its log to tell them apart. Where two of a cell's three runs were slow, its median is",
-        "  the slow one. `results.json` has every run.",
-        "- **The start-up rows** are most of the Java tools' times on the smaller files.",
-        "- **One machine.** These numbers come from one laptop. The scripts are in `bench/` to rerun anywhere.",
-        "",
         "## How to rerun",
         "",
         "```sh",
