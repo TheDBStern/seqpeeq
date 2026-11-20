@@ -6,6 +6,7 @@ use crate::bam_view::{ContigList, ContigSort, ReadId, pass_bin, serves, zoom_lev
 use crate::ui::bam::BamHit;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use seqpeeq_core::bam::parse_region;
+use std::time::{Duration, Instant};
 
 /// More selected names than this go to a names file beside the log.
 const NAMES_ON_THE_LINE: usize = 20;
@@ -77,6 +78,70 @@ fn common_prefix<'a>(first: &'a str, rest: &[&str]) -> &'a str {
         end = end.min(shared);
     }
     &first[..end]
+}
+
+/// How often a drag held past the edge of the reads scrolls them.
+const DRAG_EVERY: Duration = Duration::from_millis(50);
+
+/// How many columns a drag held past a side scrolls each time.
+const DRAG_COLS: i64 = 4;
+
+/// A drag across a BAM's reads, from a press on them until the button is
+/// let go.
+#[derive(Debug, Clone)]
+pub struct BamDrag {
+    /// The BAM it is on.
+    pub dataset: u64,
+    /// The first and last positions of the column pressed.
+    pub anchor: (u64, u64),
+    /// The row of reads pressed, counted from the first row.
+    pub anchor_row: usize,
+    /// The read pressed, to find its row again once the reads are packed
+    /// afresh.
+    pub anchor_read: Option<ReadId>,
+    /// Where the pointer is, held inside the reads: a column and a row
+    /// counted from the first shown.
+    pub at: (usize, usize),
+    /// Which side of the reads the pointer is past, if any: -1, 0 or 1
+    /// sideways and up or down.
+    pub edge: (i8, i8),
+    /// Reads selected before the reads were last read afresh.
+    pub kept: Vec<ReadId>,
+    /// When it last scrolled the reads.
+    pub scrolled: Instant,
+}
+
+/// Select what `drag` covers in `view`: the loaded reads touching the
+/// rectangle from where it started to where the pointer is, and those it
+/// kept from earlier windows that are no longer loaded but still lie
+/// between its first and last positions. Rows are packed afresh as the
+/// reads change, so the row it started on is found again from its read.
+fn drag_select(view: &mut BamView, drag: &mut BamDrag) {
+    if let Some(row) = drag.anchor_read.as_ref().and_then(|read| view.row_of(read)) {
+        drag.anchor_row = row;
+    }
+    let span = view.span_of(drag.at.0);
+    let to = view.top + drag.at.1;
+    let (a, b) = (drag.anchor.0.min(span.0), drag.anchor.1.max(span.1));
+    let rows = drag.anchor_row.min(to)..=drag.anchor_row.max(to);
+    let loaded = view.loaded.as_ref().map(|l| l.window.region);
+    let unloaded = |read: &ReadId| match loaded {
+        Some(w) => read.contig != w.contig || read.end < w.start || read.start > w.end,
+        None => true,
+    };
+    let mut selected: Vec<ReadId> = drag
+        .kept
+        .iter()
+        .filter(|read| unloaded(read) && read.start <= b && read.end >= a)
+        .cloned()
+        .collect();
+    let mut seen: HashSet<ReadId> = selected.iter().cloned().collect();
+    for read in view.touched((a, b), rows) {
+        if seen.insert(read.clone()) {
+            selected.push(read);
+        }
+    }
+    view.selected = selected;
 }
 
 /// A window being read in the background.
@@ -465,6 +530,9 @@ impl App {
             Ok(loaded) => {
                 view.loaded = Some(loaded);
                 view.repack();
+                if let Some(drag) = self.bam_drag.as_mut().filter(|d| d.dataset == dataset) {
+                    drag.kept = view.selected.clone();
+                }
                 let contig = view.contig;
                 if let Some(length) = self
                     .session
@@ -1079,14 +1147,23 @@ impl App {
                             view.cursor = span.0;
                             view.row = view.top + row;
                         }
-                        match read {
+                        match read.clone() {
                             Some(read) if adding => view.select(read),
                             _ if adding => {}
                             Some(read) => view.selected = vec![read],
                             None => view.selected.clear(),
                         }
                         if button == MouseButton::Left && !adding {
-                            self.bam_drag = Some((span, view.top + row));
+                            self.bam_drag = Some(BamDrag {
+                                dataset: id,
+                                anchor: span,
+                                anchor_row: view.top + row,
+                                anchor_read: read,
+                                at: (col, row),
+                                edge: (0, 0),
+                                kept: Vec::new(),
+                                scrolled: Instant::now(),
+                            });
                         }
                     }
                     _ => {}
@@ -1102,13 +1179,29 @@ impl App {
                 view.set_stretch(a1.min(a2), b1.max(b2), length);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let (Some((start, from)), BamHit::Read { col, row }) = (self.bam_drag, hit) else {
+                let reads = layout.reads;
+                let Some(drag) = self.bam_drag.as_mut().filter(|d| d.dataset == id) else {
                     return;
                 };
-                let span = view.span_of(col);
-                let to = view.top + row;
-                let positions = (start.0.min(span.0), start.1.max(span.1));
-                view.selected = view.touched(positions, from.min(to)..=from.max(to));
+                if reads.width == 0 || reads.height == 0 {
+                    return;
+                }
+                // Sideways, the reads reach the screen's edges, past which
+                // a terminal reports no pointer: their outer columns count
+                // as past them. Above and below there are other rows.
+                let side = |at: u16, low: u16, size: u16, rim: u16| -> (i8, usize) {
+                    let high = low + size - 1;
+                    match at {
+                        _ if at < low + rim => (-1, usize::from(at.max(low) - low)),
+                        _ if at + rim > high => (1, usize::from(at.min(high) - low)),
+                        _ => (0, usize::from(at - low)),
+                    }
+                };
+                let (dx, col) = side(mouse.column, reads.x, reads.width, 1);
+                let (dy, row) = side(mouse.row, reads.y, reads.height, 0);
+                drag.at = (col, row);
+                drag.edge = (dx, dy);
+                drag_select(view, drag);
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.bam_drag = None;
@@ -1116,6 +1209,53 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Scroll the reads while a drag is held past their edge, at most once
+    /// every [`DRAG_EVERY`], and select what it then covers. A drag whose
+    /// BAM is no longer on screen ends.
+    pub fn tick(&mut self, now: Instant) {
+        let Some(drag) = &self.bam_drag else {
+            return;
+        };
+        // The mouse goes elsewhere while the mode is not Normal or a view
+        // is open over the reads, so the button's release may never come.
+        let shown = self.session.datasets().get(self.active).map(|d| d.id);
+        let covered = self
+            .bams
+            .get(&drag.dataset)
+            .is_none_or(|v| !v.over.is_empty());
+        if shown != Some(drag.dataset) || !matches!(self.mode, Mode::Normal) || covered {
+            self.bam_drag = None;
+            return;
+        }
+        if drag.edge == (0, 0) || now.duration_since(drag.scrolled) < DRAG_EVERY {
+            return;
+        }
+        let id = drag.dataset;
+        let Some(source) = self
+            .session
+            .datasets()
+            .get(self.active)
+            .and_then(|d| d.bam())
+            .map(|b| b.source().clone())
+        else {
+            return;
+        };
+        // Fields, not bam_mut(), so that the drag can change alongside.
+        let (Some(view), Some(drag)) = (self.bams.get_mut(&id), self.bam_drag.as_mut()) else {
+            return;
+        };
+        let length = source.contigs()[view.contig].length;
+        let (dx, dy) = drag.edge;
+        if dx != 0 {
+            view.scroll(i64::from(dx) * DRAG_COLS, length);
+        }
+        if dy != 0 {
+            view.scroll_rows(isize::from(dy));
+        }
+        drag.scrolled = now;
+        drag_select(view, drag);
     }
 
     /// `m`: to the mate of the read under the cursor.
@@ -1813,6 +1953,214 @@ pub(crate) mod tests {
         assert!((480..=520).contains(&cursor), "{cursor}");
         assert!(view(&app).col_of(cursor).is_some());
         assert_eq!(view(&app).back.last(), Some(&(0, 1)));
+    }
+
+    // A drag held past the edge of the reads.
+
+    /// An app showing a BAM made from `reads` on a 5,000 bp contig `c`,
+    /// at a base a column from position 1, on an 80 x 14 screen.
+    fn with_reads(reads: &str) -> (App, TempDir, BamLayout) {
+        let dir = tempfile::tempdir().unwrap();
+        let sam = format!("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:5000\n{reads}");
+        let bam = seqpeeq_core::bam::testing::bam_from_sam(dir.path(), "d.bam", &sam);
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        layout_of(&mut app);
+        at_base_level(&mut app, 0, 1, 0);
+        let layout = layout_of(&mut app);
+        (app, dir, layout)
+    }
+
+    fn names_selected(app: &App) -> Vec<String> {
+        let mut names: Vec<String> = view(app).selected.iter().map(|r| r.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    fn drag_edge(app: &App) -> Option<(i8, i8)> {
+        app.bam_drag.as_ref().map(|d| d.edge)
+    }
+
+    #[test]
+    fn a_drag_held_below_the_reads_scrolls_down_and_selects_on() {
+        // Thirty overlapping reads, a row each.
+        let reads: String = (0..30)
+            .map(|i| format!("t{i:02}\t0\tc\t{}\t60\t100M\t*\t0\t0\t*\t*\n", i + 1))
+            .collect();
+        let (mut app, _dir, layout) = with_reads(&reads);
+        let (x, y, height) = (layout.reads.x, layout.reads.y, layout.reads.height as usize);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + 40, y),
+            false,
+        );
+        let below = (x + 40, layout.reads.bottom() + 1);
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            below,
+            false,
+        );
+        assert_eq!(drag_edge(&app), Some((0, 1)));
+        assert_eq!(
+            names_selected(&app).len(),
+            height,
+            "held to the last row shown"
+        );
+        assert!(app.wants_tick(), "so the loop wakes to scroll");
+
+        let start = app.bam_drag.as_ref().unwrap().scrolled;
+        app.tick(start + Duration::from_millis(10));
+        assert_eq!(view(&app).top, 0, "not yet");
+        for k in 1..=5 {
+            app.tick(start + DRAG_EVERY * k);
+        }
+        assert_eq!(view(&app).top, 5);
+        assert_eq!(names_selected(&app).len(), height + 5);
+        assert!(names_selected(&app).contains(&format!("t{:02}", height + 4)));
+
+        // Back inside: no more scrolling, and the rows above the pointer
+        // that it left go.
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            (x + 40, y + 1),
+            false,
+        );
+        assert_eq!(drag_edge(&app), Some((0, 0)));
+        app.tick(start + DRAG_EVERY * 10);
+        assert_eq!(view(&app).top, 5);
+        assert_eq!(names_selected(&app).len(), 7, "rows 0 to 6");
+
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            (x + 40, y + 1),
+            false,
+        );
+        assert!(app.bam_drag.is_none());
+        assert!(!app.wants_tick());
+    }
+
+    #[test]
+    fn a_drag_held_past_the_right_keeps_what_it_selected_as_windows_load() {
+        // One row of short reads, one every 50 bp along the contig.
+        let reads: String = (0..80)
+            .map(|k| format!("h{k:02}\t0\tc\t{}\t60\t20M\t*\t0\t0\t*\t*\n", 50 * k + 1))
+            .collect();
+        let (mut app, _dir, layout) = with_reads(&reads);
+        let (x, y) = (layout.reads.x, layout.reads.y);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x, y),
+            false,
+        );
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        mouse(&mut app, drag, (layout.reads.right() - 2, y), false);
+        assert_eq!(drag_edge(&app), Some((0, 0)));
+        // A terminal reports no pointer past its window, so the reads'
+        // outer column is their edge.
+        mouse(&mut app, drag, (layout.reads.right() - 1, y), false);
+        assert_eq!(drag_edge(&app), Some((1, 0)));
+        mouse(&mut app, drag, (layout.reads.right() + 3, y), false);
+        assert_eq!(drag_edge(&app), Some((1, 0)));
+        assert_eq!(names_selected(&app), ["h00", "h01"]);
+
+        let start = app.bam_drag.as_ref().unwrap().scrolled;
+        for k in 1..=150 {
+            app.tick(start + DRAG_EVERY * k);
+            settle(&mut app);
+        }
+        assert_eq!(view(&app).left, 1 + 150 * DRAG_COLS as u64);
+        let names = names_selected(&app);
+        assert!(
+            !view(&app).reads().iter().any(|r| r.name == "h00"),
+            "h00 is no longer loaded"
+        );
+        assert!(names.contains(&"h00".to_string()), "but stays selected");
+        // The pointer is on the last column, at 600 + 80.
+        let want: Vec<String> = (0..14).map(|k| format!("h{k:02}")).collect();
+        assert_eq!(names, want);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.bam_drag.is_none(), "Esc lets go of the drag too");
+    }
+
+    /// One row of short reads, one every 50 bp, at base level from 1.
+    fn with_a_row() -> (App, TempDir, BamLayout) {
+        let reads: String = (0..80)
+            .map(|k| format!("h{k:02}\t0\tc\t{}\t60\t20M\t*\t0\t0\t*\t*\n", 50 * k + 1))
+            .collect();
+        with_reads(&reads)
+    }
+
+    #[test]
+    fn going_back_after_a_window_loads_lets_go_of_what_it_passed() {
+        let (mut app, _dir, layout) = with_a_row();
+        let (x, y) = (layout.reads.x, layout.reads.y);
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + 1, y),
+            false,
+        );
+        mouse(&mut app, drag, (layout.reads.right() - 1, y), false);
+        let start = app.bam_drag.as_ref().unwrap().scrolled;
+        let mut k = 0;
+        let mut tick = |app: &mut App| {
+            k += 1;
+            app.tick(start + DRAG_EVERY * k);
+            settle(app);
+        };
+        for _ in 0..150 {
+            tick(&mut app);
+        }
+        assert!(!view(&app).reads().iter().any(|r| r.name == "h00"));
+        mouse(&mut app, drag, (x, y), false);
+        while view(&app).left > 1 {
+            tick(&mut app);
+        }
+        mouse(&mut app, drag, (x + 10, y), false);
+        assert_eq!(names_selected(&app), ["h00"], "as if it had never gone");
+    }
+
+    #[test]
+    fn a_drag_whose_release_goes_unseen_ends() {
+        let (mut app, _dir, layout) = with_a_row();
+        let (x, y) = (layout.reads.x, layout.reads.y);
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        let start = Instant::now();
+
+        // Let go outside the window: the pointer comes back with no button.
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + 1, y),
+            false,
+        );
+        mouse(&mut app, drag, (layout.reads.right() - 1, y), false);
+        mouse(&mut app, MouseEventKind::Moved, (x + 5, y), false);
+        app.tick(start + DRAG_EVERY * 10);
+        assert!(app.bam_drag.is_none());
+        assert_eq!(view(&app).left, 1);
+
+        // A line opened mid-drag takes the release.
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            (x + 1, y),
+            false,
+        );
+        mouse(&mut app, drag, (layout.reads.right() - 1, y), false);
+        keys(&mut app, ":");
+        app.tick(start + DRAG_EVERY * 20);
+        assert!(app.bam_drag.is_none());
+        assert_eq!(view(&app).left, 1);
+        assert!(!app.wants_tick());
     }
 
     #[test]
