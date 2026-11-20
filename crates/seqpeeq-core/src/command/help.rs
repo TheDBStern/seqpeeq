@@ -260,32 +260,82 @@ fn group_of(path: &str) -> &str {
 /// there is none.
 pub fn help_request(line: &str) -> Option<Result<HelpPage, String>> {
     let words = shlex::split(line)?;
-    let asked = words.iter().any(|w| w == "-h" || w == "--help") || words == ["help"];
+    // `help msa fill` asks what `msa fill -h` does.
+    let leading_help = words.first().is_some_and(|w| w == "help");
+    let rest = if leading_help {
+        &words[1..]
+    } else {
+        &words[..]
+    };
+    // The command's words come before its first flag: a group's name and
+    // its command, or a command of its own.
+    let mut names = rest
+        .iter()
+        .map(String::as_str)
+        .take_while(|w| !w.starts_with('-'));
+    let first = names.next();
+    let second = first
+        .filter(|f| matches!(*f, "msa" | "tree" | "bam"))
+        .and_then(|_| names.next());
+    let parser = <crate::Command as clap::CommandFactory>::command();
+    let command = match (first, second) {
+        (Some(group), Some(sub)) => parser
+            .find_subcommand(group)
+            .and_then(|g| g.find_subcommand(sub)),
+        (Some(name), None) => parser.find_subcommand(name),
+        (None, _) => None,
+    };
+    // A -h after `--`, or as the value of a flag (`--name -h`), is not a
+    // request for help: it is a name to act on.
+    let asked = leading_help
+        || rest
+            .iter()
+            .enumerate()
+            .take_while(|(_, w)| *w != "--")
+            .any(|(i, w)| {
+                (w == "-h" || w == "--help") && !(i > 0 && takes_value(command, &rest[i - 1]))
+            });
     if !asked {
         return None;
     }
-    // The command's words come before its first flag.
-    let mut names = words.iter().take_while(|w| !w.starts_with('-'));
-    let page = match names.next().map(String::as_str) {
-        None | Some("help") => Ok(all()),
-        Some(group @ ("msa" | "tree" | "bam")) => match names.next() {
-            None => Ok(group_page(group)),
-            Some(sub) => {
-                // The parser knows each command's aliases (`save` for
-                // `extract`); ask it for the command's own name.
-                let parser = <crate::Command as clap::CommandFactory>::command();
-                let name = parser
-                    .find_subcommand(group)
-                    .and_then(|g| g.find_subcommand(sub))
-                    .map_or(sub.clone(), |c| c.get_name().to_string());
-                entry_page(&format!("{group} {name}")).ok_or(format!(
-                    "no command '{group} {sub}'; :{group} -h lists them"
-                ))
-            }
-        },
-        Some(name) => entry_page(name).ok_or(format!("no command '{name}'; :help lists them")),
+    let page = match (first, second) {
+        (None | Some("help"), _) => Ok(all()),
+        (Some(group @ ("msa" | "tree" | "bam")), None) => Ok(group_page(group)),
+        (Some(group), Some(sub)) => {
+            // The parser knows each command's aliases (`save` for
+            // `extract`); ask it for the command's own name.
+            let name = command.map_or(sub, |c| c.get_name());
+            entry_page(&format!("{group} {name}")).ok_or(format!(
+                "no command '{group} {sub}'; :{group} -h lists them"
+            ))
+        }
+        (Some(name), None) => {
+            entry_page(name).ok_or(format!("no command '{name}'; :help lists them"))
+        }
     };
     Some(page)
+}
+
+/// Whether `word` is a flag of `command` that takes a value, so that the
+/// word after it is that value.
+fn takes_value(command: Option<&clap::Command>, word: &str) -> bool {
+    let Some(command) = command else {
+        return false;
+    };
+    let mut arguments = command.get_arguments();
+    let arg = if let Some(long) = word.strip_prefix("--") {
+        // `--flag=value` holds its value already.
+        (!long.contains('=')).then(|| arguments.find(|a| a.get_long() == Some(long)))
+    } else if let Some(short) = word.strip_prefix('-') {
+        let mut letters = short.chars();
+        match (letters.next(), letters.next()) {
+            (Some(letter), None) => Some(arguments.find(|a| a.get_short() == Some(letter))),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    arg.flatten().is_some_and(|a| a.get_action().takes_values())
 }
 
 fn entry_page(path: &str) -> Option<HelpPage> {
@@ -387,6 +437,36 @@ mod tests {
         assert!(help_request("msa rename --regex x --replace=-h").is_none());
         assert!(help_request("msa fill --with N").is_none());
         assert!(help_request("msa fill 'unbalanced -h").is_none());
+    }
+
+    #[test]
+    fn help_before_a_command_shows_its_help() {
+        let title = |line: &str| help_request(line).unwrap().unwrap().title;
+        assert_eq!(title("help msa fill"), "help: msa fill");
+        assert_eq!(title("help msa"), "help: msa commands");
+        assert_eq!(title("help open"), "help: open");
+        assert_eq!(title("help tree save"), "help: tree extract");
+        assert_eq!(
+            help_request("help foo").unwrap().unwrap_err(),
+            "no command 'foo'; :help lists them"
+        );
+    }
+
+    #[test]
+    fn h_as_the_value_of_a_flag_is_not_a_help_request() {
+        for line in [
+            "msa rename --name -h --to x",
+            "msa delete-rows --match -h",
+            "msa rename --regex -h --replace x",
+            "tree prune --tip -h",
+            "msa extract -o -h",
+            "open -- -h",
+        ] {
+            assert!(help_request(line).is_none(), "{line}");
+        }
+        // A switch takes no value, so -h after it still asks for help.
+        let page = help_request("msa rename --tree -h").unwrap().unwrap();
+        assert_eq!(page.title, "help: msa rename");
     }
 
     #[test]
