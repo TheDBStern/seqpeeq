@@ -1,7 +1,7 @@
 //! Drawing the BAM tab: the whole-contig strip, the ruler, the reference,
 //! coverage, the reads, and the details of the read under the cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -848,13 +848,22 @@ fn draw_reads(buf: &mut Buffer, area: Rect, view: &BamView, length: u64, bases: 
     let Some(reads) = &loaded.window.reads else {
         return say(buf, "zoom in to see reads");
     };
+    // Looked up for each read drawn; a drag can select very many.
+    let selected: HashSet<Key> = view.selected.iter().map(ReadId::key).collect();
     let rows = view.packed.rows.len();
     for line in 0..area.height {
         let row = view.top + line as usize;
         let y = area.y + line;
         if row < rows {
             for &i in &view.packed.rows[row] {
-                draw_read(buf, area, y, view, length, &reads[i], bases);
+                let read = &reads[i];
+                let picked = selected.contains(&key(read));
+                let line = Rect {
+                    y,
+                    height: 1,
+                    ..area
+                };
+                draw_read(buf, line, view, length, read, bases, picked);
             }
         } else if row == rows && view.packed.not_drawn > 0 {
             let text = format!("+{} reads not drawn", grouped(view.packed.not_drawn as u64));
@@ -863,17 +872,25 @@ fn draw_reads(buf: &mut Buffer, area: Rect, view: &BamView, length: u64, bases: 
     }
 }
 
+/// What [`ReadId`] names a read by, borrowed from the read.
+type Key<'a> = (&'a str, u16, usize, u64, u64);
+
+fn key(read: &Read) -> Key<'_> {
+    (&read.name, read.flags, read.contig, read.start, read.end)
+}
+
+/// Draw `read` on `line`, one screen row of the reads.
 fn draw_read(
     buf: &mut Buffer,
-    area: Rect,
-    y: u16,
+    line: Rect,
     view: &BamView,
     length: u64,
     read: &Read,
     bases: &HashMap<u64, u8>,
+    selected: bool,
 ) {
+    let (area, y) = (line, line.y);
     let faint = read.mapq == 0 || !read.counts();
-    let selected = view.selected.contains(&ReadId::of(read));
     let finish = |mut style: Style| {
         if faint {
             style = style.add_modifier(Modifier::DIM);

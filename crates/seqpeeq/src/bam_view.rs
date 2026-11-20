@@ -52,6 +52,12 @@ pub struct ReadId {
 }
 
 impl ReadId {
+    /// Its fields, borrowed, to look it up among reads without copying
+    /// their names.
+    pub fn key(&self) -> (&str, u16, usize, u64, u64) {
+        (&self.name, self.flags, self.contig, self.start, self.end)
+    }
+
     pub fn of(read: &Read) -> ReadId {
         ReadId {
             name: read.name.clone(),
