@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui/bam.rs
-assertion_line: 765
+assertion_line: 1066
 expression: terminal.backend()
 ---
 " reads.bam                                                                      "
@@ -8,7 +8,7 @@ expression: terminal.backend()
 "1        200       400       600       800       1000                           "
 "     ▅█▅▂      ▅▅▃                 ▅▅        ▅▅▃                                "
 "     ━━▸       ◂━━                 ━▸        ━━▸                                "
-"      ━━▸                                                                       "
+"     ─━━▸                                                                       "
 "                                                                                "
 "                                                                                "
 "                                                                                "

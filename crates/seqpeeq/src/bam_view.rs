@@ -780,18 +780,13 @@ impl BamView {
         Some((region, self.per_col, reads))
     }
 
-    /// The stretch `read` takes on screen: with its clipped ends at base
-    /// level unless they are hidden.
+    /// The stretch `read` takes on screen: with its clipped ends unless
+    /// they are hidden.
     pub fn span(&self, read: &Read) -> (u64, u64) {
-        if self.hide_clips || self.per_col > 1 {
+        if self.hide_clips {
             return (read.start, read.end);
         }
-        let clip = |op: Option<&(char, u32)>| match op {
-            Some(&('S', n)) => u64::from(n),
-            _ => 0,
-        };
-        let lead = clip(read.cigar.iter().find(|(op, _)| *op != 'H'));
-        let trail = clip(read.cigar.iter().rev().find(|(op, _)| *op != 'H'));
+        let (lead, trail) = read.clips();
         (read.start.saturating_sub(lead).max(1), read.end + trail)
     }
 
@@ -1101,6 +1096,19 @@ pub(crate) mod tests {
         v.repack();
         assert_eq!(v.read_at(10, 1), None, "clips hidden");
         assert_eq!(v.read_at(20, 1), Some(1));
+    }
+
+    #[test]
+    fn zoomed_out_reads_take_their_clips_too() {
+        let mut v = BamView::new(0, 1000, 80);
+        v.per_col = 5;
+        v.left = 101;
+        let (reads, _) = fixture_reads_in("c1:101-160");
+        load(&mut v, reads);
+        v.repack();
+        assert_eq!(v.span(&v.reads()[1]), (111, 165), "r2 with its 10S");
+        v.hide_clips = true;
+        assert_eq!(v.span(&v.reads()[1]), (121, 165));
     }
 
     fn contig(name: &str, length: u64, mapped: u64) -> Contig {

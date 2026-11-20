@@ -6,6 +6,11 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Soft-clipped bases are colored by base at base level, and zoomed-out reads show their clipped ends as gray
+  tails. `S` hides clips at both zoom levels.
+
 ## [0.2.0] - 2026-11-19
 
 ### Added

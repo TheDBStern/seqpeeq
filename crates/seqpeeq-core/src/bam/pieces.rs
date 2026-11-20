@@ -200,6 +200,17 @@ impl Read {
             .map(|&(_, n)| u64::from(n))
             .sum()
     }
+
+    /// How many bases are soft-clipped at its start and at its end, on the
+    /// reference's strand, looking past any hard clips outside them.
+    pub fn clips(&self) -> (u64, u64) {
+        let clip = |op: Option<&(char, u32)>| match op {
+            Some(&('S', n)) => u64::from(n),
+            _ => 0,
+        };
+        let ops = || self.cigar.iter().filter(|(op, _)| *op != 'H');
+        (clip(ops().next()), clip(ops().next_back()))
+    }
 }
 
 #[cfg(test)]
@@ -354,5 +365,14 @@ mod tests {
     fn length_counts_query_bases() {
         assert_eq!(r2().length(), 50);
         assert_eq!(read("10M40H", 51, b"").length(), 10);
+    }
+
+    #[test]
+    fn clips_are_counted_at_each_end_inside_hard_clips() {
+        assert_eq!(r2().clips(), (10, 0));
+        assert_eq!(read("5H3S10M2S4H", 1, b"").clips(), (3, 2));
+        assert_eq!(read("10M40H", 51, b"").clips(), (0, 0));
+        assert_eq!(read("10M", 1, b"").clips(), (0, 0));
+        assert_eq!(read("", 1, b"").clips(), (0, 0));
     }
 }

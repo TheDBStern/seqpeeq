@@ -60,6 +60,9 @@ pub const IN_VIEW: Style = Style::new().bg(Color::Indexed(238));
 /// Stretches of a read that no placement covers, on its axis.
 pub const UNALIGNED: Style = Style::new().bg(Color::Indexed(236));
 
+/// A read's soft-clipped ends, zoomed out.
+pub const CLIP: Style = Style::new().fg(Color::Indexed(244));
+
 /// The coverage row's bars.
 pub const DEPTH: Style = Style::new().fg(Color::Indexed(68));
 
