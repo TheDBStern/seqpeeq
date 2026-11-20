@@ -231,6 +231,9 @@ pub struct ContigList {
     pub top: usize,
     /// How many contigs have no reads.
     pub hidden: usize,
+    /// Opened by Tab in the `g` line: what that line held, to go back to
+    /// with the contig picked (Enter) or as it was (Esc).
+    pub back_to: Option<String>,
     by_name: Vec<usize>,
     by_reads: Vec<usize>,
 }
@@ -292,6 +295,7 @@ impl ContigList {
             cursor: 0,
             top: 0,
             hidden: contigs.iter().filter(|c| c.mapped == Some(0)).count(),
+            back_to: None,
             by_name,
             by_reads,
         }

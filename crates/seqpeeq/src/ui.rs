@@ -652,7 +652,7 @@ const HELP_TREE: &[&str] = &[
 /// The keys of a BAM tab.
 const HELP_BAM: &[&str] = &[
     "Move      arrows hjkl   Shift+arrows a screen",
-    "          PgUp PgDn   Home End   g go to position",
+    "          PgUp PgDn   Home End   g go to, Tab a contig",
     "BAM       ] [ covered   } { no coverage   c list contigs",
     "          m mate   s other part   ' back",
     "          - + z zoom  F toggle filtered  S toggle clips",
@@ -1700,7 +1700,7 @@ pub(crate) mod tests {
             "m mate",
             "s other part",
             "' back",
-            "g go to position",
+            "g go to, Tab a contig",
             "c list contigs",
             "F toggle filtered",
             "S toggle clips",

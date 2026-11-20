@@ -6,6 +6,11 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Tab in a BAM's `g` line finishes a contig name. If several contigs match, it opens the contig list, filtered by
+  what was typed, and the contig picked goes back on the line.
+
 ### Changed
 
 - Soft-clipped bases are colored by base at base level, and zoomed-out reads show their clipped ends as gray
