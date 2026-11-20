@@ -171,6 +171,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
     }
+    if let Mode::CommandHelp(help) = &app.mode {
+        draw_command_help(frame, help, area);
+    }
     if let Mode::Contigs(list) = &app.mode
         && !regions.body.is_empty()
     {
@@ -744,6 +747,88 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
+/// `text` in rows of at most `width` columns, broken at spaces where it
+/// can be. Rows after the first start with `indent` spaces.
+fn wrap_words(text: &str, width: usize, indent: usize) -> Vec<String> {
+    let width = width.max(1);
+    let indent = if indent < width { indent } else { 0 };
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    // Whether the row holds anything but its indent.
+    let mut has_text = false;
+    for word in text.split(' ') {
+        if has_text && used + 1 + word.width() > width {
+            rows.push(std::mem::replace(&mut row, " ".repeat(indent)));
+            used = indent;
+            has_text = false;
+        }
+        if has_text {
+            row.push(' ');
+            used += 1;
+        }
+        // A word wider than a whole row is broken where the row ends.
+        for c in word.chars() {
+            let columns = c.width().unwrap_or(0);
+            if has_text && used + columns > width {
+                rows.push(std::mem::replace(&mut row, " ".repeat(indent)));
+                used = indent;
+            }
+            row.push(c);
+            used += columns;
+            has_text = true;
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+/// The box `:CMD -h` opens: the page wrapped to the screen, scrolled.
+fn draw_command_help(frame: &mut Frame, help: &crate::app::CommandHelp, area: Rect) {
+    if area.width < 5 || area.height < 3 {
+        return;
+    }
+    // A border and one column of padding each side.
+    let room = area.width as usize - 4;
+    let lines: Vec<String> = help
+        .page
+        .lines
+        .iter()
+        .flat_map(|line| {
+            // A note's later rows line up under its text, not its dash.
+            let indent = if line.starts_with("- ") { 2 } else { 0 };
+            wrap_words(line, room, indent)
+        })
+        .collect();
+    let shown = (area.height as usize - 2).min(lines.len());
+    let max_scroll = lines.len() - shown;
+    help.max_scroll.set(max_scroll);
+    help.shown.set(shown);
+    let top = help.scroll.min(max_scroll);
+    let title_width = help.page.title.width() + 2;
+    let widest = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    let width = (widest.max(title_width) + 4).min(area.width as usize) as u16;
+    let height = shown as u16 + 2;
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let mut block = Block::bordered()
+        .title(help.page.title.as_str())
+        .padding(Padding::horizontal(1));
+    if max_scroll > 0 {
+        block = block.title_bottom("j k scroll  Esc close");
+    }
+    let text: Vec<Line> = lines[top..top + shown]
+        .iter()
+        .map(|l| Line::from(l.as_str()))
+        .collect();
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(text).block(block), popup);
+}
+
 /// The tab label of each open dataset: its file name.
 pub fn tab_titles(app: &App) -> Vec<String> {
     app.session
@@ -952,6 +1037,71 @@ pub(crate) mod tests {
         let mut app = with_dataset();
         app.mode = Mode::Help;
         insta::assert_snapshot!(render(&app, 60, 12).backend());
+    }
+
+    /// The box `:CMD -h` opens, for the help `line` asks for.
+    fn command_help(line: &str) -> Mode {
+        let page = seqpeeq_core::help_request(line).unwrap().unwrap();
+        Mode::CommandHelp(crate::app::CommandHelp::new(page))
+    }
+
+    #[test]
+    fn command_help_box() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("msa fill -h");
+        insta::assert_snapshot!(render(&app, 60, 24).backend());
+    }
+
+    #[test]
+    fn a_long_command_help_scrolls_to_its_end_and_no_further() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("msa rename -h");
+        let screen = rows(&render(&app, 60, 12)).join("\n");
+        assert!(screen.contains("msa rename [rows]"), "{screen}");
+        assert!(!screen.contains("seqpeeq says how many"), "{screen}");
+        let j = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        for _ in 0..200 {
+            app.handle_event(&j);
+            render(&app, 60, 12);
+        }
+        let end = rows(&render(&app, 60, 12)).join("\n");
+        assert!(end.contains("seqpeeq says how many"), "{end}");
+        assert!(!end.contains("msa rename [rows]"), "{end}");
+        let k = Event::Key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        app.handle_event(&k);
+        let up = rows(&render(&app, 60, 12)).join("\n");
+        assert_ne!(up, end, "one k after the end moves up a line");
+        let home = Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_event(&home);
+        assert_eq!(rows(&render(&app, 60, 12)).join("\n"), screen);
+        let end_key = Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_event(&end_key);
+        assert_eq!(rows(&render(&app, 60, 12)).join("\n"), end);
+    }
+
+    #[test]
+    fn command_help_wraps_at_spaces() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("bam export-reads -h");
+        let screen = rows(&render(&app, 60, 24)).join("\n");
+        // Every word of the syntax line is on screen whole.
+        for word in [
+            "[--region",
+            "--names-file",
+            "[--with-mates]",
+            "[--everywhere]",
+        ] {
+            assert!(screen.contains(word), "{word}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn command_help_draws_on_tiny_screens() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("help");
+        for (width, height) in [(30, 8), (10, 3), (4, 2), (1, 1)] {
+            render(&app, width, height);
+        }
     }
 
     /// The text of each screen row, trailing spaces removed.
