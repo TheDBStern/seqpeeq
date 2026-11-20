@@ -507,10 +507,15 @@ pub fn info_text(app: &App) -> (String, String) {
 /// What is selected, as the information row says it.
 fn selection_text(alignment: &seqpeeq_core::Alignment, view: &MsaView) -> Option<String> {
     let (rows, cols) = view.region(Shape::of(alignment))?.flags();
+    // Scattered rows or columns are counted too.
+    let listed = |what: &str, ranges: &seqpeeq_core::Ranges| match ranges.as_slice().len() {
+        1 => format!("{what} {ranges}"),
+        _ => format!("{what} {ranges} ({})", ranges.count()),
+    };
     Some(match (rows.rows, cols) {
         (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),
-        (Some(rows), None) => format!("rows {rows}"),
-        (None, Some(cols)) => format!("cols {cols}"),
+        (Some(rows), None) => listed("rows", &rows),
+        (None, Some(cols)) => listed("cols", &cols),
         (None, None) => String::new(),
     })
 }
@@ -1236,6 +1241,19 @@ pub(crate) mod tests {
             "the ruler too"
         );
         assert_ne!(buffer[(27 + 30, 1)].bg, Color::Indexed(240));
+
+        let view = view_mut(&mut app);
+        view.select = None;
+        view.picked = Some(crate::msa_view::Picked {
+            axis: crate::msa_view::Axis::Rows,
+            ranges: "1,4".parse().unwrap(),
+        });
+        let terminal = render(&app, 70, 9);
+        assert_eq!(rows(&terminal)[7], "row 4/5 · col 30/60 · A · rows 1,4 (2)");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 2)].bg, Color::Indexed(240), "row 1's name");
+        assert_eq!(buffer[(3, 5)].bg, Color::Indexed(240), "row 4's name");
+        assert_ne!(buffer[(3, 3)].bg, Color::Indexed(240), "not row 2's");
     }
 
     #[test]

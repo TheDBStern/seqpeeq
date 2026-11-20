@@ -17,7 +17,7 @@ use seqpeeq_core::{
 use crate::bam_view::{BamView, Loaded, Want};
 use crate::line::{History, LineEdit};
 use crate::msa_view::{
-    Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Select, Shape, Typed, parse_goto,
+    Axis, Cell, Colouring, MsaView, Pending, Region, Search, SelKind, Shape, Typed, parse_goto,
 };
 use crate::tree_view::{TreeSearch, TreeView, common_ancestor};
 use crate::ui;
@@ -1001,9 +1001,8 @@ impl App {
                         && view.select.is_some()
                     {
                         view.select = None;
-                    } else if let Some(view) = self.view_mut().filter(|view| view.select.is_some())
-                    {
-                        view.select = None;
+                    } else if let Some(view) = self.view_mut().filter(|view| view.has_selection()) {
+                        view.clear_selection();
                     } else if let Some((_, view)) = self
                         .bam_mut()
                         .filter(|(_, view)| !view.selected.is_empty() || view.stretch().is_some())
@@ -1264,7 +1263,7 @@ impl App {
             return;
         }
         if let Some(view) = self.view_mut() {
-            view.select = None;
+            view.clear_selection();
             view.append = typing == Typing::Insert;
         }
         self.mode = Mode::Edit(typing);
@@ -1698,16 +1697,12 @@ impl App {
             KeyCode::PageDown => view.move_by(page, 0, aln),
             KeyCode::Home => view.move_to(None, Some(0), aln),
             KeyCode::End => view.move_to(None, Some(usize::MAX), aln),
-            KeyCode::Char(kind @ ('v' | 'V' | 'C')) => {
-                view.select = Some(Select {
-                    kind: match kind {
-                        'v' => SelKind::Block,
-                        'V' => SelKind::Rows,
-                        _ => SelKind::Cols,
-                    },
-                    anchor: view.cursor,
-                });
-            }
+            KeyCode::Char(kind @ ('v' | 'V' | 'C')) => view.start_run(match kind {
+                'v' => SelKind::Block,
+                'V' => SelKind::Rows,
+                _ => SelKind::Cols,
+            }),
+            KeyCode::Char(' ') => view.space(aln),
             KeyCode::Char('c') => view.cycle_colouring(),
             KeyCode::Char('[') => view.widen_names(-1),
             KeyCode::Char(']') => view.widen_names(1),
@@ -2169,23 +2164,44 @@ impl App {
                 match at {
                     Hit::Cell(cell) => {
                         view.cursor = cell;
-                        view.select = None;
+                        view.clear_selection();
                     }
                     Hit::Name(row) => {
                         view.cursor.row = row;
-                        view.select = Some(Select {
-                            kind: SelKind::Rows,
-                            anchor: view.cursor,
-                        });
+                        view.clear_selection();
+                        view.start_run(SelKind::Rows);
                     }
                     Hit::Ruler(col) => {
                         view.cursor.col = col;
-                        view.select = Some(Select {
-                            kind: SelKind::Cols,
-                            anchor: view.cursor,
-                        });
+                        view.clear_selection();
+                        view.start_run(SelKind::Cols);
                     }
                     Hit::Outside => {}
+                }
+            }
+            // The right button picks a sequence or column, or unpicks it;
+            // dragging on from one not picked picks a run.
+            MouseEventKind::Down(MouseButton::Right)
+                if matches!(at, Hit::Name(_) | Hit::Ruler(_)) =>
+            {
+                let (axis, kind, at) = match at {
+                    Hit::Name(row) => (Axis::Rows, SelKind::Rows, Cell { row, ..view.cursor }),
+                    Hit::Ruler(col) => (Axis::Cols, SelKind::Cols, Cell { col, ..view.cursor }),
+                    _ => unreachable!("matched above"),
+                };
+                let picked = view.region(aln).is_some_and(|region| match axis {
+                    Axis::Rows => region.cols.is_none() && region.contains(at),
+                    Axis::Cols => region.rows.is_none() && region.contains(at),
+                });
+                if picked {
+                    let index = if axis == Axis::Rows { at.row } else { at.col };
+                    view.toggle(axis, index, aln);
+                    dragging = false;
+                } else {
+                    view.fold(aln);
+                    view.cursor = at;
+                    view.start_run(kind);
+                    dragging = true;
                 }
             }
             MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
@@ -2195,13 +2211,12 @@ impl App {
                     Hit::Ruler(col) => (SelKind::Cols, Cell { col, ..view.cursor }),
                     Hit::Outside => return,
                 };
-                view.select.get_or_insert(Select {
-                    kind,
-                    anchor: view.cursor,
-                });
+                if view.select.is_none() {
+                    view.start_run(kind);
+                }
                 view.cursor = to;
             }
-            MouseEventKind::Drag(MouseButton::Left) if was_dragging => {
+            MouseEventKind::Drag(MouseButton::Left | MouseButton::Right) if was_dragging => {
                 let kind = view.select.map_or(SelKind::Block, |select| select.kind);
                 let cells = layout.cells;
                 if cells.is_empty() {
@@ -2233,10 +2248,9 @@ impl App {
                     col: (view.left + column as usize * view.scale.cols)
                         .min(aln.cols.saturating_sub(1)),
                 };
-                view.select.get_or_insert(Select {
-                    kind,
-                    anchor: view.cursor,
-                });
+                if view.select.is_none() {
+                    view.start_run(kind);
+                }
                 match kind {
                     SelKind::Block => view.cursor = to,
                     SelKind::Rows => view.cursor.row = to.row,
@@ -2244,7 +2258,7 @@ impl App {
                 }
                 view.snap();
             }
-            MouseEventKind::Up(MouseButton::Left) => dragging = false,
+            MouseEventKind::Up(MouseButton::Left | MouseButton::Right) => dragging = false,
             _ => {}
         }
         self.dragging = dragging;
@@ -2317,7 +2331,7 @@ impl App {
         match self.session.start(cmd)? {
             Started::Done(outcome) => {
                 if unselects && let Some(view) = self.view_mut() {
-                    view.select = None;
+                    view.clear_selection();
                 }
                 // An edit to two files may have changed an alignment on
                 // another tab: its selection may name rows that are gone.
@@ -2330,7 +2344,7 @@ impl App {
                     .collect();
                 for id in changed {
                     if let Some(view) = self.views.get_mut(&id) {
-                        view.select = None;
+                        view.clear_selection();
                     }
                 }
                 if follow {
@@ -3353,6 +3367,109 @@ mod tests {
         );
         type_str(&mut app, "d");
         assert_eq!(last(&app), "msa delete-cols --cols 4-7");
+    }
+
+    /// The selected rows and columns as a command names them, `-` for all
+    /// and `none` with nothing selected.
+    fn selected(app: &App) -> String {
+        let text = |r: &Option<Ranges>| r.as_ref().map_or("-".to_string(), Ranges::to_string);
+        match view(app).region(Shape::of(app.alignment().unwrap().0)) {
+            Some(region) => format!("{} × {}", text(&region.rows), text(&region.cols)),
+            None => "none".to_string(),
+        }
+    }
+
+    fn press_at(app: &mut App, button: MouseButton, place: impl Fn(&App) -> (u16, u16)) {
+        let at = place(app);
+        app.handle_event(&mouse(MouseEventKind::Down(button), at, NONE));
+        app.handle_event(&mouse(MouseEventKind::Up(button), at, NONE));
+    }
+
+    #[test]
+    fn space_picks_scattered_rows_and_d_deletes_them() {
+        for (keys, logged) in [
+            (" jj d", "msa delete-rows --rows 1,3"),
+            ("V jj d", "msa delete-rows --rows 1,3"),
+            ("C ll Cld", "msa delete-cols --cols 1,3-4"),
+        ] {
+            let (mut app, _dir) = with_trio();
+            type_str(&mut app, keys);
+            assert_eq!(last(&app), logged, "{keys}");
+            assert!(!app.status.starts_with("error"), "{keys}: {}", app.status);
+        }
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, " jj e");
+        assert_eq!(prompt_text(&app), ":msa extract --rows 1,3 --out ");
+    }
+
+    #[test]
+    fn right_click_toggles_names_and_column_numbers() {
+        let (mut app, _dir) = with_trio();
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 0));
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 2));
+        assert_eq!(selected(&app), "1,3 × -");
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 2));
+        assert_eq!(selected(&app), "1 × -", "a second right-click unpicks");
+        press_at(&mut app, MouseButton::Right, |a| ruler_at(a, 4));
+        assert_eq!(selected(&app), "- × 5");
+        press_at(&mut app, MouseButton::Right, |a| ruler_at(a, 7));
+        assert_eq!(selected(&app), "- × 5,8");
+    }
+
+    #[test]
+    fn a_right_drag_adds_a_run_of_names() {
+        let (mut app, _dir) = with_trio();
+        let right = MouseButton::Right;
+        press_at(&mut app, right, |a| name_at(a, 0));
+        app.handle_event(&mouse(MouseEventKind::Down(right), name_at(&app, 1), NONE));
+        app.handle_event(&mouse(MouseEventKind::Drag(right), name_at(&app, 2), NONE));
+        app.handle_event(&mouse(MouseEventKind::Up(right), name_at(&app, 2), NONE));
+        assert_eq!(selected(&app), "1-3 × -");
+        // Every sequence cannot go, so columns show the delete.
+        press_at(&mut app, right, |a| ruler_at(a, 0));
+        app.handle_event(&mouse(MouseEventKind::Down(right), ruler_at(&app, 3), NONE));
+        app.handle_event(&mouse(MouseEventKind::Drag(right), ruler_at(&app, 5), NONE));
+        app.handle_event(&mouse(MouseEventKind::Up(right), ruler_at(&app, 5), NONE));
+        type_str(&mut app, "d");
+        assert_eq!(last(&app), "msa delete-cols --cols 1,4-6");
+    }
+
+    #[test]
+    fn a_left_click_starts_over() {
+        let (mut app, _dir) = with_trio();
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 0));
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 2));
+        press_at(&mut app, LEFT, |a| at(a, 1, 1));
+        assert!(!view(&app).has_selection());
+        press_at(&mut app, MouseButton::Right, |a| name_at(a, 0));
+        press_at(&mut app, LEFT, |a| name_at(a, 2));
+        assert_eq!(
+            selected(&app),
+            "3 × -",
+            "a left-click on a name starts over"
+        );
+    }
+
+    #[test]
+    fn picks_go_after_a_delete_and_an_undo() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, " jj d");
+        assert!(!view(&app).has_selection());
+        type_str(&mut app, " ");
+        assert!(view(&app).has_selection());
+        type_str(&mut app, "u");
+        assert!(!view(&app).has_selection());
+        // Unpicking the last row leaves nothing selected: d gaps a cell.
+        type_str(&mut app, "jj  d");
+        assert_eq!(last(&app), "msa fill --rows 3 --cols 1 --with=-");
+    }
+
+    #[test]
+    fn esc_clears_picks() {
+        let (mut app, _dir) = with_trio();
+        type_str(&mut app, " jj ");
+        app.handle_event(&press(KeyCode::Esc));
+        assert!(!view(&app).has_selection());
     }
 
     #[test]
