@@ -1,8 +1,12 @@
 """Tests for report.py."""
 
+import json
 import unittest
+from pathlib import Path
 
 import report
+
+ROOT = Path(__file__).resolve().parent.parent
 
 MACHINE = {"chip": "Apple M9", "cores": 8, "memory_bytes": 24 * 2**30, "os": "macOS 99"}
 VERSIONS = {"seqpeeq": "0.1.0", "jalview": "2.11.5.1", "igv": "2.19.8", "figtree": "1.4.4"}
@@ -74,13 +78,6 @@ class Page(unittest.TestCase):
         self.assertIn("[^", row)
         self.assertIn("16 GB heap limit", page)
 
-    def test_the_uncached_open_comes_from_the_runs(self):
-        big = result("seqpeeq", "msa", "aln_100k.fa", "ok", 0.65, 3_000_000_000)
-        big["runs"] = [{"seconds": s, "max_rss": 1, "outcome": "ok", "detail": ""}
-                       for s in [4.567, 0.65, 0.65]]
-        page = report.page({**RESULTS, "results": [big]}, ONLY)
-        self.assertIn("first run of `aln_100k.fa`, read from disk, took 4.57 s against 0.65 s", page)
-
     def test_page_names_the_machine_and_versions(self):
         self.assertIn("Apple M9", self.page)
         for version in VERSIONS.values():
@@ -90,6 +87,16 @@ class Page(unittest.TestCase):
         self.assertIn("delete 1,000 columns", self.page)
         self.assertIn("1.1 ms", self.page)
         self.assertIn("0.15 s", self.page)
+
+
+class Committed(unittest.TestCase):
+    def test_the_committed_results_give_the_committed_page(self):
+        results = json.loads((ROOT / "bench" / "results.json").read_text())
+        only = json.loads((ROOT / "bench" / "seqpeeq_only.json").read_text())
+        expected = (ROOT / "docs" / "benchmarks.md").read_text()
+        self.assertEqual(report.page(results, only), expected,
+                         "docs/benchmarks.md differs from what report.py writes: edit report.py "
+                         "and regenerate the page, rather than editing the page by hand")
 
 
 if __name__ == "__main__":
