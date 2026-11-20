@@ -489,8 +489,13 @@ pub fn info_text(app: &App) -> (String, String) {
             parts.push(format!("length {length}"));
         }
         left = parts.join(" · ");
-        if let Some(select) = view.select {
-            right.push(format!("selected: {}", tips(facts.tips(select))));
+        match view.picked[..] {
+            [] => {}
+            [one] => right.push(format!("selected: {}", tips(facts.tips(one)))),
+            _ => {
+                let count = view.picked_tips(tree).len() as u32;
+                right.push(format!("selected: {}", tips(count)));
+            }
         }
         if doc.is_modified() {
             right.push("unsaved".to_string());
@@ -507,10 +512,15 @@ pub fn info_text(app: &App) -> (String, String) {
 /// What is selected, as the information row says it.
 fn selection_text(alignment: &seqpeeq_core::Alignment, view: &MsaView) -> Option<String> {
     let (rows, cols) = view.region(Shape::of(alignment))?.flags();
+    // Scattered rows or columns are counted too.
+    let listed = |what: &str, ranges: &seqpeeq_core::Ranges| match ranges.as_slice().len() {
+        1 => format!("{what} {ranges}"),
+        _ => format!("{what} {ranges} ({})", ranges.count()),
+    };
     Some(match (rows.rows, cols) {
         (Some(rows), Some(cols)) => format!("rows {rows} × cols {cols}"),
-        (Some(rows), None) => format!("rows {rows}"),
-        (None, Some(cols)) => format!("cols {cols}"),
+        (Some(rows), None) => listed("rows", &rows),
+        (None, Some(cols)) => listed("cols", &cols),
         (None, None) => String::new(),
     })
 }
@@ -625,12 +635,12 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          PgUp PgDn   Home End   g go to",
     "          / search names   n N next, previous",
     "Select    drag   right-click extends   v V C   Esc clear",
-    "Edit      d delete or gap   f fill   r rename",
+    "          Space, right-click a name or number  pick",
+    "Edit      d delete/gap   f fill   e extract   r rename",
     "          many: msa rename --regex RE --replace TEXT",
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo   w save the whole alignment",
-    "          e extract the selection",
     "          c change colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
@@ -640,12 +650,13 @@ const HELP_ALIGNMENT: &[&str] = &[
 const HELP_TREE: &[&str] = &[
     "Tree      jk rows  h parent  l back  Enter open/close",
     "          + - z zoom  b lengths  / n N find  v select",
+    "          Space, right-click  pick several clades",
     "          d prune  r rename  o re-root on branch",
     "          O re-root at the midpoint",
     "          many: tree rename --regex RE --replace TEXT",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo",
-    "          a go to the alignment",
+    "          a select their sequences in the alignment",
     "          p link to an open alignment",
 ];
 
@@ -1236,6 +1247,19 @@ pub(crate) mod tests {
             "the ruler too"
         );
         assert_ne!(buffer[(27 + 30, 1)].bg, Color::Indexed(240));
+
+        let view = view_mut(&mut app);
+        view.select = None;
+        view.picked = Some(crate::msa_view::Picked {
+            axis: crate::msa_view::Axis::Rows,
+            ranges: "1,4".parse().unwrap(),
+        });
+        let terminal = render(&app, 70, 9);
+        assert_eq!(rows(&terminal)[7], "row 4/5 · col 30/60 · A · rows 1,4 (2)");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 2)].bg, Color::Indexed(240), "row 1's name");
+        assert_eq!(buffer[(3, 5)].bg, Color::Indexed(240), "row 4's name");
+        assert_ne!(buffer[(3, 3)].bg, Color::Indexed(240), "not row 2's");
     }
 
     #[test]
@@ -1537,7 +1561,7 @@ pub(crate) mod tests {
         let screen = rows(&render(&app, 80, 24)).join("\n");
         for needle in [
             "w save the whole alignment",
-            "e extract the selection",
+            "e extract",
             "Tab completes a file name after :tree link",
             "hjkl",
             "PgUp",
@@ -1735,7 +1759,8 @@ pub(crate) mod tests {
             "Enter open/close",
             "b lengths",
             "o re-root on branch",
-            "a go to the alignment",
+            "a select their sequences in the alignment",
+            "Space, right-click  pick several clades",
             "O re-root at the midpoint",
             "many: tree rename --regex RE --replace TEXT",
         ] {
@@ -1752,6 +1777,7 @@ pub(crate) mod tests {
             "c change colors",
             "[ ] adjust name width",
             "many: msa rename --regex RE --replace TEXT",
+            "Space, right-click a name or number  pick",
         ] {
             assert!(help.contains(text), "{text}");
         }

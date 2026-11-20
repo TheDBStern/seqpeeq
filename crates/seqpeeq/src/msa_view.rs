@@ -2,7 +2,6 @@
 //! is shown. Pure state: nothing here draws or reads the terminal.
 
 use std::collections::HashSet;
-use std::ops::Range;
 use std::sync::Arc;
 
 use seqpeeq_core::{Alignment, MsaCmd, Ranges, RowSel, View};
@@ -54,6 +53,52 @@ pub enum SelKind {
     Cols,
 }
 
+impl SelKind {
+    /// The axis of whole rows or whole columns; `None` for a block.
+    pub fn axis(self) -> Option<Axis> {
+        match self {
+            SelKind::Block => None,
+            SelKind::Rows => Some(Axis::Rows),
+            SelKind::Cols => Some(Axis::Cols),
+        }
+    }
+}
+
+/// Whole rows or whole columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    Rows,
+    Cols,
+}
+
+/// Rows or columns picked one by one, not necessarily side by side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picked {
+    pub axis: Axis,
+    pub ranges: Ranges,
+}
+
+impl Picked {
+    fn region(&self) -> Region {
+        let ranges = Some(self.ranges.clone());
+        match self.axis {
+            Axis::Rows => Region {
+                rows: ranges,
+                cols: None,
+            },
+            Axis::Cols => Region {
+                rows: None,
+                cols: ranges,
+            },
+        }
+    }
+}
+
+/// The positions of both.
+fn join(a: &Ranges, b: &Ranges) -> Ranges {
+    Ranges::new(a.as_slice().iter().chain(b.as_slice()).cloned()).expect("neither is empty")
+}
+
 /// A selection in the making: it runs from `anchor` to the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Select {
@@ -61,30 +106,35 @@ pub struct Select {
     pub anchor: Cell,
 }
 
-/// Rows and columns, counted from 0 and half-open. `None` means all of
-/// them.
+/// Rows and columns, counted from 0. `None` means all of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
-    pub rows: Option<Range<usize>>,
-    pub cols: Option<Range<usize>>,
+    pub rows: Option<Ranges>,
+    pub cols: Option<Ranges>,
 }
 
 impl Region {
     /// The flags that name this region in a command: `--rows` and `--cols`,
     /// counted from 1.
     pub fn flags(&self) -> (RowSel, Option<Ranges>) {
-        let ranges = |range: &Range<usize>| Ranges::new(std::iter::once(range.clone()));
         let rows = RowSel {
-            rows: self.rows.as_ref().and_then(ranges),
+            rows: self.rows.clone(),
             ..RowSel::default()
         };
-        (rows, self.cols.as_ref().and_then(ranges))
+        (rows, self.cols.clone())
+    }
+
+    /// Whether any cell of the block `rows` × `cols` is in the region.
+    pub fn touches(&self, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>) -> bool {
+        let within = |ranges: &Option<Ranges>, range: std::ops::Range<usize>| {
+            !range.is_empty() && ranges.as_ref().is_none_or(|r| r.intersects(range))
+        };
+        within(&self.rows, rows) && within(&self.cols, cols)
     }
 
     pub fn contains(&self, cell: Cell) -> bool {
-        let within = |range: &Option<Range<usize>>, at: usize| {
-            range.as_ref().is_none_or(|range| range.contains(&at))
-        };
+        let within =
+            |ranges: &Option<Ranges>, at: usize| ranges.as_ref().is_none_or(|r| r.contains(at));
         within(&self.rows, cell.row) && within(&self.cols, cell.col)
     }
 }
@@ -277,8 +327,11 @@ pub struct MsaView {
     /// Columns given to sequence names.
     pub name_width: u16,
     pub colouring: Colouring,
-    /// The selection, if one has been started. Moving the cursor extends it.
+    /// The run being selected, if one has been started. Moving the cursor
+    /// extends it.
     pub select: Option<Select>,
+    /// Rows or columns picked one by one. A run of the same axis joins them.
+    pub picked: Option<Picked>,
     /// What has been typed since the last command, while typing.
     pub typed: Option<Pending>,
     /// Inserting: the cursor may sit one past the last column, to add
@@ -305,6 +358,7 @@ impl MsaView {
             name_width: 24,
             colouring: Colouring::Conserved,
             select: None,
+            picked: None,
             typed: None,
             append: false,
             search: None,
@@ -314,16 +368,38 @@ impl MsaView {
         }
     }
 
-    /// What is selected: from the anchor to the cursor, both included,
-    /// each end run out to the edge of its block and clipped to `aln`.
+    /// What is selected: the picks, and the run from the anchor to the
+    /// cursor.
     pub fn region(&self, aln: Shape) -> Option<Region> {
+        let run = self.run(aln);
+        let Some(picked) = &self.picked else {
+            return run;
+        };
+        let along = |region: &Region| match picked.axis {
+            Axis::Rows if region.cols.is_none() => region.rows.clone(),
+            Axis::Cols if region.rows.is_none() => region.cols.clone(),
+            _ => None,
+        };
+        let ranges = match run.as_ref().and_then(along) {
+            Some(more) => join(&picked.ranges, &more),
+            None => picked.ranges.clone(),
+        };
+        Some(Picked { ranges, ..*picked }.region())
+    }
+
+    /// The run being selected: from the anchor to the cursor, both
+    /// included, each end run out to the edge of its block and clipped to
+    /// `aln`.
+    fn run(&self, aln: Shape) -> Option<Region> {
         let Select { kind, anchor } = self.select?;
         let span = |a: usize, b: usize, per: usize, limit: usize| {
             let end = ((a.max(b) / per + 1) * per).min(limit);
             (a.min(b) / per * per).min(end)..end
         };
-        let rows = span(anchor.row, self.cursor.row, self.scale.rows, aln.rows);
-        let cols = span(anchor.col, self.cursor.col, self.scale.cols, aln.cols);
+        // Nothing to select in an empty alignment; `None` in a region would
+        // mean every row or column.
+        let rows = Ranges::one(span(anchor.row, self.cursor.row, self.scale.rows, aln.rows))?;
+        let cols = Ranges::one(span(anchor.col, self.cursor.col, self.scale.cols, aln.cols))?;
         Some(match kind {
             SelKind::Block => Region {
                 rows: Some(rows),
@@ -340,14 +416,102 @@ impl MsaView {
         })
     }
 
+    pub fn has_selection(&self) -> bool {
+        self.select.is_some() || self.picked.is_some()
+    }
+
+    /// Let go of the run and the picks.
+    pub fn clear_selection(&mut self) {
+        self.select = None;
+        self.picked = None;
+    }
+
+    /// Start a run at the cursor. A run of rows keeps picked rows, and one
+    /// of columns picked columns; anything else lets go of the picks.
+    pub fn start_run(&mut self, kind: SelKind) {
+        if self.picked.as_ref().map(|p| Some(p.axis)) != Some(kind.axis()) {
+            self.picked = None;
+        }
+        self.select = Some(Select {
+            kind,
+            anchor: self.cursor,
+        });
+    }
+
+    /// End the run: a run of rows or columns joins the picks, replacing
+    /// picks of the other axis. A block is let go.
+    pub fn fold(&mut self, aln: Shape) {
+        let run = self.run(aln);
+        let Some(axis) = self.select.take().and_then(|select| select.kind.axis()) else {
+            return;
+        };
+        let Some(ranges) = run.and_then(|region| match axis {
+            Axis::Rows => region.rows,
+            Axis::Cols => region.cols,
+        }) else {
+            return;
+        };
+        let ranges = match &self.picked {
+            Some(picked) if picked.axis == axis => join(&picked.ranges, &ranges),
+            _ => ranges,
+        };
+        self.picked = Some(Picked { axis, ranges });
+    }
+
+    /// Pick the row or column `at`, or unpick it if it is picked: the whole
+    /// line or cell it is drawn in, when zoomed out. The run ends first.
+    pub fn toggle(&mut self, axis: Axis, at: usize, aln: Shape) {
+        self.fold(aln);
+        let (per, limit) = match axis {
+            Axis::Rows => (self.scale.rows, aln.rows),
+            Axis::Cols => (self.scale.cols, aln.cols),
+        };
+        let start = at / per * per;
+        let Some(block) = Ranges::one(start..(start + per).min(limit)) else {
+            return;
+        };
+        let range = block.as_slice()[0].clone();
+        self.picked = match self.picked.take() {
+            Some(picked) if picked.axis == axis && picked.ranges.contains(start) => picked
+                .ranges
+                .without(range)
+                .map(|ranges| Picked { axis, ranges }),
+            Some(picked) if picked.axis == axis => Some(Picked {
+                axis,
+                ranges: picked.ranges.with(range),
+            }),
+            _ => Some(Picked {
+                axis,
+                ranges: block,
+            }),
+        };
+    }
+
+    /// `Space`: keep a run of rows or columns as picks; otherwise pick or
+    /// unpick the cursor's row, or its column when columns are picked.
+    pub fn space(&mut self, aln: Shape) {
+        match self.select {
+            Some(select) if select.kind.axis().is_some() => self.fold(aln),
+            _ => {
+                self.select = None;
+                let axis = self.picked.as_ref().map_or(Axis::Rows, |p| p.axis);
+                let at = match axis {
+                    Axis::Rows => self.cursor.row,
+                    Axis::Cols => self.cursor.col,
+                };
+                self.toggle(axis, at, aln);
+            }
+        }
+    }
+
     /// What an action applies to: the selection, or else the cursor's
     /// block (the cell under it, in the grid).
     pub fn target(&self, aln: Shape) -> Region {
         let Cell { row, col } = self.cursor;
         let Scale { rows, cols } = self.scale;
         self.region(aln).unwrap_or(Region {
-            rows: Some(row..(row + rows).min(aln.rows)),
-            cols: Some(col..(col + cols).min(aln.cols)),
+            rows: Ranges::one(row..(row + rows).min(aln.rows)),
+            cols: Ranges::one(col..(col + cols).min(aln.cols)),
         })
     }
 
@@ -460,6 +624,16 @@ impl MsaView {
         {
             self.select = None;
         }
+        // Picks past the end mean nothing any more either.
+        if self.picked.as_ref().is_some_and(|picked| {
+            let limit = match picked.axis {
+                Axis::Rows => aln.rows,
+                Axis::Cols => aln.cols,
+            };
+            picked.ranges.end() > limit
+        }) {
+            self.picked = None;
+        }
         self.snap();
     }
 
@@ -561,16 +735,16 @@ mod tests {
         assert_eq!(
             view.region(aln),
             Some(Region {
-                rows: Some(0..10),
-                cols: Some(8..48)
+                rows: Ranges::one(0..10),
+                cols: Ranges::one(8..48)
             })
         );
         view.select = None;
         assert_eq!(
             view.target(aln),
             Region {
-                rows: Some(8..10),
-                cols: Some(40..48)
+                rows: Ranges::one(8..10),
+                cols: Ranges::one(40..48)
             }
         );
     }
@@ -727,8 +901,8 @@ mod tests {
         assert_eq!(
             view.target(aln),
             Region {
-                rows: Some(4..5),
-                cols: Some(6..7)
+                rows: Ranges::one(4..5),
+                cols: Ranges::one(6..7)
             }
         );
         view.select = Some(Select {
@@ -737,8 +911,8 @@ mod tests {
         });
         view.move_by(-2, -3, aln);
         let block = Region {
-            rows: Some(2..5),
-            cols: Some(3..7),
+            rows: Ranges::one(2..5),
+            cols: Ranges::one(3..7),
         };
         assert_eq!(view.region(aln), Some(block.clone()));
         assert_eq!(view.target(aln), block);
@@ -749,7 +923,7 @@ mod tests {
         assert_eq!(
             view.region(aln),
             Some(Region {
-                rows: Some(2..8),
+                rows: Ranges::one(2..8),
                 cols: None
             })
         );
@@ -761,7 +935,7 @@ mod tests {
             view.region(aln),
             Some(Region {
                 rows: None,
-                cols: Some(3..4)
+                cols: Ranges::one(3..4)
             })
         );
     }
@@ -769,15 +943,15 @@ mod tests {
     #[test]
     fn a_region_names_itself_in_flags_counted_from_one() {
         let region = Region {
-            rows: Some(1..4),
-            cols: Some(17..30),
+            rows: Ranges::one(1..4),
+            cols: Ranges::one(17..30),
         };
         let (rows, cols) = region.flags();
         assert_eq!(rows.rows.unwrap().to_string(), "2-4");
         assert_eq!(cols.unwrap().to_string(), "18-30");
         let columns = Region {
             rows: None,
-            cols: Some(0..1),
+            cols: Ranges::one(0..1),
         };
         let (rows, cols) = columns.flags();
         assert!(rows.is_empty());
@@ -848,5 +1022,134 @@ mod tests {
             names: None,
         };
         assert_eq!(none.step(0, true, true), None);
+    }
+    /// The selected rows and columns as typed in a command, `-` for all.
+    fn picked_text(view: &MsaView, aln: Shape) -> Option<(String, String)> {
+        let text = |r: &Option<Ranges>| r.as_ref().map_or("-".to_string(), Ranges::to_string);
+        view.region(aln)
+            .map(|region| (text(&region.rows), text(&region.cols)))
+    }
+
+    fn texts(rows: &str, cols: &str) -> Option<(String, String)> {
+        Some((rows.to_string(), cols.to_string()))
+    }
+
+    const TEN: Shape = Shape { rows: 10, cols: 10 };
+
+    #[test]
+    fn toggling_rows_builds_a_scattered_region() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Rows, 1, TEN);
+        view.toggle(Axis::Rows, 5, TEN);
+        view.toggle(Axis::Rows, 6, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("2,6-7", "-"));
+        view.toggle(Axis::Rows, 5, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("2,7", "-"));
+    }
+
+    #[test]
+    fn toggling_the_last_pick_off_leaves_no_selection() {
+        let mut view = MsaView::new();
+        view.move_to(Some(3), Some(4), TEN);
+        view.toggle(Axis::Rows, 3, TEN);
+        assert!(view.has_selection());
+        view.toggle(Axis::Rows, 3, TEN);
+        assert_eq!(view.region(TEN), None);
+        assert!(!view.has_selection());
+        assert_eq!(
+            view.target(TEN),
+            Region {
+                rows: Ranges::one(3..4),
+                cols: Ranges::one(4..5)
+            }
+        );
+    }
+
+    #[test]
+    fn a_column_pick_clears_row_picks() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Rows, 1, TEN);
+        view.toggle(Axis::Cols, 3, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("-", "4"));
+    }
+
+    #[test]
+    fn space_folds_a_live_run_then_toggles() {
+        let mut view = MsaView::new();
+        view.start_run(SelKind::Rows);
+        view.move_to(Some(2), None, TEN);
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("1-3", "-"));
+        assert_eq!(view.select, None);
+        view.move_to(Some(5), None, TEN);
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("1-3,6", "-"));
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("1-3", "-"));
+    }
+
+    #[test]
+    fn space_on_picked_columns_toggles_the_cursors_column() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Cols, 0, TEN);
+        view.move_to(Some(4), Some(2), TEN);
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("-", "1,3"));
+    }
+
+    #[test]
+    fn space_with_nothing_or_a_block_picks_the_cursors_row() {
+        let mut view = MsaView::new();
+        view.move_to(Some(4), Some(2), TEN);
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("5", "-"));
+        view.start_run(SelKind::Block);
+        view.move_to(Some(6), None, TEN);
+        view.space(TEN);
+        assert_eq!(picked_text(&view, TEN), texts("7", "-"));
+    }
+
+    #[test]
+    fn a_live_run_joins_picks_of_its_axis() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Rows, 1, TEN);
+        view.move_to(Some(4), None, TEN);
+        view.start_run(SelKind::Rows);
+        view.move_to(Some(5), None, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("2,5-6", "-"));
+        view.start_run(SelKind::Cols);
+        assert_eq!(view.picked, None, "a column run lets go of row picks");
+        view.toggle(Axis::Rows, 1, TEN);
+        view.start_run(SelKind::Block);
+        assert_eq!(view.picked, None);
+    }
+
+    #[test]
+    fn picks_cover_whole_blocks_when_zoomed() {
+        let mut view = MsaView::new();
+        view.scale = Scale { rows: 4, cols: 1 };
+        view.toggle(Axis::Rows, 5, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("5-8", "-"));
+        view.toggle(Axis::Rows, 9, TEN);
+        assert_eq!(picked_text(&view, TEN), texts("5-10", "-"));
+    }
+
+    #[test]
+    fn clamping_drops_picks_past_the_end() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Rows, 8, TEN);
+        view.clamp(Shape { rows: 9, cols: 10 });
+        assert!(view.picked.is_some(), "row 9 is still there");
+        view.clamp(Shape { rows: 8, cols: 10 });
+        assert_eq!(view.picked, None);
+    }
+
+    #[test]
+    fn clear_selection_lets_go_of_both() {
+        let mut view = MsaView::new();
+        view.toggle(Axis::Rows, 1, TEN);
+        view.start_run(SelKind::Rows);
+        view.clear_selection();
+        assert!(!view.has_selection());
     }
 }

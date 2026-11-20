@@ -89,7 +89,8 @@ pub struct TreeView {
     /// not fit.
     pub shown: NodeId,
     pub cursor: NodeId,
-    pub select: Option<NodeId>,
+    /// The tips and clades picked, in the order picked.
+    pub picked: Vec<NodeId>,
     pub opened: HashSet<NodeId>,
     pub closed: HashSet<NodeId>,
     /// Branches drawn with equal lengths.
@@ -182,7 +183,7 @@ impl TreeView {
             zoom: root,
             shown: root,
             cursor: root,
-            select: None,
+            picked: Vec::new(),
             opened: HashSet::new(),
             closed: HashSet::new(),
             equal: false,
@@ -203,6 +204,41 @@ impl TreeView {
             at: None,
             root,
         }
+    }
+
+    /// Pick `n` alone.
+    pub fn pick_only(&mut self, n: NodeId) {
+        self.picked = vec![n];
+    }
+
+    /// Unpick `n` if it is picked, or else pick it too.
+    pub fn toggle_pick(&mut self, n: NodeId) {
+        match self.picked.iter().position(|&p| p == n) {
+            Some(i) => {
+                self.picked.remove(i);
+            }
+            None => self.picked.push(n),
+        }
+    }
+
+    /// Widen the last pick, or the cursor's node, to the smallest clade
+    /// that also holds `n`.
+    pub fn extend_last(&mut self, tree: &Tree, facts: &TreeFacts, n: NodeId) {
+        let from = self.picked.pop().unwrap_or(self.cursor);
+        let widened = common_ancestor(tree, facts, from, n);
+        // Widening may swallow another pick; it is then picked once.
+        self.picked.retain(|&p| p != widened);
+        self.picked.push(widened);
+    }
+
+    /// The tips of every pick, in pre-order of each, each tip once.
+    pub fn picked_tips(&self, tree: &Tree) -> Vec<NodeId> {
+        let mut seen = HashSet::new();
+        self.picked
+            .iter()
+            .flat_map(|&p| tree.preorder_from(p))
+            .filter(|&n| tree.is_tip(n) && seen.insert(n))
+            .collect()
     }
 
     /// Whether `n` is drawn as an open junction.
@@ -529,9 +565,8 @@ impl TreeView {
         if rerooted || !facts.contains(self.zoom) {
             self.zoom = tree.root();
         }
-        self.select = self
-            .select
-            .filter(|&n| facts.contains(n) && (!rerooted || tree.is_tip(n)));
+        self.picked
+            .retain(|&n| facts.contains(n) && (!rerooted || tree.is_tip(n)));
         self.found = self.found.filter(|&n| facts.contains(n));
         self.opened.retain(|&n| facts.contains(n));
         self.closed.retain(|&n| facts.contains(n));
@@ -722,13 +757,13 @@ pub(crate) mod tests {
             doc.tree().parent(tip(doc.tree(), "A")).unwrap(),
         );
         v.cursor = e;
-        v.select = Some(ab);
+        v.picked = vec![ab, e];
         v.opened.insert(ab);
         apply(&mut doc, "tree prune --mrca A --mrca B");
         v.repair(doc.tree(), doc.facts(), doc.revision());
         assert_eq!(
-            (v.cursor, v.select, v.opened.contains(&ab)),
-            (e, None, false)
+            (v.cursor, v.picked.clone(), v.opened.contains(&ab)),
+            (e, vec![e], false)
         );
         let cde = doc.tree().parent(tip(doc.tree(), "C")).unwrap();
         v.zoom = cde;
@@ -772,12 +807,16 @@ pub(crate) mod tests {
         );
         v.cursor = c;
         v.zoom = cde;
-        v.select = Some(cde);
+        v.picked = vec![cde, c];
         v.refit(doc.tree(), doc.facts(), 6);
         apply(&mut doc, "tree reroot --tip D");
         v.repair(doc.tree(), doc.facts(), doc.revision());
         assert_eq!(v.zoom, doc.tree().root(), "not the clade's complement");
-        assert_eq!(v.select, None, "the selected clade holds other tips now");
+        assert_eq!(
+            v.picked,
+            vec![c],
+            "the picked clade holds other tips now; a tip is still itself"
+        );
         assert_eq!(v.cursor, c, "a tip is still itself");
     }
 

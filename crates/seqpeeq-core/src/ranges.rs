@@ -41,6 +41,40 @@ impl Ranges {
     pub fn end(&self) -> usize {
         self.0.last().map_or(0, |r| r.end)
     }
+
+    /// The positions of one range. `None` if it is empty.
+    pub fn one(range: Range<usize>) -> Option<Ranges> {
+        Ranges::new(std::iter::once(range))
+    }
+
+    /// Whether position `at` is covered.
+    pub fn contains(&self, at: usize) -> bool {
+        // The first range ending after `at` is the only one that can hold it.
+        let i = self.0.partition_point(|r| r.end <= at);
+        self.0.get(i).is_some_and(|r| r.start <= at)
+    }
+
+    /// Whether any position of `range` is covered.
+    pub fn intersects(&self, range: Range<usize>) -> bool {
+        let i = self.0.partition_point(|r| r.end <= range.start);
+        !range.is_empty() && self.0.get(i).is_some_and(|r| r.start < range.end)
+    }
+
+    /// These positions and those of `range`.
+    pub fn with(&self, range: Range<usize>) -> Ranges {
+        Ranges::new(self.0.iter().cloned().chain(std::iter::once(range)))
+            .expect("never empty: self is not")
+    }
+
+    /// These positions less those of `range`. `None` if none is left.
+    pub fn without(&self, range: Range<usize>) -> Option<Ranges> {
+        Ranges::new(self.0.iter().flat_map(|r| {
+            [
+                r.start..r.end.min(range.start),
+                r.start.max(range.end)..r.end,
+            ]
+        }))
+    }
 }
 
 impl FromStr for Ranges {
@@ -117,6 +151,20 @@ mod tests {
         ] {
             assert_eq!(text.parse::<Ranges>().unwrap_err(), message, "{text:?}");
         }
+    }
+
+    #[test]
+    fn contains_with_and_without() {
+        let r: Ranges = "3-7,12".parse().unwrap();
+        assert!(r.contains(2) && r.contains(6) && r.contains(11));
+        assert!(!r.contains(1) && !r.contains(7) && !r.contains(12));
+        assert_eq!(r.with(7..9).to_string(), "3-9,12");
+        assert_eq!(r.without(4..5).unwrap().to_string(), "3-4,6-7,12");
+        assert_eq!(r.without(11..12).unwrap().to_string(), "3-7");
+        assert_eq!(Ranges::one(2..3).unwrap().without(0..10), None);
+        assert!(r.intersects(0..3) && r.intersects(6..20) && r.intersects(11..12));
+        assert!(!r.intersects(0..2) && !r.intersects(7..11) && !r.intersects(12..30));
+        assert!(!r.intersects(4..4), "an empty range holds nothing");
     }
 
     #[test]

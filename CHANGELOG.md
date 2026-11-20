@@ -10,6 +10,11 @@ All notable changes to seqpeeq are listed here. The format follows
 
 - Tab in a BAM's `g` line finishes a contig name. If several contigs match, it opens the contig list, filtered by
   what was typed, and the contig picked goes back on the line.
+- Scattered rows or columns of an alignment can be picked: `Space` or right-click on sequence names or column
+  numbers picks or unpicks one, and a right-drag picks a run. `d` deletes them and `e` extracts them, as one
+  command such as `msa delete-rows --rows 1,3`.
+- Several tips or clades of a tree can be picked with `Space` or right-click. `a` then selects all their sequences
+  in the linked alignment.
 
 ### Changed
 
@@ -17,6 +22,10 @@ All notable changes to seqpeeq are listed here. The format follows
   tails. `S` hides clips at both zoom levels.
 - A drag across a BAM's reads held past their edge keeps scrolling that way and selecting, so a selection can be
   larger than the screen.
+- Right-click on an alignment's names or column numbers, and on a tree, picks or unpicks rather than extending
+  the selection. Right-click on residues, and Shift-click, still extend.
+- A tree's `a` now also selects the clade's sequences in the alignment, so `d` there deletes them rather than
+  gapping the cell under the cursor.
 
 ## [0.2.0] - 2026-11-19
 
