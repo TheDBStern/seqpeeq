@@ -22,7 +22,7 @@ It's for getting things done, not making figures
 - Follow multi-mapped and split reads everywhere they align in a BAM
 - Jump to the next covered or 0-coverage region in a BAM
 
-**Input files are never mofidied.** Every result is written to a new file and files can't be overwritten.
+**Input files are never modified.** Every result is written to a new file and files can't be overwritten.
 
 **Every change is logged.** Each command is written to a session log, which can be re-run with `seqpeeq replay`.
 
@@ -124,7 +124,7 @@ Edit      d delete/gap   f fill   e extract   r rename
           i insert (shifts)   R type over   Esc stop
 Zoom      - out   + in   z view whole alignment
           u U undo redo   w save the whole alignment
-          c change colors   [ ] adjust name width
+          c cycle colors   [ ] adjust name width
           msa delete-rows  delete-cols  fill  overwrite
           msa insert  remove  extract  rename
 ```
@@ -145,13 +145,13 @@ Tree      jk rows  h parent  l back  Enter open/close
           many: tree rename --regex RE --replace TEXT
           w save the whole tree   e extract the clade
           s ladderize  u U undo redo
-          a select their sequences in the alignment
-          p link to an open alignment
+          a select the tips' sequences in the MSA
+          p link to an open MSA
           tree extract  prune  reroot  ladderize  rename
           tree link  unlink
 ```
 
-**Linking:** a tree is linked to an alignment all the tips names match the MSA names. This happens on its
+**Linking:** a tree is linked to an alignment when all the tip names match the MSA names. This happens on its
 own when you open the second file, or with `p` or `:tree link`. Once linked:
 
 - the alignment's rows follow the tree's order
@@ -166,19 +166,19 @@ own when you open the second file, or with `p` or `:tree link`. Once linked:
 Move      arrows hjkl   Shift+arrows a screen
           PgUp PgDn   Home End   g go to, Tab a contig
 BAM       ] [ covered   } { no coverage   c list contigs
-          m mate   s other part   ' back
+          m mate   s other split part   ' back
           - + z zoom  F toggle filtered  S toggle clips
           click, drag, Space select   Esc clear
           Tab next BAM in a stack   :bam stack  unstack
-          drag the column numbers, v v  a stretch
-          e export reads   E reference   to a file
+          drag the coordinates, v v  select a region
+          e export reads   E export reference
           a visualize all alignments for a read
           A list all alignments for a read
           in those: S search the BAM   g go   / filter
           bam ref export-region export-reads export-ref
 ```
 
-`g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. If a contig has ':' in it's name, put it in braces like: `{HLA:01}:100`. Tab-completion works when selecting a contig name.
+`g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. If a contig has ':' in its name, put it in braces like: `{HLA:01}:100`. Tab-completion works when selecting a contig name.
 
 **What the reads look like:**
 
@@ -215,7 +215,7 @@ View      Tab next file   L log   ? help   q quit
 Commands  :open close use undo redo   :CMD -h details
           :rescue FILE if the log has failed
           Tab completes a file name after :tree link
-Mouse     wheel on the column numbers scrolls sideways
+Mouse     wheel over the coordinates scrolls left-right
           hold Shift (Option on macOS) to select text
           with the terminal itself
           in tmux: set -g mouse on
@@ -331,9 +331,9 @@ The options of `bam export-reads`:
 
 - Each session writes `seqpeeq-YYYYMMDD-HHMMSS.log` in the current folder.
   - `--log PATH` to write it to PATH instead.
-  - `--no-log` to turn of logging.
+  - `--no-log` to turn off logging.
   - Logs aren't written if no commands are run.
-  - An existing log is never overwritten or ammended.
+  - An existing log is never overwritten or amended.
 - Every command, opens included, one per line, with timestamps and notes as `#` comments are saved in the log.
   - Scrolling, zooming and selecting are not logged.
   - Undo and redo are logged, so a replay follows exactly what happened.
