@@ -161,7 +161,7 @@ own when you open the second file, or with `p` or `:tree link`. Once linked:
 
 ```
 Move      arrows hjkl   Shift+arrows a screen
-          PgUp PgDn   Home End   g go to position
+          PgUp PgDn   Home End   g go to, Tab a contig
 BAM       ] [ covered   } { no coverage   c list contigs
           m mate   s other part   ' back
           - + z zoom  F toggle filtered  S toggle clips
@@ -173,6 +173,11 @@ BAM       ] [ covered   } { no coverage   c list contigs
           A list all alignments for a read
           in those: S search the BAM   g go   / filter
 ```
+
+`g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. Write a name holding `:` in
+braces: `{HLA:01}:100`. In the `g` line, Tab finishes the contig name typed so far. If several contigs still match,
+it opens the contig list, filtered by what was typed; Enter puts the contig picked back on the line, to go there or
+add a position.
 
 **What the reads look like:**
 

@@ -35,6 +35,47 @@ fn no_more(want: Stretch, dir: Direction, contig: &str) -> String {
     }
 }
 
+/// The `g` line, holding `text`.
+fn goto_line(text: &str) -> Mode {
+    Mode::Prompt(Prompt::new(PromptKind::Goto, LineEdit::new(text)))
+}
+
+/// A contig's name as typed in the `g` line: in braces when it holds a
+/// `:`, so a position can follow it.
+fn quoted(name: &str) -> String {
+    match name.contains(':') {
+        true => format!("{{{name}}}"),
+        false => name.to_string(),
+    }
+}
+
+/// Whether `name` starts with `typed`, in any case.
+fn starts_with_any_case(name: &str, typed: &str) -> bool {
+    let mut name = name.chars().flat_map(char::to_lowercase);
+    typed
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|c| name.next() == Some(c))
+}
+
+/// The longest start of `first` that each of `rest` shares, in any case.
+fn common_prefix<'a>(first: &'a str, rest: &[&str]) -> &'a str {
+    let mut end = first.len();
+    for other in rest {
+        let shared = first
+            .char_indices()
+            .zip(other.chars())
+            .find(|((_, a), b)| !a.to_lowercase().eq(b.to_lowercase()))
+            .map_or_else(|| first.len().min(other.len()), |((i, _), _)| i);
+        end = end.min(shared);
+    }
+    // `other.len()` may fall inside one of `first`'s characters.
+    while !first.is_char_boundary(end) {
+        end -= 1;
+    }
+    &first[..end]
+}
+
 /// A window being read in the background.
 pub struct Reading {
     pub dataset: u64,
@@ -536,6 +577,59 @@ impl App {
         }
     }
 
+    /// Tab in the `g` line on a BAM tab, with the cursor at the end of a
+    /// contig name being typed: finish the name if one contig starts with
+    /// it, or as far as all those that do agree; otherwise open the contig
+    /// list, filtered by what was typed, to pick one from.
+    pub(super) fn goto_tab(&mut self) {
+        let Mode::Prompt(prompt) = &self.mode else {
+            return;
+        };
+        let text = prompt.line.text().to_string();
+        if prompt.line.cursor() != text.len() {
+            return;
+        }
+        let (typed, braced) = match text.strip_prefix('{') {
+            Some(rest) if rest.contains('}') => return,
+            Some(rest) => (rest, true),
+            None if text.contains(':') => return,
+            None => (text.as_str(), false),
+        };
+        let Some((dataset, doc, _)) = self.bam() else {
+            return;
+        };
+        let contigs = doc.source().contigs();
+        let matching: Vec<&str> = contigs
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|name| starts_with_any_case(name, typed))
+            .collect();
+        let done = match matching.as_slice() {
+            [one] => Some(quoted(one)),
+            [first, rest @ ..] => {
+                let common = common_prefix(first, rest);
+                (common.chars().count() > typed.chars().count()).then(|| {
+                    match braced || common.contains(':') {
+                        true => format!("{{{common}"),
+                        false => common.to_string(),
+                    }
+                })
+            }
+            [] => None,
+        };
+        if let Some(done) = done {
+            self.mode = goto_line(&done);
+            return;
+        }
+        let mut list = ContigList::new(dataset.id, contigs);
+        list.filter = LineEdit::new(typed);
+        if list.rows(contigs).is_empty() {
+            list.all = true;
+        }
+        list.back_to = Some(text);
+        self.mode = Mode::Contigs(Box::new(list));
+    }
+
     /// Go where `text` says: a position on this contig, `ctg:pos`,
     /// `ctg:a-b` (zoomed to fit) or a contig's name.
     pub(super) fn bam_go(&mut self, text: &str) {
@@ -547,7 +641,11 @@ impl App {
             return;
         }
         let contigs = source.contigs();
-        let named = contigs.iter().any(|c| c.name == text);
+        let bare = text
+            .strip_prefix('{')
+            .and_then(|t| t.strip_suffix('}'))
+            .unwrap_or(text);
+        let named = contigs.iter().any(|c| c.name == text || c.name == bare);
         let position = !named && text.replace(',', "").parse::<u64>().is_ok();
         let query = match position {
             true => format!("{{{}}}:{text}", contigs[view.contig].name),
@@ -783,7 +881,19 @@ impl App {
         };
         match key.code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
+                self.mode = match list.back_to.take() {
+                    Some(text) => goto_line(&text),
+                    None => Mode::Normal,
+                };
+                return;
+            }
+            KeyCode::Enter if list.back_to.is_some() => {
+                let picked = list.rows(contigs).get(list.cursor).copied();
+                let text = match picked {
+                    Some(i) => quoted(&contigs[i].name),
+                    None => list.back_to.take().unwrap_or_default(),
+                };
+                self.mode = goto_line(&text);
                 return;
             }
             KeyCode::Enter => {
@@ -2111,6 +2221,117 @@ pub(crate) mod tests {
     use crate::bam_view::Over;
     use crate::elsewhere::ElsewhereList;
     use crate::read_axis::{AxisView, Found, Kind};
+
+    // Tab in the `g` line.
+
+    /// An app showing a BAM whose contigs are named for completing.
+    fn with_names() -> (App, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sam = "@HD\tVN:1.6\tSO:coordinate\n".to_string();
+        for name in ["chr1", "chr2", "chr10", "HLA:01", "HLA:02", "scaffold_9"] {
+            sam.push_str(&format!("@SQ\tSN:{name}\tLN:100\n"));
+        }
+        for (i, name) in ["chr1", "chr10", "HLA:02"].iter().enumerate() {
+            sam.push_str(&format!("r{i}\t0\t{name}\t1\t60\t10M\t*\t0\t0\t*\t*\n"));
+        }
+        let bam = seqpeeq_core::bam::testing::bam_from_sam(dir.path(), "n.bam", &sam);
+        let mut app = App::new(Session::new(None));
+        open(&mut app, bam);
+        settle(&mut app);
+        (app, dir)
+    }
+
+    fn line(app: &App) -> &str {
+        match &app.mode {
+            Mode::Prompt(p) if matches!(p.kind, PromptKind::Goto) => p.line.text(),
+            _ => panic!("the g line is not open"),
+        }
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        let contigs = app.bam().unwrap().1.source().contigs();
+        listed(app)
+            .iter()
+            .map(|&i| contigs[i].name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn tab_in_g_finishes_a_contig_name() {
+        let (mut app, _dir) = with_names();
+        keys(&mut app, "gsc");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(line(&app), "scaffold_9", "the only one");
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!(view(&app).contig, 5);
+
+        keys(&mut app, "gCH");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(line(&app), "chr", "as far as they agree, in their case");
+        keys(&mut app, "1");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(names(&app), ["chr1", "chr10"], "both still start so");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(line(&app), "chr1");
+        keys(&mut app, ":5");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(line(&app), "chr1:5", "nothing to finish after the :");
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!((view(&app).contig, view(&app).cursor), (0, 5));
+    }
+
+    #[test]
+    fn tab_again_picks_from_the_contig_list() {
+        let (mut app, _dir) = with_names();
+        keys(&mut app, "gchr");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(names(&app), ["chr1", "chr10"], "chr2 has no reads");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(line(&app), "chr", "Esc goes back to the line as it was");
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(line(&app), "chr10", "the pick goes on the line");
+        keys(&mut app, ":7");
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!((view(&app).contig, view(&app).cursor), (2, 7));
+    }
+
+    #[test]
+    fn names_with_a_colon_are_braced() {
+        let (mut app, _dir) = with_names();
+        keys(&mut app, "gH");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(line(&app), "{HLA:0");
+        keys(&mut app, "2");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(line(&app), "{HLA:02}");
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        assert_eq!(view(&app).contig, 4);
+        assert_eq!(view(&app).left, 1, "the whole contig");
+
+        keys(&mut app, "gzz");
+        press(&mut app, KeyCode::Tab);
+        assert!(names(&app).is_empty(), "nothing holds zz");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(line(&app), "zz");
+    }
+
+    #[test]
+    fn prefixes_are_compared_in_any_case() {
+        assert!(starts_with_any_case("chrX", "CHRx"));
+        assert!(!starts_with_any_case("chr", "chr1"));
+        assert_eq!(common_prefix("chr1", &["CHR10"]), "chr1");
+        assert_eq!(common_prefix("chr10", &["chr1"]), "chr1");
+        assert_eq!(common_prefix("ab", &["xy"]), "");
+        assert_eq!(common_prefix("é1", &["É2"]), "é");
+        assert_eq!(quoted("HLA:01"), "{HLA:01}");
+    }
 
     /// An app showing `multi.bam`, everything read.
     pub(crate) fn with_multi() -> (App, TempDir) {

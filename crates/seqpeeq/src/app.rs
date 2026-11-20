@@ -1050,6 +1050,7 @@ impl App {
                     let step = if key.code == KeyCode::Tab { 1 } else { -1 };
                     complete(prompt, &names, step);
                 }
+                KeyCode::Tab if matches!(prompt.kind, PromptKind::Goto) => self.goto_tab(),
                 KeyCode::Up if matches!(prompt.kind, PromptKind::Command) => {
                     prompt.completing = None;
                     if let Some(older) = self.history.older(prompt.line.text()) {
