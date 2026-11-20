@@ -54,6 +54,12 @@ impl Ranges {
         self.0.get(i).is_some_and(|r| r.start <= at)
     }
 
+    /// Whether any position of `range` is covered.
+    pub fn intersects(&self, range: Range<usize>) -> bool {
+        let i = self.0.partition_point(|r| r.end <= range.start);
+        !range.is_empty() && self.0.get(i).is_some_and(|r| r.start < range.end)
+    }
+
     /// These positions and those of `range`.
     pub fn with(&self, range: Range<usize>) -> Ranges {
         Ranges::new(self.0.iter().cloned().chain(std::iter::once(range)))
@@ -156,6 +162,9 @@ mod tests {
         assert_eq!(r.without(4..5).unwrap().to_string(), "3-4,6-7,12");
         assert_eq!(r.without(11..12).unwrap().to_string(), "3-7");
         assert_eq!(Ranges::one(2..3).unwrap().without(0..10), None);
+        assert!(r.intersects(0..3) && r.intersects(6..20) && r.intersects(11..12));
+        assert!(!r.intersects(0..2) && !r.intersects(7..11) && !r.intersects(12..30));
+        assert!(!r.intersects(4..4), "an empty range holds nothing");
     }
 
     #[test]

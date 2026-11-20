@@ -124,6 +124,14 @@ impl Region {
         (rows, self.cols.clone())
     }
 
+    /// Whether any cell of the block `rows` × `cols` is in the region.
+    pub fn touches(&self, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>) -> bool {
+        let within = |ranges: &Option<Ranges>, range: std::ops::Range<usize>| {
+            !range.is_empty() && ranges.as_ref().is_none_or(|r| r.intersects(range))
+        };
+        within(&self.rows, rows) && within(&self.cols, cols)
+    }
+
     pub fn contains(&self, cell: Cell) -> bool {
         let within =
             |ranges: &Option<Ranges>, at: usize| ranges.as_ref().is_none_or(|r| r.contains(at));

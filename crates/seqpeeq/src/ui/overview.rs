@@ -9,7 +9,7 @@ use seqpeeq_core::{Alignment, Conservation, Summary, Tally};
 use unicode_width::UnicodeWidthStr;
 
 use super::grid::{GridLayout, SCORE_WIDTH, fit, grid_layout};
-use crate::msa_view::{Cell, MsaView, Shape};
+use crate::msa_view::{MsaView, Shape};
 use crate::palette;
 
 /// Draw the overview of `alignment` in `body`, at the view's scale. Lines
@@ -40,10 +40,12 @@ pub fn draw_overview(
     // Cells are drawn from the summary when they hold whole blocks of it.
     let blocks = summary.filter(|summary| per_cell.is_multiple_of(summary.block()));
     let selected = view.region(aln);
-    let is_selected = |cell: Cell| {
+    // A line or cell is shaded when any of what it stands for is selected:
+    // rows picked at full size need not start a line.
+    let touched = |rows: std::ops::Range<usize>, cols: std::ops::Range<usize>| {
         selected
             .as_ref()
-            .is_some_and(|region| region.contains(cell))
+            .is_some_and(|region| region.touches(rows, cols))
     };
     let whole_rows = selected
         .as_ref()
@@ -70,7 +72,7 @@ pub fn draw_overview(
                 free_from = x + label.len() as u16 + 1;
             }
         }
-        if whole_cols && is_selected(Cell { row: 0, col }) {
+        if whole_cols && touched(0..aln.rows, col..(col + per_cell).min(aln.cols)) {
             buffer[(x, ruler.y)].set_style(palette::SELECTED);
         }
     }
@@ -109,7 +111,7 @@ pub fn draw_overview(
             };
             buffer.set_stringn(names.x, y, name, width, style);
         }
-        if whole_rows && is_selected(Cell { row: first, col: 0 }) {
+        if whole_rows && touched(first..last, 0..aln.cols) {
             let label = Rect {
                 y,
                 height: 1,
@@ -168,7 +170,7 @@ pub fn draw_overview(
                 }
                 None => tallies.get(offset as usize).copied().unwrap_or_default(),
             };
-            let style = if is_selected(Cell { row: first, col }) {
+            let style = if touched(first..last, col..(col + per_cell).min(aln.cols)) {
                 palette::SELECTED
             } else {
                 palette::overview(tally, counted)
