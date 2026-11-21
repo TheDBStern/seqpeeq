@@ -143,11 +143,11 @@ seqpeeq examples/reads.bam examples/reads2.bam --ref examples/ref.fa
 
 ![Two BAMs stacked](docs/screens/bam-stack.svg)
 
-**Without the interface.** Each argument to `seqpeeq run` is one command. These remove the version suffix from every
-name, and cut the block of gaps out of the alignment:
+**Without the interface.** Each argument to `seqpeeq run` is one command. The first changes the dot in every name to an
+underscore (`Alpha_2019.2` becomes `Alpha_2019_2`). The second cuts the block of gaps out of the alignment:
 
 ```sh
-seqpeeq run 'open examples/aln.fa' "msa rename --regex '\.\d+\$' --replace ''" 'msa extract --out renamed.fa'
+seqpeeq run 'open examples/aln.fa' "msa rename --regex '\.' --replace '_'" 'msa extract --out renamed.fa'
 seqpeeq run 'open examples/aln.fa' 'msa delete-cols --cols 611-622' 'msa extract --out trimmed.fa'
 ```
 

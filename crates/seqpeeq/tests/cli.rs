@@ -523,7 +523,15 @@ fn readme_recipes_run() {
             .collect();
         assert!(!outs.is_empty(), "{recipe} writes nothing");
         for out in outs {
-            assert!(dir.path().join(out).exists(), "{recipe} wrote no {out}");
+            let path = dir.path().join(out);
+            assert!(path.exists(), "{recipe} wrote no {out}");
+            if out.ends_with(".fa") {
+                // A showcase shouldn't make a file other tools reject.
+                let text = fs::read_to_string(&path).unwrap();
+                let names: Vec<&str> = text.lines().filter(|l| l.starts_with('>')).collect();
+                let unique: std::collections::HashSet<_> = names.iter().collect();
+                assert_eq!(unique.len(), names.len(), "{recipe} wrote duplicate names");
+            }
         }
     }
 }
