@@ -50,3 +50,51 @@ pub fn write_all(dir: &std::path::Path) -> std::io::Result<()> {
     bam::write_reads(&dir.join("reads.bam"), &reference, bam::Sample::Main)?;
     bam::write_reads(&dir.join("reads2.bam"), &reference, bam::Sample::Second)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::bam::tests::records;
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn committed() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+    }
+
+    #[test]
+    fn committed_examples_match_the_generator() {
+        let dir = tempfile::tempdir().unwrap();
+        write_all(dir.path()).unwrap();
+        let stale = |name: &str| {
+            format!(
+                "examples/{name} is stale: run cargo run -p seqpeeq-core --features testing \
+                 --example make_examples -- examples"
+            )
+        };
+        for name in ["aln.fa", "tree.nwk", "ref.fa"] {
+            let read = |d: &Path| std::fs::read(d.join(name)).unwrap_or_default();
+            assert!(read(dir.path()) == read(&committed()), "{}", stale(name));
+        }
+        for name in ["reads.bam", "reads2.bam"] {
+            assert!(committed().join(name).exists(), "{}", stale(name));
+            assert!(
+                records(&dir.path().join(name)) == records(&committed().join(name)),
+                "{}",
+                stale(name)
+            );
+        }
+    }
+
+    #[test]
+    fn committed_indexes_are_newer_than_their_bams() {
+        let modified = |p: PathBuf| std::fs::metadata(&p).and_then(|m| m.modified());
+        for name in ["reads.bam", "reads2.bam"] {
+            let bam = modified(committed().join(name)).expect(name);
+            let bai = modified(committed().join(format!("{name}.bai"))).expect("an index");
+            assert!(
+                bai >= bam,
+                "{name}.bai is older than {name}, so seqpeeq would ignore it"
+            );
+        }
+    }
+}

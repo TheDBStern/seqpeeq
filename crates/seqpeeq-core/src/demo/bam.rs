@@ -192,6 +192,7 @@ impl Reads<'_> {
             seq.extend_from_slice(&chr2[(at - 1) as usize..(at - 1 + 60) as usize]);
             push(&mut cigar, Kind::SoftClip, 60);
             let name = format!("split{}", n + 1);
+            let primary_cigar = cigar_text(&cigar);
             let mut primary = rec(&name, 0, 0, p, cigar, seq.clone(), None);
             primary.sa = Some(format!("chr2,{at},+,90S60M,60,0;"));
             let mut part = rec(
@@ -203,7 +204,7 @@ impl Reads<'_> {
                 seq,
                 None,
             );
-            part.sa = Some(format!("chr1,{p},+,90M60S,60,0;"));
+            part.sa = Some(format!("chr1,{p},+,{primary_cigar},60,0;"));
             recs.extend([primary, part]);
         }
         for n in 0..3u64 {
@@ -253,6 +254,27 @@ impl Reads<'_> {
             recs.push(rec(&format!("spliced{}", n + 1), 0, 0, p, cigar, seq, None));
         }
     }
+}
+
+/// A CIGAR as SAM writes it, as in `51M2I37M60S`.
+fn cigar_text(cigar: &[(Kind, usize)]) -> String {
+    cigar
+        .iter()
+        .map(|&(kind, len)| {
+            let letter = match kind {
+                Kind::Match => 'M',
+                Kind::Insertion => 'I',
+                Kind::Deletion => 'D',
+                Kind::Skip => 'N',
+                Kind::SoftClip => 'S',
+                Kind::HardClip => 'H',
+                Kind::Pad => 'P',
+                Kind::SequenceMatch => '=',
+                Kind::SequenceMismatch => 'X',
+            };
+            format!("{len}{letter}")
+        })
+        .collect()
 }
 
 fn rec(
@@ -353,6 +375,7 @@ pub(crate) mod tests {
     use noodles::sam::alignment::RecordBuf;
     use noodles::sam::alignment::record::cigar::op::Kind;
     use noodles::sam::alignment::record::data::field::Tag;
+    use noodles::sam::alignment::record_buf::data::field::Value;
     use std::path::PathBuf;
 
     /// A BAM's header and records.
@@ -447,6 +470,27 @@ pub(crate) mod tests {
                 primary.reference_sequence_id(),
                 part.reference_sequence_id()
             );
+            // The part's SA names the primary's own position and CIGAR.
+            let Some(Value::String(sa)) = part.data().get(&Tag::OTHER_ALIGNMENTS) else {
+                panic!("SA is a string")
+            };
+            let cigar: String = primary
+                .cigar()
+                .as_ref()
+                .iter()
+                .map(|op| {
+                    let kind = match op.kind() {
+                        Kind::Match => "M",
+                        Kind::Insertion => "I",
+                        Kind::Deletion => "D",
+                        Kind::SoftClip => "S",
+                        other => panic!("{other:?}"),
+                    };
+                    format!("{}{kind}", op.len())
+                })
+                .collect();
+            let expected = format!("chr1,{},+,{cigar},60,0;", start(primary));
+            assert_eq!(sa.to_string(), expected);
         }
         let paired = |r: &&RecordBuf| r.flags().is_segmented();
         assert!(
