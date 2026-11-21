@@ -5,6 +5,8 @@ pub mod grid;
 pub mod link;
 pub mod overview;
 pub mod read_axis;
+#[cfg(test)]
+mod svg;
 pub mod tree;
 
 use crate::bam_view::Over;
