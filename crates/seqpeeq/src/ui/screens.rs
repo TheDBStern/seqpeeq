@@ -1,7 +1,7 @@
 //! The README's pictures: the example files in the real interface, drawn as
 //! SVG into `docs/screens/`. Each test fails when its picture no longer
 //! matches what the interface draws;
-//! `UPDATE_SCREENS=1 cargo test -p seqpeeq screen_` writes them again.
+//! `UPDATE_SCREENS=1 cargo test -p seqpeeq screens_match` writes them again.
 
 use std::path::PathBuf;
 
@@ -58,7 +58,7 @@ fn check(name: &str, app: &mut App) {
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
         committed == svg,
-        "docs/screens/{name}.svg is stale: UPDATE_SCREENS=1 cargo test -p seqpeeq screen_"
+        "docs/screens/{name}.svg is stale: UPDATE_SCREENS=1 cargo test -p seqpeeq screens_match"
     );
 }
 
@@ -73,8 +73,7 @@ fn bam_at(app: &mut App, left: u64, per_col: u64) {
     settle(app);
 }
 
-#[test]
-fn screen_alignment() {
+fn scene_alignment() {
     let mut app = showing("aln.fa");
     let id = app.session.datasets()[app.active].id;
     let view = app.views.get_mut(&id).unwrap();
@@ -84,8 +83,7 @@ fn screen_alignment() {
     check("alignment", &mut app);
 }
 
-#[test]
-fn screen_tree() {
+fn scene_tree() {
     let mut app = showing("aln.fa");
     open(
         &mut app,
@@ -97,8 +95,7 @@ fn screen_tree() {
     check("tree", &mut app);
 }
 
-#[test]
-fn screen_bam_bases() {
+fn scene_bam_bases() {
     let mut app = showing("reads.bam");
     open(
         &mut app,
@@ -110,15 +107,13 @@ fn screen_bam_bases() {
     check("bam-bases", &mut app);
 }
 
-#[test]
-fn screen_bam_zoomed() {
+fn scene_bam_zoomed() {
     let mut app = showing("reads.bam");
     bam_at(&mut app, 9_001, 64);
     check("bam-zoomed", &mut app);
 }
 
-#[test]
-fn screen_bam_stack() {
+fn scene_bam_stack() {
     let mut app = showing("reads.bam");
     open(
         &mut app,
@@ -135,6 +130,17 @@ fn screen_bam_stack() {
     );
     bam_at(&mut app, 1_001, 1);
     check("bam-stack", &mut app);
+}
+
+/// One test draws every scene in turn: five at once, each loading BAMs,
+/// would starve the timing tests running beside them.
+#[test]
+fn screens_match_the_interface() {
+    scene_alignment();
+    scene_tree();
+    scene_bam_bases();
+    scene_bam_zoomed();
+    scene_bam_stack();
 }
 
 #[test]

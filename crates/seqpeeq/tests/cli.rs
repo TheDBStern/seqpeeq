@@ -467,3 +467,63 @@ fn run_help_for_an_unknown_command_fails() {
         stderr(&out)
     );
 }
+
+/// The `seqpeeq run` lines in the README's Examples section.
+fn readme_recipes() -> Vec<String> {
+    let readme =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let examples = readme
+        .split("\n## Examples\n")
+        .nth(1)
+        .expect("an Examples section")
+        .split("\n## ")
+        .next()
+        .unwrap();
+    examples
+        .lines()
+        .filter_map(|line| line.strip_prefix("seqpeeq run "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    }
+}
+
+#[test]
+fn readme_recipes_run() {
+    let recipes = readme_recipes();
+    assert!(recipes.len() >= 2, "{recipes:?}");
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    for recipe in recipes {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(&examples, &dir.path().join("examples"));
+        let script = format!("'{}' run {recipe}", env!("CARGO_BIN_EXE_seqpeeq"));
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{recipe}\n{}", stderr(&out));
+        // Each argument is a command; its own words name the outputs.
+        let words: Vec<String> = shlex::split(&recipe)
+            .expect("a shell line")
+            .iter()
+            .flat_map(|command| shlex::split(command).unwrap_or_default())
+            .collect();
+        let outs: Vec<&String> = words
+            .windows(2)
+            .filter(|pair| pair[0] == "--out")
+            .map(|pair| &pair[1])
+            .collect();
+        assert!(!outs.is_empty(), "{recipe} writes nothing");
+        for out in outs {
+            assert!(dir.path().join(out).exists(), "{recipe} wrote no {out}");
+        }
+    }
+}
