@@ -109,10 +109,10 @@ Other ways to run it:
 
 ## Examples
 
-[`examples/`](examples) holds small, made-up files to try: an alignment, its tree, a reference and two BAMs.
-[examples/README.md](examples/README.md) says where each feature is. Run these from the top of the repository.
+In the [`examples/`](examples) directory there are some small examples files to try out the features. See the
+[examples/README.md](examples/README.md) document. Run these from the top of the repository.
 
-**An alignment and its tree,** linked because their names match. Deleting a clade in the tree with `d` deletes its
+**An MSA and a linked tree.** Deleting a clade in the tree with `d` deletes its
 sequences too.
 
 ```sh
@@ -123,7 +123,7 @@ seqpeeq examples/aln.fa examples/tree.nwk
 
 ![The example tree, linked to the alignment](docs/screens/tree.svg)
 
-**Reads against a reference.** Type `g chr1:1001` to see SNPs, an insertion (purple), deletions (`***`), split reads
+**Reads against a reference.** Type `g chr1:1001` and zoom in (`+`) to see SNPs, an insertion (purple), deletions (`***`), split reads
 (magenta), mates on another contig (orange) and pairs too far apart (blue). Put the cursor on a magenta read and press
 `a` to see everywhere it aligns. `}` jumps to the stretch with no reads.
 
@@ -154,9 +154,9 @@ seqpeeq run 'open examples/aln.fa' 'msa delete-cols --cols 611-622' 'msa extract
 ## Reference
 
 - [Keys](docs/keys.md): every key, by file type, and what the reads look like.
-- [Commands](docs/commands.md): every command, renaming many names at once, and logs and replay.
+- [Commands](docs/commands.md): every command, logs and replay.
 
-In the interface, `?` and `:COMMAND -h` show the same text.
+In the interface, `?` and `:COMMAND -h` bring up the help menus.
 
 ## Limits
 

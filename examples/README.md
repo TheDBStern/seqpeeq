@@ -1,12 +1,12 @@
 # Example files
 
-Small, made-up files for trying seqpeeq. None of it is real data: every file is written by
-`crates/seqpeeq-core/src/demo/` from fixed seeds, with features placed where they're easy to find.
+Small, simulated files for trying seqpeeq. Every file is written by
+`crates/seqpeeq-core/src/demo/` from fixed seeds.
 
-| File | What it shows |
+| File | Description |
 |---|---|
 | `aln.fa` | 24 sequences × 900 columns in five lineages (`Alpha_2019.1` … `Omicron_2021.5`). Columns 301–309 are a gap in every `Omicron` row, columns 611–622 a gap in every row but `Delta`, and columns 881–900 a gap in every `Beta` and `Gamma` row. |
-| `tree.nwk` | The tree the alignment was made along, with branch lengths and some support values. Its tips are the alignment's names, so the two link when both are open. |
+| `tree.nwk` | The tree the alignment was made from, with branch lengths and some support values. Its tips are the alignment's names, so the two link when both are open. |
 | `ref.fa` | The reference for the BAMs: `chr1` (20,000 bp) and `chr2` (5,000 bp). |
 | `reads.bam` | 150 bp read pairs at about 20× on `chr1` and 10× on `chr2`, with the features below. |
 | `reads2.bam` | Plain pairs at about 8× with one SNP of its own at `chr1:1,033`, for stacking with `reads.bam`. |
