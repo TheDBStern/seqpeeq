@@ -6,6 +6,8 @@ pub mod link;
 pub mod overview;
 pub mod read_axis;
 #[cfg(test)]
+mod screens;
+#[cfg(test)]
 mod svg;
 pub mod tree;
 
@@ -967,7 +969,7 @@ pub(crate) mod tests {
     }
 
     /// An app with one file open.
-    fn with_file(path: &str) -> App {
+    pub(crate) fn with_file(path: &str) -> App {
         let mut app = App::new(Session::new(None));
         app.enqueue(Command::Open {
             path: path.into(),
