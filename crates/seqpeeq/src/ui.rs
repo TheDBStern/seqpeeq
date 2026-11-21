@@ -171,6 +171,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Help) {
         draw_help(frame, app, area);
     }
+    if let Mode::CommandHelp(help) = &app.mode {
+        draw_command_help(frame, help, area);
+    }
     if let Mode::Contigs(list) = &app.mode
         && !regions.body.is_empty()
     {
@@ -641,7 +644,7 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo   w save the whole alignment",
-    "          c change colors   [ ] adjust name width",
+    "          c cycle colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename",
 ];
@@ -656,8 +659,10 @@ const HELP_TREE: &[&str] = &[
     "          many: tree rename --regex RE --replace TEXT",
     "          w save the whole tree   e extract the clade",
     "          s ladderize  u U undo redo",
-    "          a select their sequences in the alignment",
-    "          p link to an open alignment",
+    "          a select the tips' sequences in the MSA",
+    "          p link to an open MSA",
+    "          tree extract  prune  reroot  ladderize  rename",
+    "          tree link  unlink",
 ];
 
 /// The keys of a BAM tab.
@@ -665,24 +670,25 @@ const HELP_BAM: &[&str] = &[
     "Move      arrows hjkl   Shift+arrows a screen",
     "          PgUp PgDn   Home End   g go to, Tab a contig",
     "BAM       ] [ covered   } { no coverage   c list contigs",
-    "          m mate   s other part   ' back",
+    "          m mate   s other split part   ' back",
     "          - + z zoom  F toggle filtered  S toggle clips",
     "          click, drag, Space select   Esc clear",
-    "          Tab next BAM in a stack   :bam unstack",
-    "          drag the column numbers, v v  a stretch",
-    "          e export reads   E reference   to a file",
+    "          Tab next BAM in a stack   :bam stack  unstack",
+    "          drag the coordinates, v v  select a region",
+    "          e export reads   E export reference",
     "          a visualize all alignments for a read",
     "          A list all alignments for a read",
     "          in those: S search the BAM   g go   / filter",
+    "          bam ref export-region export-reads export-ref",
 ];
 
 /// The keys every tab has, after its own.
 const HELP_SHARED: &[&str] = &[
     "View      Tab next file   L log   ? help   q quit",
-    "Commands  :  open FILE   close   use N   undo   redo",
+    "Commands  :open close use undo redo   :CMD -h details",
     "          :rescue FILE if the log has failed",
     "          Tab completes a file name after :tree link",
-    "Mouse     wheel on the column numbers scrolls sideways",
+    "Mouse     wheel over the coordinates scrolls left-right",
     "          hold Shift (Option on macOS) to select text",
     "          with the terminal itself",
     "          in tmux: set -g mouse on",
@@ -742,6 +748,88 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         .padding(Padding::horizontal(1));
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// `text` in rows of at most `width` columns, broken at spaces where it
+/// can be. Rows after the first start with `indent` spaces.
+fn wrap_words(text: &str, width: usize, indent: usize) -> Vec<String> {
+    let width = width.max(1);
+    let indent = if indent < width { indent } else { 0 };
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    // Whether the row holds anything but its indent.
+    let mut has_text = false;
+    for word in text.split(' ') {
+        if has_text && used + 1 + word.width() > width {
+            rows.push(std::mem::replace(&mut row, " ".repeat(indent)));
+            used = indent;
+            has_text = false;
+        }
+        if has_text {
+            row.push(' ');
+            used += 1;
+        }
+        // A word wider than a whole row is broken where the row ends.
+        for c in word.chars() {
+            let columns = c.width().unwrap_or(0);
+            if has_text && used + columns > width {
+                rows.push(std::mem::replace(&mut row, " ".repeat(indent)));
+                used = indent;
+            }
+            row.push(c);
+            used += columns;
+            has_text = true;
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+/// The box `:CMD -h` opens: the page wrapped to the screen, scrolled.
+fn draw_command_help(frame: &mut Frame, help: &crate::app::CommandHelp, area: Rect) {
+    if area.width < 5 || area.height < 3 {
+        return;
+    }
+    // A border and one column of padding each side.
+    let room = area.width as usize - 4;
+    let lines: Vec<String> = help
+        .page
+        .lines
+        .iter()
+        .flat_map(|line| {
+            // A note's later rows line up under its text, not its dash.
+            let indent = if line.starts_with("- ") { 2 } else { 0 };
+            wrap_words(line, room, indent)
+        })
+        .collect();
+    let shown = (area.height as usize - 2).min(lines.len());
+    let max_scroll = lines.len() - shown;
+    help.max_scroll.set(max_scroll);
+    help.shown.set(shown);
+    let top = help.scroll.min(max_scroll);
+    let title_width = help.page.title.width() + 2;
+    let widest = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    let width = (widest.max(title_width) + 4).min(area.width as usize) as u16;
+    let height = shown as u16 + 2;
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let mut block = Block::bordered()
+        .title(help.page.title.as_str())
+        .padding(Padding::horizontal(1));
+    if max_scroll > 0 {
+        block = block.title_bottom("j k scroll  Esc close");
+    }
+    let text: Vec<Line> = lines[top..top + shown]
+        .iter()
+        .map(|l| Line::from(l.as_str()))
+        .collect();
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
 /// The tab label of each open dataset: its file name.
@@ -952,6 +1040,97 @@ pub(crate) mod tests {
         let mut app = with_dataset();
         app.mode = Mode::Help;
         insta::assert_snapshot!(render(&app, 60, 12).backend());
+    }
+
+    /// The box `:CMD -h` opens, for the help `line` asks for.
+    fn command_help(line: &str) -> Mode {
+        let page = seqpeeq_core::help_request(line).unwrap().unwrap();
+        Mode::CommandHelp(crate::app::CommandHelp::new(page))
+    }
+
+    #[test]
+    fn each_help_page_names_its_commands_and_how_to_get_details() {
+        use seqpeeq_core::command::help::ENTRIES;
+        for (group, page) in [
+            ("msa", HELP_ALIGNMENT),
+            ("tree", HELP_TREE),
+            ("bam", HELP_BAM),
+        ] {
+            let words: Vec<&str> = page
+                .iter()
+                .chain(HELP_SHARED)
+                .flat_map(|l| l.split(|c: char| c.is_whitespace() || c == ':'))
+                .collect();
+            for entry in ENTRIES {
+                // "msa fill" → in the msa page as "fill"; "open" → in every page.
+                let name = match entry.path.split_once(' ') {
+                    Some((g, name)) if g == group => name,
+                    Some(_) => continue,
+                    None => entry.path,
+                };
+                assert!(words.contains(&name), "{group} help lacks {:?}", entry.path);
+            }
+        }
+        assert!(HELP_SHARED.iter().any(|l| l.contains("-h")));
+    }
+
+    #[test]
+    fn command_help_box() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("msa fill -h");
+        insta::assert_snapshot!(render(&app, 60, 24).backend());
+    }
+
+    #[test]
+    fn a_long_command_help_scrolls_to_its_end_and_no_further() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("msa rename -h");
+        let screen = rows(&render(&app, 60, 12)).join("\n");
+        assert!(screen.contains("msa rename [rows]"), "{screen}");
+        assert!(!screen.contains("seqpeeq says how many"), "{screen}");
+        let j = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        for _ in 0..200 {
+            app.handle_event(&j);
+            render(&app, 60, 12);
+        }
+        let end = rows(&render(&app, 60, 12)).join("\n");
+        assert!(end.contains("seqpeeq says how many"), "{end}");
+        assert!(!end.contains("msa rename [rows]"), "{end}");
+        let k = Event::Key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        app.handle_event(&k);
+        let up = rows(&render(&app, 60, 12)).join("\n");
+        assert_ne!(up, end, "one k after the end moves up a line");
+        let home = Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_event(&home);
+        assert_eq!(rows(&render(&app, 60, 12)).join("\n"), screen);
+        let end_key = Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_event(&end_key);
+        assert_eq!(rows(&render(&app, 60, 12)).join("\n"), end);
+    }
+
+    #[test]
+    fn command_help_wraps_at_spaces() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("bam export-reads -h");
+        let screen = rows(&render(&app, 60, 24)).join("\n");
+        // Every word of the syntax line is on screen whole.
+        for word in [
+            "[--region",
+            "--names-file",
+            "[--with-mates]",
+            "[--everywhere]",
+        ] {
+            assert!(screen.contains(word), "{word}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn command_help_draws_on_tiny_screens() {
+        let mut app = App::new(Session::new(None));
+        app.mode = command_help("help");
+        for (width, height) in [(30, 8), (10, 3), (4, 2), (1, 1)] {
+            render(&app, width, height);
+        }
     }
 
     /// The text of each screen row, trailing spaces removed.
@@ -1722,7 +1901,7 @@ pub(crate) mod tests {
             "] [ covered",
             "} { no coverage",
             "m mate",
-            "s other part",
+            "s other split part",
             "' back",
             "g go to, Tab a contig",
             "c list contigs",
@@ -1730,9 +1909,9 @@ pub(crate) mod tests {
             "S toggle clips",
             "click, drag, Space select   Esc clear",
             "Tab next BAM in a stack",
-            "v v  a stretch",
+            "v v  select a region",
             "e export reads",
-            "E reference",
+            "E export reference",
         ] {
             assert!(help.contains(text), "{text}");
         }
@@ -1754,12 +1933,12 @@ pub(crate) mod tests {
     fn help_has_a_tree_section() {
         let help = HELP_TREE.join("\n");
         for text in [
-            "p link to an open alignment",
+            "p link to an open MSA",
             "w save the whole tree   e extract the clade",
             "Enter open/close",
             "b lengths",
             "o re-root on branch",
-            "a select their sequences in the alignment",
+            "a select the tips' sequences in the MSA",
             "Space, right-click  pick several clades",
             "O re-root at the midpoint",
             "many: tree rename --regex RE --replace TEXT",
@@ -1774,7 +1953,7 @@ pub(crate) mod tests {
         for text in [
             "Shift+arrows jumps",
             "z view whole alignment",
-            "c change colors",
+            "c cycle colors",
             "[ ] adjust name width",
             "many: msa rename --regex RE --replace TEXT",
             "Space, right-click a name or number  pick",
@@ -1819,7 +1998,7 @@ pub(crate) mod tests {
         let mut none = App::new(Session::new(None));
         let screen = help_screen(&mut none, 80, 24);
         assert!(screen.contains("┌help─"), "{screen}");
-        assert!(screen.contains("open FILE"));
+        assert!(screen.contains(":open close use undo redo"), "{screen}");
         for lacks in ["m mate", "msa delete-rows", "o re-root"] {
             assert!(!screen.contains(lacks), "{lacks}\n{screen}");
         }

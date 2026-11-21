@@ -6,6 +6,8 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
 ### Added
 
 - Tab in a BAM's `g` line finishes a contig name. If several contigs match, it opens the contig list, filtered by
@@ -15,6 +17,10 @@ All notable changes to seqpeeq are listed here. The format follows
   command such as `msa delete-rows --rows 1,3`.
 - Several tips or clades of a tree can be picked with `Space` or right-click. `a` then selects all their sequences
   in the linked alignment.
+- `:COMMAND -h` (or `--help`) shows a command's help, as in the README: how to write it, what it does, and what its
+  options and names mean. `:msa -h`, `:tree -h` and `:bam -h` list a file type's commands, and `:help` lists them
+  all. `seqpeeq run "COMMAND -h"` prints the same help and runs nothing.
+- `?` names every command for the file in view.
 
 ### Changed
 
@@ -97,6 +103,7 @@ logged and replayable, and input files never modified.
 - Builds with `cargo install` into a conda environment or anywhere with Rust.
 - Prebuilt programs on each GitHub release: a static Linux x86_64 program and an Apple-silicon macOS program.
 
-[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TheDBStern/seqpeeq/releases/tag/v0.1.0

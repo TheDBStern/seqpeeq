@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
-use seqpeeq_core::{BamCmd, Command, Kind, Session, SessionLog, check_input, replay};
+use seqpeeq_core::{BamCmd, Command, Kind, Session, SessionLog, check_input, help_request, replay};
 
 /// View and edit alignments, trees and mapped reads in the terminal.
 #[derive(Parser)]
@@ -98,6 +98,21 @@ fn run(cli: Cli) -> Result<()> {
             println!("replayed {} {noun}", report.commands);
         }
         Some(Sub::Run { commands }) => {
+            // Asking for help runs nothing, so that a command line copied
+            // with -h on the end cannot change a file.
+            let asked: Vec<_> = commands
+                .iter()
+                .filter_map(|line| help_request(line))
+                .collect();
+            if !asked.is_empty() {
+                let mut pages = Vec::new();
+                for page in asked {
+                    let page = page.map_err(anyhow::Error::msg)?;
+                    pages.push(format!("{}\n{}", page.title, page.lines.join("\n")));
+                }
+                println!("{}", pages.join("\n\n"));
+                return Ok(());
+            }
             // Read every command before running any, so that a mistake in
             // a later one does not leave the earlier ones half done.
             let commands = commands

@@ -10,8 +10,9 @@ use std::sync::Arc;
 use ratatui::layout::Size;
 use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Read, Stretch};
 use seqpeeq_core::{
-    Alignment, Command, Conservation, Dataset, Error, Finished, Job, MsaCmd, NodeId, NodeSel,
-    Progress, Ranges, Session, Started, Summary, TreeCmd, TreeDoc, View, summary_block,
+    Alignment, Command, Conservation, Dataset, Error, Finished, HelpPage, Job, MsaCmd, NodeId,
+    NodeSel, Progress, Ranges, Session, Started, Summary, TreeCmd, TreeDoc, View, help_request,
+    summary_block,
 };
 
 use crate::bam_view::{BamView, Loaded, Want};
@@ -40,10 +41,34 @@ pub enum Mode {
     /// Waiting for `y` or anything else in answer to a question.
     Confirm(Confirm),
     Help,
+    /// `:CMD -h`: a command's help, in a box.
+    CommandHelp(CommandHelp),
     /// `c` on a BAM tab: picking a contig.
     Contigs(Box<crate::bam_view::ContigList>),
     /// `p` on a tree tab: picking the alignment to link to.
     Links(Box<link::LinkList>),
+}
+
+/// A command's help on screen, and how far it is scrolled.
+pub struct CommandHelp {
+    pub page: HelpPage,
+    /// The first line shown, counting wrapped lines.
+    pub scroll: usize,
+    /// The furthest `scroll` can go and the lines the box shows, as last
+    /// drawn: only drawing knows the screen's size.
+    pub max_scroll: std::cell::Cell<usize>,
+    pub shown: std::cell::Cell<usize>,
+}
+
+impl CommandHelp {
+    pub fn new(page: HelpPage) -> CommandHelp {
+        CommandHelp {
+            page,
+            scroll: 0,
+            max_scroll: std::cell::Cell::new(0),
+            shown: std::cell::Cell::new(1),
+        }
+    }
 }
 
 /// How typed characters go into a row.
@@ -673,7 +698,8 @@ impl App {
                 // A queued open does not take the tab from a prompt, a
                 // pending fill, a question or a typed run: those were aimed
                 // at the file on screen and must land on it.
-                let pending = !matches!(self.mode, Mode::Normal | Mode::Help);
+                let pending =
+                    !matches!(self.mode, Mode::Normal | Mode::Help | Mode::CommandHelp(_));
                 if ended.is_ok()
                     && busy.follow
                     && !(busy.queued && pending)
@@ -1094,6 +1120,24 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::CommandHelp(help) => {
+                let max = help.max_scroll.get();
+                let page = help.shown.get().max(1);
+                let at = help.scroll.min(max);
+                help.scroll = match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => {
+                        self.mode = Mode::Normal;
+                        return;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => (at + 1).min(max),
+                    KeyCode::Char('k') | KeyCode::Up => at.saturating_sub(1),
+                    KeyCode::PageDown | KeyCode::Char(' ') => (at + page).min(max),
+                    KeyCode::PageUp => at.saturating_sub(page),
+                    KeyCode::Home | KeyCode::Char('g') => 0,
+                    KeyCode::End | KeyCode::Char('G') => max,
+                    _ => at,
+                };
+            }
             Mode::Contigs(_) => self.contigs_key(key),
             Mode::Links(_) => self.links_key(key),
         }
@@ -2429,6 +2473,12 @@ impl App {
         if let Some(file) = line.strip_prefix("rescue ") {
             return self.rescue(file.trim());
         }
+        // Asking for help runs nothing and is not logged.
+        match help_request(line) {
+            Some(Ok(page)) => return self.mode = Mode::CommandHelp(CommandHelp::new(page)),
+            Some(Err(message)) => return self.status = format!("error: {message}"),
+            None => {}
+        }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let parsed = Command::parse_line(line).map(|cmd| expand_home(cmd, home.as_deref()));
         // Closing a file throws its edits away, so ask first. The file
@@ -2667,6 +2717,55 @@ mod tests {
         assert!(app.show_log);
         app.handle_event(&key('L'));
         assert!(!app.show_log);
+    }
+
+    #[test]
+    fn h_after_a_command_opens_its_help_and_runs_nothing() {
+        let mut app = App::new(Session::new(None));
+        app.handle_event(&key(':'));
+        type_str(&mut app, "msa fill -h");
+        app.handle_event(&press(KeyCode::Enter));
+        let Mode::CommandHelp(help) = &app.mode else {
+            panic!("no help box")
+        };
+        assert_eq!(help.page.title, "help: msa fill");
+        assert!(app.session.history().is_empty());
+        app.handle_event(&press(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn h_after_an_unknown_command_is_an_error() {
+        let mut app = App::new(Session::new(None));
+        app.handle_event(&key(':'));
+        type_str(&mut app, "msa foo -h");
+        app.handle_event(&press(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(
+            app.status,
+            "error: no command 'msa foo'; :msa -h lists them"
+        );
+        assert!(app.session.history().is_empty());
+    }
+
+    #[test]
+    fn command_help_closes_only_on_its_keys() {
+        for close in [
+            press(KeyCode::Esc),
+            press(KeyCode::Enter),
+            key('q'),
+            key('?'),
+        ] {
+            let mut app = App::new(Session::new(None));
+            app.handle_event(&key(':'));
+            type_str(&mut app, "help");
+            app.handle_event(&press(KeyCode::Enter));
+            app.handle_event(&key('x'));
+            assert!(matches!(app.mode, Mode::CommandHelp(_)), "x closed it");
+            app.handle_event(&close);
+            assert!(matches!(app.mode, Mode::Normal), "{close:?} left it open");
+            assert!(!app.quit);
+        }
     }
 
     #[test]
