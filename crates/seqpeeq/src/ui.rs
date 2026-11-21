@@ -5,6 +5,10 @@ pub mod grid;
 pub mod link;
 pub mod overview;
 pub mod read_axis;
+#[cfg(test)]
+mod screens;
+#[cfg(test)]
+mod svg;
 pub mod tree;
 
 use crate::bam_view::Over;
@@ -965,7 +969,7 @@ pub(crate) mod tests {
     }
 
     /// An app with one file open.
-    fn with_file(path: &str) -> App {
+    pub(crate) fn with_file(path: &str) -> App {
         let mut app = App::new(Session::new(None));
         app.enqueue(Command::Open {
             path: path.into(),
@@ -2067,6 +2071,12 @@ pub(crate) mod tests {
             .expect("README.md at the repo root")
     }
 
+    /// `docs/<name>` at the repo root.
+    fn doc(name: &str) -> String {
+        let path = format!("{}/../../docs/{name}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("docs/{name}: {e}"))
+    }
+
     /// Every leaf command the parser knows, as its words: `msa delete-cols`.
     pub(crate) fn command_paths() -> Vec<(String, clap::Command)> {
         fn walk(prefix: &str, cmd: &clap::Command, out: &mut Vec<(String, clap::Command)>) {
@@ -2089,8 +2099,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn readme_has_every_help_line() {
-        let readme = readme();
+    fn keys_doc_has_every_help_line() {
+        let keys = doc("keys.md");
         for line in HELP_ALIGNMENT
             .iter()
             .chain(HELP_TREE)
@@ -2100,8 +2110,8 @@ pub(crate) mod tests {
             let line = line.trim();
             assert!(!line.is_empty());
             assert!(
-                readme.contains(line),
-                "README.md lacks the help line {line:?}"
+                keys.contains(line),
+                "docs/keys.md lacks the help line {line:?}"
             );
         }
     }
@@ -2116,20 +2126,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn readme_names_every_command() {
-        let readme = readme();
+    fn commands_doc_names_every_command() {
+        let commands = doc("commands.md");
         let paths = command_paths();
         assert!(paths.len() >= 20, "only {} commands found", paths.len());
         for (path, _) in &paths {
             assert!(
-                readme.contains(&format!("`{path}")),
-                "README.md does not name `{path}`"
+                commands.contains(&format!("`{path}")),
+                "docs/commands.md does not name `{path}`"
             );
         }
     }
 
     #[test]
-    #[ignore = "prints the commands for writing the README"]
+    #[ignore = "prints the commands for writing docs/commands.md"]
     fn print_commands() {
         for (path, mut cmd) in command_paths() {
             let usage = cmd.render_usage().to_string();

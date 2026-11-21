@@ -5,6 +5,8 @@
 
 pub mod bam;
 pub mod command;
+#[cfg(any(test, feature = "testing"))]
+pub mod demo;
 pub mod error;
 pub mod log;
 pub mod msa;

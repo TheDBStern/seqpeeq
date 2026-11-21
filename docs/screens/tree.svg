@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="510" viewBox="0 0 840 510" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+<rect width="100%" height="100%" fill="#1e1e1e"/>
+<rect x="75.6" y="0" width="84" height="17" fill="#d4d4d4"/>
+<rect x="571.2" y="34" width="100.8" height="17" fill="#d4d4d4"/>
+<text x="0" y="13" textLength="58.8" fill="#d4d4d4" xml:space="preserve"> aln.fa</text>
+<text x="67.2" y="13" textLength="8.4" fill="#d4d4d4" opacity="0.5" xml:space="preserve">│</text>
+<text x="75.6" y="13" textLength="75.6" fill="#1e1e1e" font-weight="bold" xml:space="preserve"> tree.nwk</text>
+<text x="0" y="30" textLength="411.6" fill="#d4d4d4" xml:space="preserve"> tree.nwk · 24 tips · linked to aln.fa (24 of 24)</text>
+<text x="0" y="47" textLength="562.8" fill="#d4d4d4" xml:space="preserve">                                           ┌────────────────┬──────</text>
+<text x="571.2" y="47" textLength="100.8" fill="#1e1e1e" xml:space="preserve">Alpha_2019.2</text>
+<text x="0" y="64" textLength="344.4" fill="#d4d4d4" xml:space="preserve">                          ┌──────────────</text>
+<text x="344.4" y="64" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">99</text>
+<text x="361.2" y="64" textLength="361.2" fill="#d4d4d4" xml:space="preserve">┤                └──────────── Alpha_2019.5</text>
+<text x="0" y="81" textLength="823.2" fill="#d4d4d4" xml:space="preserve">                          │                │             ┌────┬────────────────────── Alpha_2019.4</text>
+<text x="0" y="98" textLength="201.6" fill="#d4d4d4" xml:space="preserve">        ┌───────────────</text>
+<text x="201.6" y="98" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">80</text>
+<text x="218.4" y="98" textLength="546" fill="#d4d4d4" xml:space="preserve">┤                └─────────────┤    └─────────────── Alpha_2019.3</text>
+<text x="0" y="115" textLength="663.6" fill="#d4d4d4" xml:space="preserve">        │                 │                              └──────── Alpha_2019.1</text>
+<text x="0" y="132" textLength="495.6" fill="#d4d4d4" xml:space="preserve">        │                 │         ┌────────── Beta_2020.4</text>
+<text x="0" y="149" textLength="50.4" fill="#d4d4d4" xml:space="preserve">  ┌───</text>
+<text x="50.4" y="149" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">98</text>
+<text x="67.2" y="149" textLength="218.4" fill="#d4d4d4" xml:space="preserve">┤                 └───────</text>
+<text x="285.6" y="149" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">91</text>
+<text x="302.4" y="149" textLength="327.6" fill="#d4d4d4" xml:space="preserve">┤        ┌────────────┬──── Beta_2020.1</text>
+<text x="0" y="166" textLength="747.6" fill="#d4d4d4" xml:space="preserve">  │     │                           └────────┤            └────────────────── Beta_2020.2</text>
+<text x="0" y="183" textLength="546" fill="#d4d4d4" xml:space="preserve">  │     │                                    └─────── Beta_2020.3</text>
+<text x="0" y="200" textLength="159.6" fill="#d4d4d4" xml:space="preserve">  │     └──────────</text>
+<text x="159.6" y="200" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">76</text>
+<text x="176.4" y="200" textLength="277.2" fill="#d4d4d4" xml:space="preserve">┬─────────────────── Gamma_2020.1</text>
+<text x="0" y="217" textLength="504" fill="#d4d4d4" xml:space="preserve"> ┌┤                  └──────────────┬────────── Gamma_2020.4</text>
+<text x="0" y="234" textLength="546" fill="#d4d4d4" xml:space="preserve"> ││                                 └─────────┬───── Gamma_2020.2</text>
+<text x="0" y="251" textLength="554.4" fill="#d4d4d4" xml:space="preserve"> ││                                           └────── Gamma_2020.3</text>
+<text x="0" y="268" textLength="420" fill="#d4d4d4" xml:space="preserve"> ││    ┌────────┬──────────────────── Delta_2021.4</text>
+<text x="0" y="285" textLength="33.6" fill="#d4d4d4" xml:space="preserve"> │└─</text>
+<text x="33.6" y="285" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">100</text>
+<text x="58.8" y="285" textLength="285.6" fill="#d4d4d4" xml:space="preserve">┤        └───────┬─── Delta_2021.6</text>
+<text x="0" y="302" textLength="369.6" fill="#d4d4d4" xml:space="preserve">─┤     │                └────── Delta_2021.3</text>
+<text x="0" y="319" textLength="344.4" fill="#d4d4d4" xml:space="preserve"> │     └─┬────────────────── Delta_2021.5</text>
+<text x="0" y="336" textLength="403.2" fill="#d4d4d4" xml:space="preserve"> │       └───────────────────┬───── Delta_2021.1</text>
+<text x="0" y="353" textLength="512.4" fill="#d4d4d4" xml:space="preserve"> │                           └────────────────── Delta_2021.2</text>
+<text x="0" y="370" textLength="537.6" fill="#d4d4d4" xml:space="preserve"> │                    ┌─────────────┬──────────── Omicron_2021.5</text>
+<text x="0" y="387" textLength="520.8" fill="#d4d4d4" xml:space="preserve"> │             ┌──────┤             └────────── Omicron_2021.1</text>
+<text x="0" y="404" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> └───────────</text>
+<text x="109.2" y="404" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">91</text>
+<text x="126" y="404" textLength="361.2" fill="#d4d4d4" xml:space="preserve">┤      └──────────────────── Omicron_2021.3</text>
+<text x="0" y="421" textLength="403.2" fill="#d4d4d4" xml:space="preserve">               └┬──────────────── Omicron_2021.2</text>
+<text x="0" y="438" textLength="302.4" fill="#d4d4d4" xml:space="preserve">                └──── Omicron_2021.4</text>
+<text x="0" y="472" textLength="142.8" fill="#d4d4d4" xml:space="preserve"> ├─────────┤ 0.02</text>
+<text x="0" y="489" textLength="235.2" fill="#d4d4d4" xml:space="preserve">Alpha_2019.2 · length 0.0114</text>
+</svg>

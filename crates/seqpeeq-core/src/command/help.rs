@@ -1,19 +1,19 @@
-//! Help for each command, in the README's words, for `:CMD -h` in the
+//! Help for each command, in the words of docs/commands.md, for `:CMD -h` in the
 //! interface and `seqpeeq run "CMD -h"`.
 //!
-//! The text is copied from README.md without its Markdown; a test keeps
-//! every syntax line and description the same as the README's.
+//! The text is copied from docs/commands.md without its Markdown; a test keeps
+//! every syntax line and description the same as the doc's.
 
 /// One command's help.
 #[derive(Debug)]
 pub struct Entry {
     /// The command's words, as typed: `msa fill`, `open`.
     pub path: &'static str,
-    /// How it is written, as in the README's table.
+    /// How it is written, as in docs/commands.md's table.
     pub syntax: &'static str,
     /// What it does.
     pub about: &'static str,
-    /// What its placeholders mean, and anything else the README says of it.
+    /// What its placeholders mean, and anything else docs/commands.md says of it.
     pub notes: &'static [&'static str],
 }
 
@@ -44,7 +44,7 @@ const CLASH: &str = "A rename that would give two tips the same name is refused,
                      would give two linked sequences the same name. An alignment on its own may end \
                      up with duplicate names; seqpeeq says how many.";
 
-/// Every command, in the README's order: files, alignments, trees, BAMs.
+/// Every command, in docs/commands.md's order: files, alignments, trees, BAMs.
 pub const ENTRIES: &[Entry] = &[
     Entry {
         path: "open",
@@ -242,7 +242,7 @@ pub const ENTRIES: &[Entry] = &[
     },
 ];
 
-/// The groups of commands, headed as in the README.
+/// The groups of commands, headed as in docs/commands.md.
 const HEADINGS: &[(&str, &str)] = &[
     ("", "Files"),
     ("msa", "Alignments"),
@@ -535,21 +535,23 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_matches_the_readme() {
-        let readme =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
-                .expect("README.md at the repo root")
-                .replace("\\|", "|")
-                .replace('`', "");
+    fn every_entry_matches_the_commands_doc() {
+        let readme = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/commands.md"
+        ))
+        .expect("docs/commands.md at the repo root")
+        .replace("\\|", "|")
+        .replace('`', "");
         for entry in ENTRIES {
             assert!(
                 readme.contains(entry.syntax),
-                "README lacks {:?}",
+                "docs/commands.md lacks {:?}",
                 entry.syntax
             );
             assert!(
                 readme.contains(entry.about),
-                "README lacks {:?}",
+                "docs/commands.md lacks {:?}",
                 entry.about
             );
         }

@@ -1,0 +1,505 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="510" viewBox="0 0 840 510" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+<rect width="100%" height="100%" fill="#1e1e1e"/>
+<rect x="0" y="0" width="67.2" height="17" fill="#d4d4d4"/>
+<rect x="235.2" y="34" width="84" height="17" fill="#005f87"/>
+<rect x="327.6" y="34" width="33.6" height="17" fill="#005f87"/>
+<rect x="369.6" y="34" width="126" height="17" fill="#005f87"/>
+<rect x="596.4" y="34" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="34" width="117.6" height="17" fill="#005f87"/>
+<rect x="823.2" y="34" width="16.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="51" width="84" height="17" fill="#005f87"/>
+<rect x="327.6" y="51" width="42" height="17" fill="#005f87"/>
+<rect x="378" y="51" width="16.8" height="17" fill="#005f87"/>
+<rect x="403.2" y="51" width="67.2" height="17" fill="#005f87"/>
+<rect x="478.8" y="51" width="16.8" height="17" fill="#005f87"/>
+<rect x="596.4" y="51" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="51" width="117.6" height="17" fill="#005f87"/>
+<rect x="823.2" y="51" width="16.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="68" width="58.8" height="17" fill="#005f87"/>
+<rect x="302.4" y="68" width="8.4" height="17" fill="#005f87"/>
+<rect x="319.2" y="68" width="109.2" height="17" fill="#005f87"/>
+<rect x="436.8" y="68" width="50.4" height="17" fill="#005f87"/>
+<rect x="596.4" y="68" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="68" width="33.6" height="17" fill="#005f87"/>
+<rect x="739.2" y="68" width="42" height="17" fill="#005f87"/>
+<rect x="789.6" y="68" width="50.4" height="17" fill="#005f87"/>
+<rect x="235.2" y="85" width="58.8" height="17" fill="#005f87"/>
+<rect x="302.4" y="85" width="8.4" height="17" fill="#005f87"/>
+<rect x="319.2" y="85" width="176.4" height="17" fill="#005f87"/>
+<rect x="596.4" y="85" width="58.8" height="17" fill="#005f87"/>
+<rect x="663.6" y="85" width="25.2" height="17" fill="#005f87"/>
+<rect x="697.2" y="85" width="142.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="102" width="58.8" height="17" fill="#005f87"/>
+<rect x="302.4" y="102" width="8.4" height="17" fill="#005f87"/>
+<rect x="319.2" y="102" width="176.4" height="17" fill="#005f87"/>
+<rect x="596.4" y="102" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="102" width="92.4" height="17" fill="#005f87"/>
+<rect x="798" y="102" width="42" height="17" fill="#005f87"/>
+<rect x="235.2" y="119" width="260.4" height="17" fill="#005f87"/>
+<rect x="596.4" y="119" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="119" width="92.4" height="17" fill="#005f87"/>
+<rect x="798" y="119" width="8.4" height="17" fill="#005f87"/>
+<rect x="814.8" y="119" width="25.2" height="17" fill="#005f87"/>
+<rect x="235.2" y="136" width="8.4" height="17" fill="#005f87"/>
+<rect x="252" y="136" width="42" height="17" fill="#005f87"/>
+<rect x="302.4" y="136" width="193.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="136" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="136" width="75.6" height="17" fill="#005f87"/>
+<rect x="781.2" y="136" width="25.2" height="17" fill="#005f87"/>
+<rect x="823.2" y="136" width="16.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="153" width="8.4" height="17" fill="#005f87"/>
+<rect x="252" y="153" width="42" height="17" fill="#005f87"/>
+<rect x="302.4" y="153" width="193.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="153" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="153" width="75.6" height="17" fill="#005f87"/>
+<rect x="781.2" y="153" width="25.2" height="17" fill="#005f87"/>
+<rect x="823.2" y="153" width="16.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="170" width="260.4" height="17" fill="#005f87"/>
+<rect x="596.4" y="170" width="92.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="170" width="75.6" height="17" fill="#005f87"/>
+<rect x="781.2" y="170" width="25.2" height="17" fill="#005f87"/>
+<rect x="823.2" y="170" width="16.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="187" width="92.4" height="17" fill="#005f87"/>
+<rect x="344.4" y="187" width="151.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="187" width="168" height="17" fill="#005f87"/>
+<rect x="772.8" y="187" width="50.4" height="17" fill="#005f87"/>
+<rect x="831.6" y="187" width="8.4" height="17" fill="#005f87"/>
+<rect x="243.6" y="204" width="134.4" height="17" fill="#005f87"/>
+<rect x="386.4" y="204" width="109.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="204" width="58.8" height="17" fill="#005f87"/>
+<rect x="663.6" y="204" width="42" height="17" fill="#005f87"/>
+<rect x="714" y="204" width="50.4" height="17" fill="#005f87"/>
+<rect x="772.8" y="204" width="67.2" height="17" fill="#005f87"/>
+<rect x="243.6" y="221" width="92.4" height="17" fill="#005f87"/>
+<rect x="344.4" y="221" width="33.6" height="17" fill="#005f87"/>
+<rect x="386.4" y="221" width="109.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="221" width="25.2" height="17" fill="#005f87"/>
+<rect x="630" y="221" width="25.2" height="17" fill="#005f87"/>
+<rect x="663.6" y="221" width="100.8" height="17" fill="#005f87"/>
+<rect x="772.8" y="221" width="25.2" height="17" fill="#005f87"/>
+<rect x="806.4" y="221" width="16.8" height="17" fill="#005f87"/>
+<rect x="831.6" y="221" width="8.4" height="17" fill="#005f87"/>
+<rect x="243.6" y="238" width="92.4" height="17" fill="#005f87"/>
+<rect x="344.4" y="238" width="33.6" height="17" fill="#005f87"/>
+<rect x="386.4" y="238" width="109.2" height="17" fill="#005f87"/>
+<rect x="596.4" y="238" width="25.2" height="17" fill="#005f87"/>
+<rect x="630" y="238" width="25.2" height="17" fill="#005f87"/>
+<rect x="663.6" y="238" width="100.8" height="17" fill="#005f87"/>
+<rect x="772.8" y="238" width="25.2" height="17" fill="#005f87"/>
+<rect x="806.4" y="238" width="16.8" height="17" fill="#005f87"/>
+<rect x="831.6" y="238" width="8.4" height="17" fill="#005f87"/>
+<rect x="243.6" y="255" width="16.8" height="17" fill="#005f87"/>
+<rect x="268.8" y="255" width="226.8" height="17" fill="#005f87"/>
+<rect x="604.8" y="255" width="142.8" height="17" fill="#005f87"/>
+<rect x="756" y="255" width="42" height="17" fill="#005f87"/>
+<rect x="806.4" y="255" width="33.6" height="17" fill="#005f87"/>
+<rect x="235.2" y="272" width="25.2" height="17" fill="#005f87"/>
+<rect x="268.8" y="272" width="201.6" height="17" fill="#005f87"/>
+<rect x="478.8" y="272" width="16.8" height="17" fill="#005f87"/>
+<rect x="604.8" y="272" width="193.2" height="17" fill="#005f87"/>
+<rect x="806.4" y="272" width="33.6" height="17" fill="#005f87"/>
+<rect x="235.2" y="289" width="25.2" height="17" fill="#005f87"/>
+<rect x="268.8" y="289" width="201.6" height="17" fill="#005f87"/>
+<rect x="478.8" y="289" width="16.8" height="17" fill="#005f87"/>
+<rect x="604.8" y="289" width="193.2" height="17" fill="#005f87"/>
+<rect x="806.4" y="289" width="33.6" height="17" fill="#005f87"/>
+<rect x="235.2" y="306" width="25.2" height="17" fill="#005f87"/>
+<rect x="268.8" y="306" width="100.8" height="17" fill="#005f87"/>
+<rect x="378" y="306" width="16.8" height="17" fill="#005f87"/>
+<rect x="403.2" y="306" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="306" width="50.4" height="17" fill="#005f87"/>
+<rect x="663.6" y="306" width="67.2" height="17" fill="#005f87"/>
+<rect x="739.2" y="306" width="100.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="323" width="25.2" height="17" fill="#005f87"/>
+<rect x="268.8" y="323" width="75.6" height="17" fill="#005f87"/>
+<rect x="352.8" y="323" width="42" height="17" fill="#005f87"/>
+<rect x="403.2" y="323" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="323" width="25.2" height="17" fill="#005f87"/>
+<rect x="638.4" y="323" width="50.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="323" width="142.8" height="17" fill="#005f87"/>
+<rect x="235.2" y="340" width="25.2" height="17" fill="#005f87"/>
+<rect x="268.8" y="340" width="226.8" height="17" fill="#005f87"/>
+<rect x="604.8" y="340" width="16.8" height="17" fill="#005f87"/>
+<rect x="638.4" y="340" width="50.4" height="17" fill="#005f87"/>
+<rect x="697.2" y="340" width="25.2" height="17" fill="#005f87"/>
+<rect x="730.8" y="340" width="16.8" height="17" fill="#005f87"/>
+<rect x="756" y="340" width="84" height="17" fill="#005f87"/>
+<rect x="235.2" y="357" width="151.2" height="17" fill="#005f87"/>
+<rect x="394.8" y="357" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="357" width="8.4" height="17" fill="#005f87"/>
+<rect x="621.6" y="357" width="8.4" height="17" fill="#005f87"/>
+<rect x="638.4" y="357" width="84" height="17" fill="#005f87"/>
+<rect x="730.8" y="357" width="109.2" height="17" fill="#005f87"/>
+<rect x="235.2" y="374" width="151.2" height="17" fill="#005f87"/>
+<rect x="394.8" y="374" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="374" width="8.4" height="17" fill="#005f87"/>
+<rect x="621.6" y="374" width="67.2" height="17" fill="#005f87"/>
+<rect x="697.2" y="374" width="25.2" height="17" fill="#005f87"/>
+<rect x="730.8" y="374" width="109.2" height="17" fill="#005f87"/>
+<rect x="235.2" y="391" width="42" height="17" fill="#005f87"/>
+<rect x="285.6" y="391" width="100.8" height="17" fill="#005f87"/>
+<rect x="394.8" y="391" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="391" width="8.4" height="17" fill="#005f87"/>
+<rect x="621.6" y="391" width="50.4" height="17" fill="#005f87"/>
+<rect x="688.8" y="391" width="33.6" height="17" fill="#005f87"/>
+<rect x="730.8" y="391" width="109.2" height="17" fill="#005f87"/>
+<rect x="235.2" y="408" width="100.8" height="17" fill="#005f87"/>
+<rect x="344.4" y="408" width="42" height="17" fill="#005f87"/>
+<rect x="394.8" y="408" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="408" width="8.4" height="17" fill="#005f87"/>
+<rect x="621.6" y="408" width="100.8" height="17" fill="#005f87"/>
+<rect x="730.8" y="408" width="16.8" height="17" fill="#005f87"/>
+<rect x="756" y="408" width="84" height="17" fill="#005f87"/>
+<rect x="235.2" y="425" width="84" height="17" fill="#005f87"/>
+<rect x="336" y="425" width="50.4" height="17" fill="#005f87"/>
+<rect x="394.8" y="425" width="92.4" height="17" fill="#005f87"/>
+<rect x="604.8" y="425" width="8.4" height="17" fill="#005f87"/>
+<rect x="621.6" y="425" width="100.8" height="17" fill="#005f87"/>
+<rect x="730.8" y="425" width="16.8" height="17" fill="#005f87"/>
+<rect x="756" y="425" width="84" height="17" fill="#005f87"/>
+<text x="0" y="13" textLength="58.8" fill="#1e1e1e" font-weight="bold" xml:space="preserve"> aln.fa</text>
+<text x="235.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">580</text>
+<text x="319.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">590</text>
+<text x="403.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">600</text>
+<text x="487.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">610</text>
+<text x="571.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">620</text>
+<text x="655.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">630</text>
+<text x="739.2" y="30" textLength="25.2" fill="#d4d4d4" opacity="0.5" xml:space="preserve">640</text>
+<text x="0" y="47" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 1</text>
+<text x="16.8" y="47" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Alpha_2019.2</text>
+<text x="235.2" y="47" textLength="84" fill="#eeeeee" xml:space="preserve">AGCACACCAT</text>
+<text x="319.2" y="47" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="327.6" y="47" textLength="33.6" fill="#eeeeee" xml:space="preserve">GCCG</text>
+<text x="361.2" y="47" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="369.6" y="47" textLength="126" fill="#eeeeee" xml:space="preserve">TCTTGTGTTCAGGAC</text>
+<text x="495.6" y="47" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="47" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="47" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="697.2" y="47" textLength="117.6" fill="#eeeeee" xml:space="preserve">GAGGCCACACCTTT</text>
+<text x="814.8" y="47" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="823.2" y="47" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="0" y="64" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 2</text>
+<text x="16.8" y="64" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Alpha_2019.5</text>
+<text x="235.2" y="64" textLength="84" fill="#eeeeee" xml:space="preserve">AGCACACCAT</text>
+<text x="319.2" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="327.6" y="64" textLength="42" fill="#eeeeee" xml:space="preserve">GCCGG</text>
+<text x="369.6" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="378" y="64" textLength="16.8" fill="#eeeeee" xml:space="preserve">CT</text>
+<text x="394.8" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="403.2" y="64" textLength="67.2" fill="#eeeeee" xml:space="preserve">GTGTTCAG</text>
+<text x="470.4" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="478.8" y="64" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="495.6" y="64" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="64" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="697.2" y="64" textLength="117.6" fill="#eeeeee" xml:space="preserve">GAGGCCACACCTTT</text>
+<text x="814.8" y="64" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="823.2" y="64" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="0" y="81" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 3</text>
+<text x="16.8" y="81" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Alpha_2019.4</text>
+<text x="235.2" y="81" textLength="58.8" fill="#eeeeee" xml:space="preserve">AGCACAC</text>
+<text x="294" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="302.4" y="81" textLength="8.4" fill="#eeeeee" xml:space="preserve">A</text>
+<text x="310.8" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="319.2" y="81" textLength="109.2" fill="#eeeeee" xml:space="preserve">GGCCGGTCTTGTG</text>
+<text x="428.4" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="436.8" y="81" textLength="50.4" fill="#eeeeee" xml:space="preserve">TCAGGA</text>
+<text x="487.2" y="81" textLength="109.2" fill="#d4d4d4" xml:space="preserve">G------------</text>
+<text x="596.4" y="81" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="81" textLength="33.6" fill="#eeeeee" xml:space="preserve">GAGG</text>
+<text x="730.8" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="739.2" y="81" textLength="42" fill="#eeeeee" xml:space="preserve">CACAC</text>
+<text x="781.2" y="81" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="789.6" y="81" textLength="50.4" fill="#eeeeee" xml:space="preserve">TTTAAC</text>
+<text x="0" y="98" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 4</text>
+<text x="16.8" y="98" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Alpha_2019.3</text>
+<text x="235.2" y="98" textLength="58.8" fill="#eeeeee" xml:space="preserve">AGCACAC</text>
+<text x="294" y="98" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="302.4" y="98" textLength="8.4" fill="#eeeeee" xml:space="preserve">A</text>
+<text x="310.8" y="98" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="319.2" y="98" textLength="176.4" fill="#eeeeee" xml:space="preserve">GGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="98" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="98" textLength="58.8" fill="#eeeeee" xml:space="preserve">GGGTAAC</text>
+<text x="655.2" y="98" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="663.6" y="98" textLength="25.2" fill="#eeeeee" xml:space="preserve">TGA</text>
+<text x="688.8" y="98" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="98" textLength="142.8" fill="#eeeeee" xml:space="preserve">GAGGCCACACCTTTAAC</text>
+<text x="0" y="115" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 5</text>
+<text x="16.8" y="115" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Alpha_2019.1</text>
+<text x="235.2" y="115" textLength="58.8" fill="#eeeeee" xml:space="preserve">AGCACAC</text>
+<text x="294" y="115" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="302.4" y="115" textLength="8.4" fill="#eeeeee" xml:space="preserve">A</text>
+<text x="310.8" y="115" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="319.2" y="115" textLength="176.4" fill="#eeeeee" xml:space="preserve">GGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="115" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="115" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="115" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="115" textLength="92.4" fill="#eeeeee" xml:space="preserve">GAGGCCACACC</text>
+<text x="789.6" y="115" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="798" y="115" textLength="42" fill="#eeeeee" xml:space="preserve">TTAAC</text>
+<text x="0" y="132" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 6</text>
+<text x="16.8" y="132" textLength="100.8" fill="#d4d4d4" xml:space="preserve"> Beta_2020.4</text>
+<text x="235.2" y="132" textLength="260.4" fill="#eeeeee" xml:space="preserve">AGCACACCATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="132" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="132" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="132" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="132" textLength="92.4" fill="#eeeeee" xml:space="preserve">GAGGCCACACC</text>
+<text x="789.6" y="132" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="798" y="132" textLength="8.4" fill="#eeeeee" xml:space="preserve">T</text>
+<text x="806.4" y="132" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="814.8" y="132" textLength="25.2" fill="#eeeeee" xml:space="preserve">AAC</text>
+<text x="0" y="149" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 7</text>
+<text x="16.8" y="149" textLength="100.8" fill="#d4d4d4" xml:space="preserve"> Beta_2020.1</text>
+<text x="235.2" y="149" textLength="8.4" fill="#eeeeee" xml:space="preserve">A</text>
+<text x="243.6" y="149" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="252" y="149" textLength="42" fill="#eeeeee" xml:space="preserve">CACAC</text>
+<text x="294" y="149" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="302.4" y="149" textLength="193.2" fill="#eeeeee" xml:space="preserve">ATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="149" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="149" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="149" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="149" textLength="75.6" fill="#eeeeee" xml:space="preserve">GAGGCCACA</text>
+<text x="772.8" y="149" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="781.2" y="149" textLength="25.2" fill="#eeeeee" xml:space="preserve">CTT</text>
+<text x="806.4" y="149" textLength="16.8" fill="#d4d4d4" xml:space="preserve">GC</text>
+<text x="823.2" y="149" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="0" y="166" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 8</text>
+<text x="16.8" y="166" textLength="100.8" fill="#d4d4d4" xml:space="preserve"> Beta_2020.2</text>
+<text x="235.2" y="166" textLength="8.4" fill="#eeeeee" xml:space="preserve">A</text>
+<text x="243.6" y="166" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="252" y="166" textLength="42" fill="#eeeeee" xml:space="preserve">CACAC</text>
+<text x="294" y="166" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="302.4" y="166" textLength="193.2" fill="#eeeeee" xml:space="preserve">ATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="166" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="166" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="166" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="166" textLength="75.6" fill="#eeeeee" xml:space="preserve">GAGGCCACA</text>
+<text x="772.8" y="166" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="781.2" y="166" textLength="25.2" fill="#eeeeee" xml:space="preserve">CTT</text>
+<text x="806.4" y="166" textLength="16.8" fill="#d4d4d4" xml:space="preserve">GC</text>
+<text x="823.2" y="166" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="0" y="183" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> 9</text>
+<text x="16.8" y="183" textLength="100.8" fill="#d4d4d4" xml:space="preserve"> Beta_2020.3</text>
+<text x="235.2" y="183" textLength="260.4" fill="#eeeeee" xml:space="preserve">AGCACACCATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="183" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="183" textLength="92.4" fill="#eeeeee" xml:space="preserve">GGGTAACATGA</text>
+<text x="688.8" y="183" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="697.2" y="183" textLength="75.6" fill="#eeeeee" xml:space="preserve">GAGGCCACA</text>
+<text x="772.8" y="183" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="781.2" y="183" textLength="25.2" fill="#eeeeee" xml:space="preserve">CTT</text>
+<text x="806.4" y="183" textLength="16.8" fill="#d4d4d4" xml:space="preserve">GC</text>
+<text x="823.2" y="183" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="0" y="200" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">10</text>
+<text x="16.8" y="200" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Gamma_2020.1</text>
+<text x="235.2" y="200" textLength="92.4" fill="#eeeeee" xml:space="preserve">AGCACACCATG</text>
+<text x="327.6" y="200" textLength="16.8" fill="#d4d4d4" xml:space="preserve">CA</text>
+<text x="344.4" y="200" textLength="151.2" fill="#eeeeee" xml:space="preserve">CGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="200" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="200" textLength="168" fill="#eeeeee" xml:space="preserve">GGGTAACATGACGAGGCCAC</text>
+<text x="764.4" y="200" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="772.8" y="200" textLength="50.4" fill="#eeeeee" xml:space="preserve">CCTTTA</text>
+<text x="823.2" y="200" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="831.6" y="200" textLength="8.4" fill="#eeeeee" xml:space="preserve">C</text>
+<text x="0" y="217" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">11</text>
+<text x="16.8" y="217" textLength="226.8" fill="#d4d4d4" xml:space="preserve"> Gamma_2020.4             C</text>
+<text x="243.6" y="217" textLength="134.4" fill="#eeeeee" xml:space="preserve">GCACACCATGGCCGGT</text>
+<text x="378" y="217" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="386.4" y="217" textLength="109.2" fill="#eeeeee" xml:space="preserve">TTGTGTTCAGGAC</text>
+<text x="495.6" y="217" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="217" textLength="58.8" fill="#eeeeee" xml:space="preserve">GGGTAAC</text>
+<text x="655.2" y="217" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="663.6" y="217" textLength="42" fill="#eeeeee" xml:space="preserve">TGACG</text>
+<text x="705.6" y="217" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="714" y="217" textLength="50.4" fill="#eeeeee" xml:space="preserve">GGCCAC</text>
+<text x="764.4" y="217" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="772.8" y="217" textLength="67.2" fill="#eeeeee" xml:space="preserve">CCTTTAAC</text>
+<text x="0" y="234" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">12</text>
+<text x="16.8" y="234" textLength="226.8" fill="#d4d4d4" xml:space="preserve"> Gamma_2020.2             C</text>
+<text x="243.6" y="234" textLength="92.4" fill="#eeeeee" xml:space="preserve">GCACACCATGG</text>
+<text x="336" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="344.4" y="234" textLength="33.6" fill="#eeeeee" xml:space="preserve">CGGT</text>
+<text x="378" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="386.4" y="234" textLength="109.2" fill="#eeeeee" xml:space="preserve">TTGTGTTCAGGAC</text>
+<text x="495.6" y="234" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="234" textLength="25.2" fill="#eeeeee" xml:space="preserve">GGG</text>
+<text x="621.6" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="630" y="234" textLength="25.2" fill="#eeeeee" xml:space="preserve">AAC</text>
+<text x="655.2" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="663.6" y="234" textLength="100.8" fill="#eeeeee" xml:space="preserve">TGACGAGGCCAC</text>
+<text x="764.4" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="772.8" y="234" textLength="25.2" fill="#eeeeee" xml:space="preserve">CCT</text>
+<text x="798" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="806.4" y="234" textLength="16.8" fill="#eeeeee" xml:space="preserve">TA</text>
+<text x="823.2" y="234" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="831.6" y="234" textLength="8.4" fill="#eeeeee" xml:space="preserve">C</text>
+<text x="0" y="251" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">13</text>
+<text x="16.8" y="251" textLength="226.8" fill="#d4d4d4" xml:space="preserve"> Gamma_2020.3             C</text>
+<text x="243.6" y="251" textLength="92.4" fill="#eeeeee" xml:space="preserve">GCACACCATGG</text>
+<text x="336" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="344.4" y="251" textLength="33.6" fill="#eeeeee" xml:space="preserve">CGGT</text>
+<text x="378" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="386.4" y="251" textLength="109.2" fill="#eeeeee" xml:space="preserve">TTGTGTTCAGGAC</text>
+<text x="495.6" y="251" textLength="100.8" fill="#d4d4d4" xml:space="preserve">------------</text>
+<text x="596.4" y="251" textLength="25.2" fill="#eeeeee" xml:space="preserve">GGG</text>
+<text x="621.6" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="630" y="251" textLength="25.2" fill="#eeeeee" xml:space="preserve">AAC</text>
+<text x="655.2" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="663.6" y="251" textLength="100.8" fill="#eeeeee" xml:space="preserve">TGACGAGGCCAC</text>
+<text x="764.4" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="772.8" y="251" textLength="25.2" fill="#eeeeee" xml:space="preserve">CCT</text>
+<text x="798" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="806.4" y="251" textLength="16.8" fill="#eeeeee" xml:space="preserve">TA</text>
+<text x="823.2" y="251" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="831.6" y="251" textLength="8.4" fill="#eeeeee" xml:space="preserve">C</text>
+<text x="0" y="268" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">14</text>
+<text x="16.8" y="268" textLength="226.8" fill="#d4d4d4" xml:space="preserve"> Delta_2021.4             T</text>
+<text x="243.6" y="268" textLength="16.8" fill="#eeeeee" xml:space="preserve">GC</text>
+<text x="260.4" y="268" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="268" textLength="226.8" fill="#eeeeee" xml:space="preserve">CACCATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="268" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CACATCCATCTTT</text>
+<text x="604.8" y="268" textLength="142.8" fill="#eeeeee" xml:space="preserve">GGTAACATGACGAGGCC</text>
+<text x="747.6" y="268" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="756" y="268" textLength="42" fill="#eeeeee" xml:space="preserve">CACCT</text>
+<text x="798" y="268" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="806.4" y="268" textLength="33.6" fill="#eeeeee" xml:space="preserve">TAAC</text>
+<text x="0" y="285" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">15</text>
+<text x="16.8" y="285" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Delta_2021.6</text>
+<text x="235.2" y="285" textLength="25.2" fill="#eeeeee" xml:space="preserve">AGC</text>
+<text x="260.4" y="285" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="285" textLength="201.6" fill="#eeeeee" xml:space="preserve">CACCATGGCCGGTCTTGTGTTCAG</text>
+<text x="470.4" y="285" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="478.8" y="285" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="495.6" y="285" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CACATCCATCTTT</text>
+<text x="604.8" y="285" textLength="193.2" fill="#eeeeee" xml:space="preserve">GGTAACATGACGAGGCCACACCT</text>
+<text x="798" y="285" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="806.4" y="285" textLength="33.6" fill="#eeeeee" xml:space="preserve">TAAC</text>
+<text x="0" y="302" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">16</text>
+<text x="16.8" y="302" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Delta_2021.3</text>
+<text x="235.2" y="302" textLength="25.2" fill="#eeeeee" xml:space="preserve">AGC</text>
+<text x="260.4" y="302" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="302" textLength="201.6" fill="#eeeeee" xml:space="preserve">CACCATGGCCGGTCTTGTGTTCAG</text>
+<text x="470.4" y="302" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="478.8" y="302" textLength="16.8" fill="#eeeeee" xml:space="preserve">AC</text>
+<text x="495.6" y="302" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CACATCCATCTTT</text>
+<text x="604.8" y="302" textLength="193.2" fill="#eeeeee" xml:space="preserve">GGTAACATGACGAGGCCACACCT</text>
+<text x="798" y="302" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="806.4" y="302" textLength="33.6" fill="#eeeeee" xml:space="preserve">TAAC</text>
+<text x="0" y="319" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">17</text>
+<text x="16.8" y="319" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Delta_2021.5</text>
+<text x="235.2" y="319" textLength="25.2" fill="#eeeeee" xml:space="preserve">AGC</text>
+<text x="260.4" y="319" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="319" textLength="100.8" fill="#eeeeee" xml:space="preserve">CACCATGGCCGG</text>
+<text x="369.6" y="319" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="378" y="319" textLength="16.8" fill="#eeeeee" xml:space="preserve">CT</text>
+<text x="394.8" y="319" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="403.2" y="319" textLength="92.4" fill="#eeeeee" xml:space="preserve">GTGTTCAGGAC</text>
+<text x="495.6" y="319" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CACATCCATCTGT</text>
+<text x="604.8" y="319" textLength="50.4" fill="#eeeeee" xml:space="preserve">GGTAAC</text>
+<text x="655.2" y="319" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="663.6" y="319" textLength="67.2" fill="#eeeeee" xml:space="preserve">TGACGAGG</text>
+<text x="730.8" y="319" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="739.2" y="319" textLength="100.8" fill="#eeeeee" xml:space="preserve">CACACCTTTAAC</text>
+<text x="0" y="336" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">18</text>
+<text x="16.8" y="336" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Delta_2021.1</text>
+<text x="235.2" y="336" textLength="25.2" fill="#eeeeee" xml:space="preserve">AGC</text>
+<text x="260.4" y="336" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="336" textLength="75.6" fill="#eeeeee" xml:space="preserve">CACCATGGC</text>
+<text x="344.4" y="336" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="352.8" y="336" textLength="42" fill="#eeeeee" xml:space="preserve">GGTCT</text>
+<text x="394.8" y="336" textLength="8.4" fill="#d4d4d4" xml:space="preserve">A</text>
+<text x="403.2" y="336" textLength="92.4" fill="#eeeeee" xml:space="preserve">GTGTTCAGGAC</text>
+<text x="495.6" y="336" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CACATTCATCTTT</text>
+<text x="604.8" y="336" textLength="25.2" fill="#eeeeee" xml:space="preserve">GGT</text>
+<text x="630" y="336" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="638.4" y="336" textLength="50.4" fill="#eeeeee" xml:space="preserve">ACATGA</text>
+<text x="688.8" y="336" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="697.2" y="336" textLength="142.8" fill="#eeeeee" xml:space="preserve">GAGGCCACACCTTTAAC</text>
+<text x="0" y="353" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">19</text>
+<text x="16.8" y="353" textLength="109.2" fill="#d4d4d4" xml:space="preserve"> Delta_2021.2</text>
+<text x="235.2" y="353" textLength="25.2" fill="#eeeeee" xml:space="preserve">AGC</text>
+<text x="260.4" y="353" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="268.8" y="353" textLength="226.8" fill="#eeeeee" xml:space="preserve">CACCATGGCCGGTCTTGTGTTCAGGAC</text>
+<text x="495.6" y="353" textLength="109.2" fill="#d4d4d4" xml:space="preserve">CGCATTCATCTTT</text>
+<text x="604.8" y="353" textLength="16.8" fill="#eeeeee" xml:space="preserve">GG</text>
+<text x="621.6" y="353" textLength="16.8" fill="#d4d4d4" xml:space="preserve">CT</text>
+<text x="638.4" y="353" textLength="50.4" fill="#eeeeee" xml:space="preserve">ACATGA</text>
+<text x="688.8" y="353" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="697.2" y="353" textLength="25.2" fill="#eeeeee" xml:space="preserve">GAG</text>
+<text x="722.4" y="353" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="353" textLength="16.8" fill="#eeeeee" xml:space="preserve">CC</text>
+<text x="747.6" y="353" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="756" y="353" textLength="84" fill="#eeeeee" xml:space="preserve">CACCTTTAAC</text>
+<text x="0" y="370" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">20</text>
+<text x="16.8" y="370" textLength="126" fill="#d4d4d4" xml:space="preserve"> Omicron_2021.5</text>
+<text x="235.2" y="370" textLength="151.2" fill="#eeeeee" xml:space="preserve">AGCACACCATGGCCGGTC</text>
+<text x="386.4" y="370" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="394.8" y="370" textLength="92.4" fill="#eeeeee" xml:space="preserve">TGTGTTCAGGA</text>
+<text x="487.2" y="370" textLength="117.6" fill="#d4d4d4" xml:space="preserve">A------------T</text>
+<text x="604.8" y="370" textLength="8.4" fill="#eeeeee" xml:space="preserve">G</text>
+<text x="613.2" y="370" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="621.6" y="370" textLength="8.4" fill="#eeeeee" xml:space="preserve">T</text>
+<text x="630" y="370" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="638.4" y="370" textLength="84" fill="#eeeeee" xml:space="preserve">ACATGACGAG</text>
+<text x="722.4" y="370" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="370" textLength="109.2" fill="#eeeeee" xml:space="preserve">CCACACCTTTAAC</text>
+<text x="0" y="387" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">21</text>
+<text x="16.8" y="387" textLength="126" fill="#d4d4d4" xml:space="preserve"> Omicron_2021.1</text>
+<text x="235.2" y="387" textLength="151.2" fill="#eeeeee" xml:space="preserve">AGCACACCATGGCCGGTC</text>
+<text x="386.4" y="387" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="394.8" y="387" textLength="92.4" fill="#eeeeee" xml:space="preserve">TGTGTTCAGGA</text>
+<text x="487.2" y="387" textLength="117.6" fill="#d4d4d4" xml:space="preserve">A------------T</text>
+<text x="604.8" y="387" textLength="8.4" fill="#eeeeee" xml:space="preserve">G</text>
+<text x="613.2" y="387" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="621.6" y="387" textLength="67.2" fill="#eeeeee" xml:space="preserve">TAACATGA</text>
+<text x="688.8" y="387" textLength="8.4" fill="#d4d4d4" xml:space="preserve">G</text>
+<text x="697.2" y="387" textLength="25.2" fill="#eeeeee" xml:space="preserve">GAG</text>
+<text x="722.4" y="387" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="387" textLength="109.2" fill="#eeeeee" xml:space="preserve">CCACACCTTTAAC</text>
+<text x="0" y="404" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">22</text>
+<text x="16.8" y="404" textLength="126" fill="#d4d4d4" xml:space="preserve"> Omicron_2021.3</text>
+<text x="235.2" y="404" textLength="42" fill="#eeeeee" xml:space="preserve">AGCAC</text>
+<text x="277.2" y="404" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="285.6" y="404" textLength="100.8" fill="#eeeeee" xml:space="preserve">CCATGGCCGGTC</text>
+<text x="386.4" y="404" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="394.8" y="404" textLength="92.4" fill="#eeeeee" xml:space="preserve">TGTGTTCAGGA</text>
+<text x="487.2" y="404" textLength="117.6" fill="#d4d4d4" xml:space="preserve">A------------T</text>
+<text x="604.8" y="404" textLength="8.4" fill="#eeeeee" xml:space="preserve">G</text>
+<text x="613.2" y="404" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="621.6" y="404" textLength="50.4" fill="#eeeeee" xml:space="preserve">TAACAT</text>
+<text x="672" y="404" textLength="16.8" fill="#d4d4d4" xml:space="preserve">AC</text>
+<text x="688.8" y="404" textLength="33.6" fill="#eeeeee" xml:space="preserve">CGAG</text>
+<text x="722.4" y="404" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="404" textLength="109.2" fill="#eeeeee" xml:space="preserve">CCACACCTTTAAC</text>
+<text x="0" y="421" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">23</text>
+<text x="16.8" y="421" textLength="126" fill="#d4d4d4" xml:space="preserve"> Omicron_2021.2</text>
+<text x="235.2" y="421" textLength="100.8" fill="#eeeeee" xml:space="preserve">AGCACACCATGG</text>
+<text x="336" y="421" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="344.4" y="421" textLength="42" fill="#eeeeee" xml:space="preserve">CGGTC</text>
+<text x="386.4" y="421" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="394.8" y="421" textLength="92.4" fill="#eeeeee" xml:space="preserve">TGTGTTCAGGA</text>
+<text x="487.2" y="421" textLength="117.6" fill="#d4d4d4" xml:space="preserve">A------------T</text>
+<text x="604.8" y="421" textLength="8.4" fill="#eeeeee" xml:space="preserve">G</text>
+<text x="613.2" y="421" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="621.6" y="421" textLength="100.8" fill="#eeeeee" xml:space="preserve">TAACATGACGAG</text>
+<text x="722.4" y="421" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="421" textLength="16.8" fill="#eeeeee" xml:space="preserve">CC</text>
+<text x="747.6" y="421" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="756" y="421" textLength="84" fill="#eeeeee" xml:space="preserve">CACCTTTAAC</text>
+<text x="0" y="438" textLength="16.8" fill="#d4d4d4" opacity="0.5" xml:space="preserve">24</text>
+<text x="16.8" y="438" textLength="126" fill="#d4d4d4" xml:space="preserve"> Omicron_2021.4</text>
+<text x="235.2" y="438" textLength="84" fill="#eeeeee" xml:space="preserve">AGCACACCAT</text>
+<text x="319.2" y="438" textLength="16.8" fill="#d4d4d4" xml:space="preserve">TT</text>
+<text x="336" y="438" textLength="50.4" fill="#eeeeee" xml:space="preserve">CCGGTC</text>
+<text x="386.4" y="438" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="394.8" y="438" textLength="92.4" fill="#eeeeee" xml:space="preserve">TGTGTTCAGGA</text>
+<text x="487.2" y="438" textLength="117.6" fill="#d4d4d4" xml:space="preserve">A------------T</text>
+<text x="604.8" y="438" textLength="8.4" fill="#eeeeee" xml:space="preserve">G</text>
+<text x="613.2" y="438" textLength="8.4" fill="#d4d4d4" xml:space="preserve">T</text>
+<text x="621.6" y="438" textLength="100.8" fill="#eeeeee" xml:space="preserve">TAACATGACGAG</text>
+<text x="722.4" y="438" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="730.8" y="438" textLength="16.8" fill="#eeeeee" xml:space="preserve">CC</text>
+<text x="747.6" y="438" textLength="8.4" fill="#d4d4d4" xml:space="preserve">C</text>
+<text x="756" y="438" textLength="84" fill="#eeeeee" xml:space="preserve">CACCTTTAAC</text>
+<text x="0" y="489" textLength="218.4" fill="#d4d4d4" xml:space="preserve">row 1/24 · col 580/900 · A</text>
+</svg>

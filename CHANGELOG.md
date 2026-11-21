@@ -6,6 +6,21 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Example files in `examples/`: an alignment, its tree, a reference and two BAMs, made up to show each feature.
+  `examples/README.md` says where each one is, and
+  `cargo run -p seqpeeq-core --features testing --example make_examples -- examples` writes them again.
+- The README shows the example files in the interface. The pictures are drawn by the tests, which fail when the
+  interface no longer draws them that way.
+
+### Changed
+
+- The keys and commands moved from the README to [docs/keys.md](docs/keys.md) and
+  [docs/commands.md](docs/commands.md). The README keeps installation, the quick start and the examples. The release
+  archives include both, the README's pictures and `examples/`.
+- CI uses actions/checkout v7, which runs on Node.js 24.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added
