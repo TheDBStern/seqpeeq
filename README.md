@@ -109,7 +109,7 @@ Other ways to run it:
 
 ## Examples
 
-In the [`examples/`](examples) directory there are some small examples files to try out the features. See the
+In the [`examples/`](examples) directory there are some small example files to try out the features. See the
 [examples/README.md](examples/README.md) document. Run these from the top of the repository.
 
 **An MSA and a linked tree.** Deleting a clade in the tree with `d` deletes its
