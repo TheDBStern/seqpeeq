@@ -11,7 +11,7 @@ to 1,000× read depth.
 ## Machine
 
 - Apple M2, 8 cores, 24 GB of memory, macOS 26.6.2.
-- Versions: seqpeeq 0.1.0 (arm64), FigTree 1.4.4, Jalview 2.11.5.1, java (FigTree, Jalview) 11.0.30, IGV 2.19.8, java (IGV) 21.0.13.1.
+- Versions: seqpeeq 0.3.0 (arm64), termal 2.1.0 (arm64), samtools 1.25, FigTree 1.4.4, Jalview 2.11.5.1, java (FigTree, Jalview) 11.0.30, IGV 2.19.8, java (IGV) 21.0.13.1, ASCIIGenome 1.21.1, java (ASCIIGenome) 27.0.1.1.
 
 ## Method
 
@@ -68,28 +68,28 @@ The GUI programs are run in their script modes and timed until they exit:
 
 Each cell is the median time of its runs and the highest peak memory among them.
 
-| Alignment | File | seqpeeq | Jalview |
-|---|---:|---:|---:|
-| start-up: 5 × 20 | 150 B | 64 ms · 5 MB | 1.35 s · 283 MB |
-| 1,000 × 1,000 | 1 MB | 82 ms · 7 MB | 1.43 s · 304 MB |
-| 10,000 × 10,000 | 100 MB | 78 ms · 107 MB | 6.13 s · 1.3 GB |
-| 30,000 × 30,000 | 900 MB | 0.13 s · 911 MB | 76 s · 5.2 GB |
-| 100,000 × 30,000 | 3.0 GB | 0.65 s · 3.0 GB | 6.5 min · 14.7 GB |
+| Alignment | File | seqpeeq | termal | Jalview |
+|---|---:|---:|---:|---:|
+| start-up: 5 × 20 | 150 B | 61 ms · 5 MB | 14 ms · 4 MB | 1.43 s · 286 MB |
+| 1,000 × 1,000 | 1 MB | 77 ms · 7 MB | 0.24 s · 7 MB | 1.56 s · 309 MB |
+| 10,000 × 10,000 | 100 MB | 77 ms · 107 MB | 4.13 s · 229 MB | 6.62 s · 1.3 GB |
+| 30,000 × 30,000 | 900 MB | 0.13 s · 911 MB | 58 s · 2.0 GB | 84 s · 5.2 GB |
+| 100,000 × 30,000 | 3.0 GB | 0.39 s · 3.0 GB | failed[^1] | 7.0 min · 12.8 GB |
 
 | Tree | File | seqpeeq | FigTree |
 |---|---:|---:|---:|
-| start-up: 5 tips | 80 B | 61 ms · 5 MB | 1.15 s · 226 MB |
-| 1,000 tips | 21 kB | 79 ms · 6 MB | 1.28 s · 254 MB |
-| 10,000 tips | 219 kB | 82 ms · 8 MB | 1.60 s · 435 MB |
-| 100,000 tips | 2 MB | 74 ms · 31 MB | 3.82 s · 2.3 GB |
-| 1,000,000 tips | 24 MB | 0.44 s · 308 MB | 26 s · 11.8 GB |
+| start-up: 5 tips | 80 B | 62 ms · 6 MB | 1.19 s · 227 MB |
+| 1,000 tips | 21 kB | 73 ms · 6 MB | 1.31 s · 248 MB |
+| 10,000 tips | 219 kB | 73 ms · 8 MB | 1.74 s · 354 MB |
+| 100,000 tips | 2 MB | 74 ms · 32 MB | 4.16 s · 2.1 GB |
+| 1,000,000 tips | 24 MB | 0.44 s · 309 MB | 29 s · 11.7 GB |
 
-| BAM | File | seqpeeq | IGV |
-|---|---:|---:|---:|
-| start-up: 2 kb, 2× | 1 kB | 0.13 s · 6 MB | 3.36 s · 322 MB |
-| 1 Mb, 10× | 1 MB | 0.13 s · 6 MB | 3.41 s · 362 MB |
-| 1 Mb, 100× | 8 MB | 0.16 s · 8 MB | 1.42 s · 371 MB |
-| 1 Mb, 1,000× | 44 MB | 0.16 s · 19 MB | 1.55 s · 388 MB |
+| BAM | File | seqpeeq | samtools tview | ASCIIGenome | IGV |
+|---|---:|---:|---:|---:|---:|
+| start-up: 2 kb, 2× | 1 kB | 0.12 s · 6 MB | 78 ms · 38 MB | 1.00 s · 199 MB | 1.80 s · 315 MB |
+| 1 Mb, 10× | 1 MB | 0.13 s · 7 MB | 77 ms · 38 MB | 1.15 s · 199 MB | 3.85 s · 353 MB |
+| 1 Mb, 100× | 8 MB | 0.16 s · 8 MB | 79 ms · 38 MB | 1.27 s · 211 MB | 1.99 s · 357 MB |
+| 1 Mb, 1,000× | 44 MB | 0.16 s · 20 MB | 84 ms · 39 MB | 1.47 s · 244 MB | 4.13 s · 383 MB |
 
 ## seqpeeq only
 
@@ -102,24 +102,24 @@ behind the zoomed-out overview.
 
 | Step | Time |
 |---|---:|
-| open and first frame | 0.60 s |
-| *background:* count the columns | 4.22 s |
+| open and first frame | 0.64 s |
+| *background:* count the columns | 4.56 s |
 | frame after PageDown | 0.5 ms |
-| frame after a zoom-out step | 2.5 ms |
-| *background:* summary for the overview | 0.62 s |
+| frame after a zoom-out step | 2.8 ms |
+| *background:* summary for the overview | 0.66 s |
 | delete 1,000 columns | 0.6 ms |
-| *background:* count the columns again | 3.89 s |
+| *background:* count the columns again | 4.20 s |
 | delete 1,000 rows | 0.6 ms |
-| search names | 7.8 ms |
+| search names | 8.1 ms |
 
 **On the 1,000,000-tip tree:**
 
 | Step | Time |
 |---|---:|
-| open and first frame | 0.39 s |
+| open and first frame | 0.42 s |
 | frame after PageDown | 0.4 ms |
-| prune a clade | 0.14 s |
-| tip search | 48 ms |
+| prune a clade | 0.15 s |
+| tip search | 51 ms |
 
 ## How to rerun
 
@@ -127,7 +127,7 @@ behind the zoomed-out overview.
 conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte
 conda env create -f bench/env-igv.yml    # IGV, with Java 21
 conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later
-cargo install termal-msa --locked --root bench/tools
+cargo install termal-msa@2.1.0 --locked --root bench/tools
 cargo build --release -p seqpeeq     # on Apple silicon, with an aarch64-apple-darwin toolchain
 PY=$(conda run -n seqpeeq-bench which python)
 $PY bench/make_data.py --out bench/data --only all          # about 4 GB
@@ -140,3 +140,5 @@ $PY bench/report.py --results bench/results.json --seqpeeq-only bench/seqpeeq_on
 
 `run.py` looks for the three environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the
 folder that holds them if they are elsewhere.
+
+[^1]: termal on `aln_100k.fa`: exit 101: thread 'main' (3292332) panicked at ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termal-msa-2.1.0/src/app.rs:195:45: called `Result::unwrap()` on an `Err` value: TryFromIntError(PosOverflow) note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

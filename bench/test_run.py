@@ -61,6 +61,13 @@ class Measure(unittest.TestCase):
         self.assertNotIn("\033", got.detail)
         self.assertNotIn("[2J", got.detail)
 
+    def test_a_failure_note_hides_the_home_folder(self):
+        # Notes go on the public page; a panic names files under ~/.cargo.
+        got = run.measure(["/bin/sh", "-c", f"echo panicked at {Path.home()}/.cargo/x.rs; exit 101"], timeout=5)
+        self.assertEqual(got.outcome, "failed")
+        self.assertIn("panicked at ~/.cargo/x.rs", got.detail)
+        self.assertNotIn(str(Path.home()), got.detail)
+
     def test_out_of_memory_is_recorded(self):
         got = run.measure(["/bin/sh", "-c", "echo java.lang.OutOfMemoryError >&2; exit 1"], timeout=5)
         self.assertEqual(got.outcome, "out of memory")

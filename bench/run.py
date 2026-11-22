@@ -82,7 +82,8 @@ ESCAPE = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|.)")
 
 
 def _ended(status, output, seconds, rusage):
-    text = ESCAPE.sub("", output.decode(errors="replace"))
+    # The notes are published: no escape codes, and ~ for the home folder.
+    text = ESCAPE.sub("", output.decode(errors="replace")).replace(str(Path.home()), "~")
     if "OutOfMemoryError" in text:
         return Run(seconds, _rss_bytes(rusage), "out of memory", text[-300:])
     code = os.waitstatus_to_exitcode(status)
