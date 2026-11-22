@@ -204,6 +204,20 @@ impl Layer {
         self.rows = Arc::new(order.iter().map(|&row| self.rows[row as usize]).collect());
     }
 
+    /// Put the rows in the order of `rank`, indexed by record id; rows
+    /// whose record has no rank (`u32::MAX`) go last. Ties keep their
+    /// order. Returns whether any row moved.
+    pub(crate) fn rank_rows(&mut self, rank: &[u32]) -> bool {
+        let key = |id: &u32| rank.get(*id as usize).copied().unwrap_or(u32::MAX);
+        if self.rows.is_sorted_by_key(key) {
+            return false;
+        }
+        let mut rows = self.rows.to_vec();
+        rows.sort_by_key(key);
+        self.rows = Arc::new(rows);
+        true
+    }
+
     pub(crate) fn delete_rows(&mut self, source: &Source, rows: &Ranges) {
         let mut kept = Vec::with_capacity(self.rows.len() - rows.count());
         let mut from = 0;

@@ -3906,6 +3906,28 @@ mod tests {
         }
 
         #[test]
+        fn after_unlinking_undo_and_redo_keep_the_order() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa"]);
+            ex(&mut s, "msa fill --rows 1 --cols 1 --with N").unwrap();
+            s.execute(open(&dir.join("t.nwk"))).unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            ex(&mut s, "tree unlink").unwrap();
+            ex(&mut s, "use 1").unwrap();
+            let first = |s: &Session, row: usize| {
+                let mut out = Vec::new();
+                s.datasets()[0].msa().unwrap().residues(row, 0..1, &mut out);
+                String::from_utf8(out).unwrap()
+            };
+            ex(&mut s, "undo").unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            assert_eq!(first(&s, 2), "a", "the fill is undone");
+            ex(&mut s, "redo").unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            assert_eq!(first(&s, 2), "N", "the fill is back");
+        }
+
+        #[test]
         fn two_trees_mean_no_reordering() {
             let (_keep, dir) = linked_dir();
             fs::write(dir.join("u.nwk"), "(r1,(r2,r3));").unwrap();

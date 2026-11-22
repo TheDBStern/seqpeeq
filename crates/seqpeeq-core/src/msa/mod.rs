@@ -478,6 +478,20 @@ impl Alignment {
         layer.revision = self.next_revision;
         layer.order = self.next_revision;
         self.next_revision += 1;
+        // Undo and redo put back whole states, rows and all: give the
+        // states kept for them the same order, by record, so that the
+        // order holds even once the rows no longer follow a tree.
+        let mut rank = vec![u32::MAX; self.view.source.rows()];
+        for at in 0..self.view.layer.rows() {
+            rank[self.view.layer.id(at)] = at as u32;
+        }
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if step.state.rank_rows(&rank) {
+                step.state.revision = self.next_revision;
+                step.state.order = self.next_revision;
+                self.next_revision += 1;
+            }
+        }
         true
     }
 
