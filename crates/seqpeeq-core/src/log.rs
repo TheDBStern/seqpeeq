@@ -46,7 +46,15 @@ pub struct SessionLog {
     /// Set by a failed write. The file may then end in a partial record, so
     /// nothing more is added to it and the session refuses further commands.
     broken: bool,
+    /// Whether the header says [`FOLLOWS_TREES`]: true unless the session
+    /// is replaying an older log, whose rows did not follow trees.
+    follows_trees: bool,
 }
+
+/// The header line of a log written while a linked alignment's rows follow
+/// their tree. Logs from before that rule lack it, and replay keeps their
+/// rows where they were, so that row numbers name the same sequences.
+pub(crate) const FOLLOWS_TREES: &str = "# rows follow linked trees";
 
 /// A log that was created but never recorded a command (every command failed)
 /// holds only a header, so it is removed rather than left as clutter.
@@ -111,7 +119,13 @@ impl SessionLog {
             commands: 0,
             names: 0,
             broken: false,
+            follows_trees: true,
         }
+    }
+
+    /// Whether the header will say [`FOLLOWS_TREES`].
+    pub(crate) fn set_follows_trees(&mut self, follows: bool) {
+        self.follows_trees = follows;
     }
 
     /// Write `names`, one per line, to a new file beside the log,
@@ -172,12 +186,17 @@ impl SessionLog {
             Ok(dir) => dir.display().to_string(),
             Err(_) => "unknown".to_string(),
         };
-        self.write(&format!(
+        let mut header = format!(
             "# seqpeeq {}\n# started {}\n# cwd {}\n",
             env!("CARGO_PKG_VERSION"),
             stamp(now),
             one_line(&cwd)
-        ))
+        );
+        if self.follows_trees {
+            header.push_str(FOLLOWS_TREES);
+            header.push('\n');
+        }
+        self.write(&header)
     }
 
     /// Record one executed command: a timestamp comment, the command line and
@@ -269,7 +288,7 @@ pub(crate) mod tests {
         let text = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         let commands: Vec<_> = text.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(commands, ["open x.fa"]);
-        assert_eq!(text.lines().count(), 6);
+        assert_eq!(text.lines().count(), 7);
     }
 
     #[test]

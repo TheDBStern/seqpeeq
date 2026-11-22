@@ -126,6 +126,9 @@ The options of `bam export-reads`:
   deleting the earlier outputs also works.
 - Paths are kept as they were typed, so relative paths are read from the folder you replay in. Copy the inputs
   there, or give full paths when you work.
+- Logs from seqpeeq 0.3.0 and earlier replay as they were written: a linked alignment's rows stay in file order
+  rather than following the tree, so row numbers name the same sequences. Newer logs say
+  `# rows follow linked trees` in their header.
 
 **If the log fails:** when the log can't be written (a full disk, e.g.), seqpeeq refuses further changes rather than
 make ones it can't record. `:rescue FILE` still saves the current alignment, so no work is lost.

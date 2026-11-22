@@ -402,6 +402,9 @@ pub struct Session {
     cache_dir: PathBuf,
     /// The folder of a log being replayed, where its names files are.
     replay_dir: Option<PathBuf>,
+    /// Whether a linked alignment's rows follow its tree: off only while
+    /// replaying a log from before that rule.
+    follow_trees: bool,
 }
 
 /// `$XDG_CACHE_HOME/seqpeeq`, else `~/.cache/seqpeeq`, else a folder in
@@ -460,6 +463,7 @@ impl Session {
             next_pair: 1,
             cache_dir: default_cache_dir(),
             replay_dir: None,
+            follow_trees: true,
         }
     }
 
@@ -474,6 +478,15 @@ impl Session {
     /// moved with its names files still replays.
     pub fn set_replay_dir(&mut self, dir: Option<PathBuf>) {
         self.replay_dir = dir;
+    }
+
+    /// Whether linked alignments' rows follow their trees, and whether the
+    /// log says so. Off for replaying a log written before they did.
+    pub(crate) fn set_follow_trees(&mut self, follow: bool) {
+        self.follow_trees = follow;
+        if let Some(log) = &mut self.log {
+            log.set_follows_trees(follow);
+        }
     }
 
     /// Run a command to its end and, if it succeeds, record it.
@@ -733,7 +746,7 @@ impl Session {
                 // Linked to one tree: the tree's clades are sorted, and the
                 // rows follow them.
                 let tree_at = match self.trees_linked_to(dataset).as_slice() {
-                    &[tree] => position(tree),
+                    &[tree] if self.follow_trees => position(tree),
                     _ => None,
                 };
                 // The tree's clades in their new order, unless they are in
@@ -1495,6 +1508,9 @@ impl Session {
     /// The alignment whose rows follow the tree with id `tree`: the one it
     /// is linked to, if that alignment has no other tree.
     fn kept_in_step(&self, tree: u64) -> Option<u64> {
+        if !self.follow_trees {
+            return None;
+        }
         let alignment = *self.links.get(&tree)?;
         (self.trees_linked_to(alignment).len() == 1).then_some(alignment)
     }
@@ -2037,14 +2053,15 @@ mod tests {
         assert_eq!(lines[0], format!("# seqpeeq {}", env!("CARGO_PKG_VERSION")));
         assert_eq!(lines[1], "# started 2026-11-15T16:05:03-08:00");
         assert!(lines[2].starts_with("# cwd /"), "{}", lines[2]);
-        assert_eq!(lines[3], "# 2026-11-15T16:05:03-08:00");
-        assert_eq!(lines[4], format!("open {}", fa.display()));
+        assert_eq!(lines[3], "# rows follow linked trees");
+        assert_eq!(lines[4], "# 2026-11-15T16:05:03-08:00");
+        assert_eq!(lines[5], format!("open {}", fa.display()));
         assert!(
-            lines[5].starts_with("# input /") && lines[5].contains(" size=4 mtime="),
+            lines[6].starts_with("# input /") && lines[6].contains(" size=4 mtime="),
             "{}",
-            lines[5]
+            lines[6]
         );
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
     }
 
     #[test]
@@ -2065,7 +2082,7 @@ mod tests {
         assert!(matches!(err, Error::Io { .. }), "{err}");
         assert!(s.datasets().is_empty());
         assert!(s.history().is_empty());
-        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 3);
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 4);
     }
 
     #[test]
@@ -2124,7 +2141,7 @@ mod tests {
         let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
         s.execute(open(&link)).unwrap();
         let text = fs::read_to_string(&log).unwrap();
-        assert_eq!(text.lines().count(), 6, "{text}");
+        assert_eq!(text.lines().count(), 7, "{text}");
 
         let mut again = Session::new(None);
         let report = crate::replay(&text, &mut again).unwrap();
