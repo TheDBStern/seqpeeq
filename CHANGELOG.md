@@ -6,6 +6,8 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
 ### Added
 
 - Example files in `examples/`: an alignment, its tree, a reference and two BAMs, made up to show each feature.
@@ -132,7 +134,8 @@ logged and replayable, and input files never modified.
 - Builds with `cargo install` into a conda environment or anywhere with Rust.
 - Prebuilt programs on each GitHub release: a static Linux x86_64 program and an Apple-silicon macOS program.
 
-[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TheDBStern/seqpeeq/releases/tag/v0.1.0
