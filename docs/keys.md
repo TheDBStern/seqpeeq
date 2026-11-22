@@ -25,8 +25,8 @@ Zoom      - out   + in   z view whole alignment
 - **color each base** by its letter
 - **no color**
 
-`s` sorts the rows by identity to the consensus, most similar first (`msa sort --by identity`). On an alignment
-linked to a tree, it reorders the tree's clades instead, and the rows follow the tree.
+`s` sorts the rows by identity to the consensus (`msa sort --by identity`). On an alignment
+linked to a tree, it reorders the clades and the rows match the tree.
 
 ## Tree
 

@@ -45,7 +45,7 @@ names).
 | `msa remove --row ROW --col COL --count N` | Remove characters from one row at a column. The residues after them move left as far as the next gap, leaving gaps behind. |
 | `msa extract [rows] [--cols COLS] [--wrap N] --out FILE` | Write sequences, or parts of them, to a new FASTA file. `--wrap` sets residues per line; the default is one line per sequence. |
 | `msa rename [rows] --to NAME \| --regex RE --replace TEXT [--tree]` | Rename one sequence with `--to`, or many with `--regex` and `--replace`. `--tree` also renames the matching tips in the linked tree. |
-| `msa sort --by identity` | Reorder the sequences, most like the consensus first: by the share of columns with a majority residue where each carries it. Gaps count as differences. Undo puts the old order back. When the alignment is linked to one tree, the tree's clades are reordered instead and the rows follow the tree. |
+| `msa sort --by identity` | Reorder the sequences by identity to the consensus. Gaps count as mismatches. When the alignment is linked to one tree, the tree's clades are reordered instead and the rows follow the tree. |
 
 ## Trees
 

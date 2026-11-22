@@ -17,7 +17,7 @@ It's for getting things done, not making figures
 - Extract regions of an MSA
 - Extract or prune clades of a phylogeny
 - Edit and delete bases, rows, columns, and seq names of an MSA
-- Sort an MSA's rows by identity to the consensus, to group similar sequences and find outliers
+- Sort an MSA's rows by identity to the consensus
 - Link a phylogeny to its MSA to jointly edit both and extract sequences associated with selected tips
 - Select and export regions of a BAM file in fasta, fastq, and BAM formats
 - Follow multi-mapped and split reads everywhere they align in a BAM

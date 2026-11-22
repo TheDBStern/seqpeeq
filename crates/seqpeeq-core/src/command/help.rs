@@ -143,9 +143,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         path: "msa sort",
         syntax: "msa sort --by identity",
-        about: "Reorder the sequences, most like the consensus first: by the share of columns with \
-                a majority residue where each carries it. Gaps count as differences. Undo puts the \
-                old order back.",
+        about: "Reorder the sequences by identity to the consensus. Gaps count as mismatches.",
         notes: &[
             "When the alignment is linked to one tree, the tree's clades are reordered \
                   instead and the rows follow the tree.",
