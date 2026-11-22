@@ -385,9 +385,10 @@ pub struct Session {
     clock: fn() -> Zoned,
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
-    /// For each tree kept in step with its alignment: the tree's and the
-    /// alignment's revisions when the rows last followed it.
-    aligned_at: HashMap<u64, (u64, u64)>,
+    /// For each tree kept in step with an alignment: that alignment's id,
+    /// and the tree's and the alignment's revisions when the rows last
+    /// followed it. Revisions count per file, so the id is part of the key.
+    aligned_at: HashMap<u64, (u64, u64, u64)>,
     /// BAMs shown as one stack, by dataset id, each in the order it was
     /// formed; every stack has at least two.
     stacks: Vec<Vec<u64>>,
@@ -1474,6 +1475,15 @@ impl Session {
         (self.trees_linked_to(alignment).len() == 1).then_some(alignment)
     }
 
+    /// After a link to the alignment with id `alignment` is dropped:
+    /// `; rows follow u.nwk` if one tree is left to order its rows.
+    fn handed_on_note(&self, alignment: u64) -> String {
+        match self.trees_linked_to(alignment).as_slice() {
+            &[tree] => self.follows_note(tree),
+            _ => String::new(),
+        }
+    }
+
     /// `; rows follow t.nwk` when the tree with id `tree` is kept in step.
     fn follows_note(&self, tree: u64) -> String {
         match (
@@ -1523,29 +1533,35 @@ impl Session {
             else {
                 continue;
             };
-            if self.aligned_at.get(&tree_id) == Some(&(doc.revision(), alignment.revision())) {
+            let now = (aln_id, doc.revision(), alignment.revision());
+            if self.aligned_at.get(&tree_id) == Some(&now) {
                 continue;
             }
+            // The place of each row name's first tip, found by walking the
+            // tips once: the map holds the rows' names, not the tips', as a
+            // tree may have many more tips than the alignment has rows.
             let tree = doc.tree();
-            let mut place: HashMap<&str, usize> = HashMap::new();
+            let rows = alignment.rows();
+            let mut place: HashMap<&str, usize> = HashMap::with_capacity(rows);
+            for row in 0..rows {
+                place.insert(alignment.name(row), usize::MAX);
+            }
             for (at, tip) in tree.tips().into_iter().enumerate() {
-                if let Some(name) = tree.label(tip) {
-                    place.entry(name).or_insert(at);
+                if let Some(slot) = tree.label(tip).and_then(|name| place.get_mut(name))
+                    && *slot == usize::MAX
+                {
+                    *slot = at;
                 }
             }
-            let mut order: Vec<u32> = (0..alignment.rows() as u32).collect();
-            order.sort_by_key(|&row| {
-                place
-                    .get(alignment.name(row as usize))
-                    .copied()
-                    .unwrap_or(usize::MAX)
-            });
+            let keys: Vec<usize> = (0..rows).map(|row| place[alignment.name(row)]).collect();
+            let mut order: Vec<u32> = (0..rows as u32).collect();
+            order.sort_by_key(|&row| keys[row as usize]);
             let tree_revision = doc.revision();
             let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
                 unreachable!("checked above");
             };
             alignment.follow(&order);
-            let aligned = (tree_revision, alignment.revision());
+            let aligned = (aln_id, tree_revision, alignment.revision());
             self.aligned_at.insert(tree_id, aligned);
         }
     }
@@ -1771,9 +1787,10 @@ impl Session {
         let alignment = self.datasets.iter().find(|d| d.id == aln_id);
         Ok(Applied {
             message: format!(
-                "unlinked {} from {}",
+                "unlinked {} from {}{}",
                 tree.file_name(),
-                alignment.map(Dataset::file_name).unwrap_or_default()
+                alignment.map(Dataset::file_name).unwrap_or_default(),
+                self.handed_on_note(aln_id)
             ),
             note: None,
             created: Vec::new(),
@@ -1863,6 +1880,9 @@ impl Session {
                 name_of(tree),
                 name_of(aln)
             ));
+            if aln != dataset.id {
+                message.push_str(&self.handed_on_note(aln));
+            }
         }
         if let Some(at) = self.stacks.iter().position(|s| s.contains(&dataset.id)) {
             self.stacks[at].retain(|&id| id != dataset.id);
@@ -3877,6 +3897,69 @@ mod tests {
             ex(&mut s, "use 1").unwrap();
             ex(&mut s, "use 1").unwrap();
             assert_eq!(s.datasets()[0].msa().unwrap().revision(), revision);
+        }
+
+        /// `s.fa` already in `t.nwk`'s order, so linking moves nothing,
+        /// and `b.fa` with the same names in another order.
+        fn in_order_dir() -> (TempDir, PathBuf) {
+            let (keep, dir) = linked_dir();
+            fs::write(dir.join("s.fa"), ">r2\nCC\n>r3\nCC\n>r1\nCC\n").unwrap();
+            fs::write(dir.join("b.fa"), ">r1\nCC\n>r2\nCC\n>r3\nCC\n").unwrap();
+            (keep, dir)
+        }
+
+        #[test]
+        fn relinking_a_tree_to_another_alignment_reorders_it() {
+            let (_keep, dir) = in_order_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk", "b.fa"]);
+            ex(&mut s, "use 2").unwrap();
+            ex_in(&mut s, &dir, "tree link {}/b.fa").unwrap();
+            assert_eq!(names(&s, 2), ["r2", "r3", "r1"]);
+        }
+
+        #[test]
+        fn a_tree_linked_anew_after_a_close_reorders_the_new_alignment() {
+            let (_keep, dir) = in_order_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "close").unwrap();
+            s.execute(open(&dir.join("b.fa"))).unwrap();
+            assert_eq!(names(&s, 1), ["r2", "r3", "r1"]);
+        }
+
+        /// `s.fa` linked to both `t.nwk` and `u.nwk`, so neither orders it.
+        fn two_trees() -> (TempDir, Session) {
+            let (keep, dir) = linked_dir();
+            fs::write(dir.join("u.nwk"), "(r1,(r2,r3));").unwrap();
+            let mut s = opened(&dir, &["s.fa", "t.nwk", "u.nwk"]);
+            ex_in(&mut s, &dir, "tree link {}/s.fa").unwrap();
+            (keep, s)
+        }
+
+        #[test]
+        fn unlinking_one_of_two_trees_says_the_other_now_orders_the_rows() {
+            let (_keep, mut s) = two_trees();
+            ex(&mut s, "use 2").unwrap();
+            let out = ex(&mut s, "tree unlink").unwrap();
+            assert!(
+                out.message.ends_with("; rows follow u.nwk"),
+                "{}",
+                out.message
+            );
+            assert_eq!(names(&s, 0), ["r1", "r2", "r3"]);
+        }
+
+        #[test]
+        fn closing_one_of_two_trees_says_the_other_now_orders_the_rows() {
+            let (_keep, mut s) = two_trees();
+            ex(&mut s, "use 2").unwrap();
+            let out = ex(&mut s, "close").unwrap();
+            assert!(
+                out.message.contains("; rows follow u.nwk"),
+                "{}",
+                out.message
+            );
+            assert_eq!(names(&s, 0), ["r1", "r2", "r3"]);
         }
 
         #[test]

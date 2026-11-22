@@ -5936,6 +5936,18 @@ mod tests {
             "ladderize 1m tree, unlinked (baseline)",
             line("tree ladderize --reverse"),
         );
+        run(
+            &mut app,
+            "relink the 1m tree + re-align",
+            line(&format!("tree link {}", aln.display())),
+        );
+        run(&mut app, "use the alignment", line("use 1"));
+        run(
+            &mut app,
+            "sort, linked to the 1m tree",
+            line("msa sort --by identity"),
+        );
+        assert!(app.status.contains("clades to match"), "{}", app.status);
     }
 
     #[test]
