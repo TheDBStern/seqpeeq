@@ -1,0 +1,9 @@
+# ASCIIGenome, with its own Java.
+# conda env create -f bench/env-asciigenome.yml
+name: seqpeeq-bench-asciigenome
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - asciigenome=1.21.1
+  - openjdk>=17   # ASCIIGenome 1.21 needs Java 17 or later

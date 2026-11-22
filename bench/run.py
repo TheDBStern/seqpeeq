@@ -34,7 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENVS = Path(os.environ.get("SEQPEEQ_BENCH_ENVS", Path.home() / "miniconda3" / "envs"))
 BENCH = ENVS / "seqpeeq-bench"
 BENCH_IGV = ENVS / "seqpeeq-bench-igv"
+BENCH_ASCII = ENVS / "seqpeeq-bench-asciigenome"
 SEQPEEQ = ROOT / "target" / "release" / "seqpeeq"
+# termal is not on Bioconda: `cargo install termal-msa --root bench/tools`.
+TERMAL = ROOT / "bench" / "tools" / "bin" / "termal"
 MEMORY = "-Xmx16g"
 TIMEOUT = 600
 LONG_RUN = 60
@@ -253,11 +256,11 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
     if tool == "seqpeeq":
         return [str(SEQPEEQ), "--no-log", str(file)]
     if tool == "figtree":
-        jar = next((BENCH / "share").glob("figtree-*/figtree.jar"))
+        jar = _jar("figtree-*/figtree.jar")
         return [_java(BENCH), MEMORY, "-jar", str(jar), "-graphic", "PNG", "-width", "1200",
                 "-height", "800", str(file), str(scratch / "figtree.png")]
     if tool == "jalview":
-        jar = next((BENCH / "share").glob("jalview-*/jalview-all-j11.jar"))
+        jar = _jar("jalview-*/jalview-all-j11.jar")
         # The jar's own entry point is a launcher that starts Jalview in a
         # second JVM and exits; this is the command it runs.
         # Its settings and recent files go to the scratch folder, not ~.
@@ -310,16 +313,42 @@ def architecture(program) -> str:
 
 
 def versions():
-    version = _output([str(SEQPEEQ), "--version"]).removeprefix("seqpeeq ")
-    found = {"seqpeeq": f"{version} ({architecture(SEQPEEQ)})"}
-    for env, names in [(BENCH, ["figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"])]:
+    found = {}
+    for name, program in [("seqpeeq", SEQPEEQ), ("termal", TERMAL)]:
+        version = _output([str(program), "--version"]).split()[-1:]
+        found[name] = f"{' '.join(version)} ({architecture(program)})"
+    javas = {BENCH: "FigTree, Jalview", BENCH_IGV: "IGV", BENCH_ASCII: "ASCIIGenome"}
+    for env, names in [(BENCH, ["samtools", "figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"]),
+                       (BENCH_ASCII, ["asciigenome", "openjdk"])]:
         for name in names:
             meta = sorted((env / "conda-meta").glob(f"{name}-[0-9]*.json"))
             if meta:
                 version = meta[-1].name.removeprefix(f"{name}-").rsplit("-", 1)[0]
-                key = name if name != "openjdk" else f"java ({'IGV' if env == BENCH_IGV else 'FigTree, Jalview'})"
-                found[key] = version
+                found[name if name != "openjdk" else f"java ({javas[env]})"] = version
     return found
+
+
+def _jar(pattern) -> Path:
+    """The jar in the bench environment matching `pattern`, or where it would be."""
+    return next((BENCH / "share").glob(pattern), BENCH / "share" / pattern)
+
+
+def _programs(tool) -> list[Path]:
+    """The files `tool` needs to run."""
+    return {
+        "seqpeeq": [SEQPEEQ],
+        "termal": [TERMAL],
+        "tview": [BENCH / "bin" / "samtools"],
+        "asciigenome": [Path(_java(BENCH_ASCII)), BENCH_ASCII / "bin" / "ASCIIGenome.jar"],
+        "jalview": [Path(_java(BENCH)), _jar("jalview-*/jalview-all-j11.jar")],
+        "figtree": [Path(_java(BENCH)), _jar("figtree-*/figtree.jar")],
+        "igv": [Path(_java(BENCH_IGV)), BENCH_IGV / "lib" / "igv" / "igv.args"],
+    }[tool]
+
+
+def missing_tools(tools) -> list[str]:
+    """The tools among `tools` that are not installed."""
+    return [tool for tool in tools if not all(p.exists() for p in _programs(tool))]
 
 
 def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout):
@@ -350,6 +379,9 @@ def main(argv=None):
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
     args = args.parse_args(argv)
+    missing = missing_tools(args.tools)
+    if missing:
+        sys.exit(f"missing: {', '.join(missing)}")
     files = FILES["tiny"] + (FILES[args.only] if args.only != "tiny" else [])
     report = {"machine": machine(), "versions": versions(), "timeout_seconds": args.timeout,
               "memory_limit": MEMORY.removeprefix("-Xmx"), "results": []}

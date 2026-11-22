@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import make_data
@@ -59,6 +60,24 @@ class Build(unittest.TestCase):
         # Java tools.
         self.assertEqual(run.architecture(run.SEQPEEQ), platform.machine())
         self.assertIn(f"({platform.machine()})", run.versions()["seqpeeq"])
+
+    def test_termal_is_built_for_this_machine(self):
+        self.assertEqual(run.architecture(run.TERMAL), platform.machine())
+        self.assertIn(f"({platform.machine()})", run.versions()["termal"])
+
+    def test_versions_name_the_terminal_peers(self):
+        found = run.versions()
+        for key in ["termal", "samtools", "asciigenome", "java (ASCIIGenome)"]:
+            self.assertIn(key, found)
+            self.assertTrue(found[key], key)
+
+    def test_missing_tools_are_named(self):
+        everything = ["seqpeeq", "termal", "tview", "asciigenome", "jalview", "figtree", "igv"]
+        self.assertEqual(run.missing_tools(everything), [])
+        with mock.patch.object(run, "TERMAL", Path("/nonexistent/termal")):
+            self.assertEqual(run.missing_tools(["seqpeeq", "termal"]), ["termal"])
+        with mock.patch.object(run, "BENCH_ASCII", Path("/nonexistent/env")):
+            self.assertEqual(run.missing_tools(["asciigenome", "tview"]), ["asciigenome"])
 
 
 class Ready(unittest.TestCase):
