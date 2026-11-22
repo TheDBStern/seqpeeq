@@ -1,7 +1,7 @@
 //! Terminal set-up, the event loop, and putting the terminal back afterwards.
 
-use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::io::{self, IsTerminal};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -81,6 +81,18 @@ fn terminal_gone(fd: BorrowedFd) -> bool {
     ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
 
+/// The terminal crossterm reads keys from, given standard input: standard
+/// input itself if it is a terminal, else `/dev/tty`. A finished pipe on
+/// standard input reads as hung up, so it must not be what is watched.
+/// `None` when there is no terminal to read from.
+fn terminal_to_watch(stdin: BorrowedFd) -> Option<OwnedFd> {
+    if stdin.is_terminal() {
+        return stdin.try_clone_to_owned().ok();
+    }
+    let tty = std::fs::File::open("/dev/tty").ok()?;
+    tty.is_terminal().then(|| tty.into())
+}
+
 /// Ends the process when its terminal has hung up and the event loop has
 /// not left by itself.
 ///
@@ -99,7 +111,8 @@ struct Watchdog {
 }
 
 impl Watchdog {
-    fn start(stop: Arc<AtomicBool>, jobs: Jobs) -> Watchdog {
+    /// Watch `terminal`, the one keys are read from.
+    fn start(terminal: OwnedFd, stop: Arc<AtomicBool>, jobs: Jobs) -> Watchdog {
         let done = Arc::new(AtomicBool::new(false));
         let standing_down = Arc::clone(&done);
         let thread = std::thread::spawn(move || {
@@ -109,7 +122,7 @@ impl Watchdog {
                 if standing_down.load(Ordering::SeqCst) {
                     return;
                 }
-                if !terminal_gone(io::stdin().as_fd()) {
+                if !terminal_gone(terminal.as_fd()) {
                     continue;
                 }
                 stop.store(true, Ordering::SeqCst);
@@ -162,9 +175,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, signals: &Signals) -> io::Result<()> {
     let mut worker = Worker::new();
-    let watchdog = Watchdog::start(signals.flag(), worker.jobs());
+    let watchdog = terminal_to_watch(io::stdin().as_fd())
+        .map(|watched| Watchdog::start(watched, signals.flag(), worker.jobs()));
     let result = turns(terminal, app, signals, &mut worker);
-    watchdog.stand_down();
+    if let Some(watchdog) = watchdog {
+        watchdog.stand_down();
+    }
     // Do not leave a thread writing a file behind: ask it to stop, and wait.
     app.cancel_jobs();
     worker.join();
@@ -227,6 +243,47 @@ mod tests {
         assert!(!terminal_gone(slave.as_fd()));
         drop(master);
         assert!(terminal_gone(slave.as_fd()));
+    }
+
+    #[test]
+    fn a_pipe_on_stdin_is_not_the_terminal_watched() {
+        use std::io::IsTerminal;
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+        let mut ends = [0; 2];
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        let (read, write) =
+            unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        drop(write);
+        assert!(
+            terminal_gone(read.as_fd()),
+            "a finished pipe reads as hung up"
+        );
+        // As crossterm reads: /dev/tty, if this process has one; else none.
+        if let Some(watched) = terminal_to_watch(read.as_fd()) {
+            assert!(watched.is_terminal());
+        }
+    }
+
+    #[test]
+    fn a_terminal_on_stdin_is_the_one_watched() {
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+        let (mut master, mut slave) = (0, 0);
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "{}", io::Error::last_os_error());
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let watched = terminal_to_watch(slave.as_fd()).expect("a terminal is watched");
+        assert!(!terminal_gone(watched.as_fd()));
+        drop(master);
+        assert!(terminal_gone(watched.as_fd()));
     }
 
     #[test]
