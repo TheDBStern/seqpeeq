@@ -61,8 +61,8 @@ The GUI programs are run in their script modes and timed until they exit:
 - **Repeats:** each number is the median of 3 runs, or of 1 run when the first takes over a minute.
 - **Limits:** each run stops after 10 minutes. If a tool runs out of memory, crashes
   or hits the limit, that's recorded as such, with the reason in a note.
-- **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both for the
-  machine's own CPU. All seven tools run natively.
+- **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both with Cargo's
+  default release settings and for the machine's own CPU. All seven tools run natively.
 
 ## Results
 
@@ -127,7 +127,7 @@ behind the zoomed-out overview.
 conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte
 conda env create -f bench/env-igv.yml    # IGV, with Java 21
 conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later
-RUSTFLAGS="-C target-cpu=native" cargo install termal-msa --locked --root bench/tools
+cargo install termal-msa --locked --root bench/tools
 cargo build --release -p seqpeeq     # on Apple silicon, with an aarch64-apple-darwin toolchain
 PY=$(conda run -n seqpeeq-bench which python)
 $PY bench/make_data.py --out bench/data --only all          # about 4 GB

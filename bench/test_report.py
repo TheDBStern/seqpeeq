@@ -100,6 +100,8 @@ class Page(unittest.TestCase):
             self.assertIn(bullet, self.page)
         self.assertIn("env-asciigenome.yml", self.page)
         self.assertIn("cargo install termal-msa@", self.page)
+        # Built like seqpeeq, with the default release settings.
+        self.assertNotIn("target-cpu", self.page)
         self.assertIn("no interactive terminal tree viewer", self.page)
 
     def test_page_names_the_machine_and_versions(self):
