@@ -736,26 +736,44 @@ impl Session {
                     &[tree] => position(tree),
                     _ => None,
                 };
+                // The tree's clades in their new order, unless they are in
+                // it already.
                 let rotated = tree_at.map(|tree_at| {
                     let scores = self.tip_scores(aln_at, tree_at, &sorted.scores);
-                    let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
-                        unreachable!("a linked tree is a tree");
-                    };
-                    doc.edit("sort", |tree| {
-                        tree.sort_clades(&scores);
-                        Ok(String::new())
-                    })
-                    .expect("sorting clades cannot fail");
-                    (tree_at, self.datasets[tree_at].file_name())
+                    let tree = self.datasets[tree_at].tree().expect("a tree").tree();
+                    let mut rotated = tree.clone();
+                    let moved = rotated.sort_clades(&scores);
+                    (tree_at, moved.then_some(rotated))
                 });
-                let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
-                    unreachable!("a sort is handed out for an alignment");
+                let rows = self.datasets[aln_at].msa().expect("an alignment").rows();
+                let message = match rotated {
+                    // Linked, and the clades already in order: so are the rows.
+                    Some((_, None)) => sorted.unchanged_message(rows),
+                    Some((tree_at, Some(rotated))) => {
+                        let name = self.datasets[tree_at].file_name();
+                        let Content::Tree(doc) = &mut self.datasets[tree_at].content else {
+                            unreachable!("a linked tree is a tree");
+                        };
+                        doc.edit("sort", |tree| {
+                            *tree = rotated;
+                            Ok(String::new())
+                        })
+                        .expect("sorting clades cannot fail");
+                        let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+                            unreachable!("a sort is handed out for an alignment");
+                        };
+                        let mut message = alignment.record_sort(&sorted).message;
+                        self.pair_steps(tree_at, aln_at);
+                        message.push_str(&format!("; reordered {name}'s clades to match"));
+                        message
+                    }
+                    None => {
+                        let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+                            unreachable!("a sort is handed out for an alignment");
+                        };
+                        alignment.commit_sort(&sorted).message
+                    }
                 };
-                let mut message = alignment.commit_sort(&sorted).message;
-                if let Some((tree_at, name)) = rotated {
-                    self.pair_steps(tree_at, aln_at);
-                    message.push_str(&format!("; reordered {name}'s clades to match"));
-                }
                 self.history.push(line);
                 self.realign();
                 Ok(Outcome { message })
@@ -4106,6 +4124,29 @@ mod tests {
                 "sorted 3 sequences by identity to the consensus: 100.0% to 75.0%; reordered \
                  t.nwk's clades to match"
             );
+        }
+
+        #[test]
+        fn a_second_linked_sort_changes_nothing() {
+            let (_keep, mut s) = linked();
+            ex(&mut s, "msa sort --by identity").unwrap();
+            let revisions = |s: &Session| {
+                let d = s.datasets();
+                (
+                    d[0].msa().unwrap().revision(),
+                    d[1].tree().unwrap().revision(),
+                )
+            };
+            let before = revisions(&s);
+            let out = ex(&mut s, "msa sort --by identity").unwrap();
+            assert!(
+                out.message.starts_with("3 sequences already sorted"),
+                "{}",
+                out.message
+            );
+            assert_eq!(revisions(&s), before);
+            ex(&mut s, "undo").unwrap();
+            assert_eq!(tips(&s, 1), ["r2", "r3", "r1"], "one undo step, not two");
         }
 
         #[test]

@@ -36,14 +36,42 @@ impl Alignment {
         }
     }
 
-    /// Put the rows in the order a sort found, as one undo step.
+    /// Put the rows in the order a sort found, as one undo step; rows
+    /// already in that order are left alone, with no step.
     pub(crate) fn commit_sort(&mut self, sorted: &Sorted) -> Applied {
+        if !sorted.moves_rows() {
+            return Applied::new(sorted.unchanged_message(self.rows()));
+        }
+        self.record_sort(sorted)
+    }
+
+    /// [`Alignment::commit_sort`], always as an undo step: the half of a
+    /// sort of linked files that the tree's half is paired with.
+    pub(crate) fn record_sort(&mut self, sorted: &Sorted) -> Applied {
         self.edit("sort", |layer, _| layer.reorder(&sorted.order));
         Applied::new(sorted.message(self.rows()))
     }
 }
 
 impl Sorted {
+    /// Whether the order found differs from the rows' order now.
+    pub(crate) fn moves_rows(&self) -> bool {
+        self.order
+            .iter()
+            .enumerate()
+            .any(|(at, &row)| at != row as usize)
+    }
+
+    /// What the status line says when the sort changed nothing.
+    pub(crate) fn unchanged_message(&self, rows: usize) -> String {
+        format!(
+            "{} already sorted by identity to the consensus: {:.1}% to {:.1}%",
+            count(rows, "sequence"),
+            self.high,
+            self.low
+        )
+    }
+
     /// What the status line says of a sort of `rows` sequences.
     pub(crate) fn message(&self, rows: usize) -> String {
         format!(
@@ -132,6 +160,21 @@ mod tests {
             "sorted 3 sequences by identity to the consensus: 100.0% to 75.0%"
         );
         assert_eq!(names(&a), ["r3", "r1", "r2"]);
+    }
+
+    #[test]
+    fn a_second_sort_changes_nothing() {
+        let mut a = Alignment::from_text(SORTABLE);
+        run(&mut a, "sort --by identity").unwrap();
+        let (revision, stamp) = (a.revision(), a.order_stamp());
+        let applied = run(&mut a, "sort --by identity").unwrap();
+        assert_eq!(
+            applied.message,
+            "3 sequences already sorted by identity to the consensus: 100.0% to 75.0%"
+        );
+        assert_eq!((a.revision(), a.order_stamp()), (revision, stamp));
+        a.undo().unwrap();
+        assert_eq!(names(&a), ["r1", "r2", "r3"], "one undo step, not two");
     }
 
     #[test]

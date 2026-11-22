@@ -204,8 +204,9 @@ impl Tree {
 
     /// Order every node's children by the mean score of the tips below
     /// them, highest first; children with no scored tip go last. Ties keep
-    /// their order. `tip_scores` is indexed by node number.
-    pub(crate) fn sort_clades(&mut self, tip_scores: &[Option<f64>]) {
+    /// their order. `tip_scores` is indexed by node number. Returns whether
+    /// any children moved.
+    pub(crate) fn sort_clades(&mut self, tip_scores: &[Option<f64>]) -> bool {
         let order = self.preorder();
         // The sum and count of the scores below each node, leaves first.
         let mut below = vec![(0.0, 0u32); self.node_slots()];
@@ -225,21 +226,26 @@ impl Tree {
             let (sum, count) = below[c as usize];
             (count > 0).then(|| sum / count as f64)
         };
+        // Higher means first, then children with no scored tip.
+        let before = |a: NodeId, b: NodeId| match (mean(a), mean(b)) {
+            (Some(a), Some(b)) => b.total_cmp(&a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
         let mut children = Vec::new();
+        let mut moved = false;
         for n in order {
             children.clear();
             children.extend(self.children(n));
-            if children.len() < 2 {
+            if children.len() < 2 || children.is_sorted_by(|&a, &b| before(a, b).is_le()) {
                 continue;
             }
-            children.sort_by(|&a, &b| match (mean(a), mean(b)) {
-                (Some(a), Some(b)) => b.total_cmp(&a),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            });
+            moved = true;
+            children.sort_by(|&a, &b| before(a, b));
             self.set_children(n, &children);
         }
+        moved
     }
 
     /// Refuse renames that would give a name to more than one tip. Only
@@ -486,8 +492,14 @@ pub(crate) mod tests {
         for &(name, score) in scores {
             by_node[tip(&t, name) as usize] = Some(score);
         }
-        t.sort_clades(&by_node);
-        names(&t).into_iter().map(String::from).collect()
+        let moved = t.sort_clades(&by_node);
+        let tips: Vec<String> = names(&t).into_iter().map(String::from).collect();
+        assert_eq!(
+            moved,
+            tips != names(&tree(text)),
+            "moved says whether tips moved"
+        );
+        tips
     }
 
     #[test]
