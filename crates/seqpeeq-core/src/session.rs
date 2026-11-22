@@ -9,6 +9,7 @@ use jiff::{Timestamp, Zoned};
 use crate::bam::{BamDoc, BamExport, Contig, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
+use crate::msa::sort::{Sorted, Sorting};
 use crate::msa::{Alignment, Applied, Extraction, count, write};
 use crate::pair::Pair;
 use crate::progress::Progress;
@@ -243,6 +244,11 @@ enum Work {
         dataset: u64,
         export: Box<BamExport>,
     },
+    /// Score an alignment's rows for `msa sort`.
+    Sort {
+        dataset: u64,
+        sorting: Sorting,
+    },
 }
 
 impl Job {
@@ -298,6 +304,9 @@ impl Job {
                     whole: false,
                 })
             }
+            Work::Sort { dataset, sorting } => sorting
+                .run(&self.progress)
+                .map(|sorted| Product::Sorted { dataset, sorted }),
             Work::BamRef { datasets, file } => {
                 Reference::open(&file, &self.progress).map(|reference| Product::Attached {
                     datasets,
@@ -359,6 +368,8 @@ enum Product {
         /// Whether the whole file was written, so its edits are saved.
         whole: bool,
     },
+    /// The rows of an alignment, scored by `msa sort`.
+    Sorted { dataset: u64, sorted: Sorted },
 }
 
 pub struct Session {
@@ -515,6 +526,13 @@ impl Session {
                     extraction,
                 };
                 return Ok(self.hand_out(label, line, work));
+            }
+            Command::Msa(MsaCmd::Sort { by }) => {
+                let sorting = self.current_alignment()?.plan_sort(by)?;
+                let index = self.current.expect("there is a current file");
+                let label = format!("sorting {}", self.datasets[index].file_name());
+                let dataset = self.datasets[index].id;
+                return Ok(self.hand_out(label, line, Work::Sort { dataset, sorting }));
             }
             Command::Tree(TreeCmd::Extract {
                 at,
@@ -694,6 +712,21 @@ impl Session {
                     _ => {}
                 }
                 self.history.push(line);
+                Ok(Outcome {
+                    message: applied.message,
+                })
+            }
+            Product::Sorted { dataset, sorted } => {
+                if let Some(log) = &mut self.log {
+                    log.record(&line, None, &now)?;
+                }
+                let doc = self.datasets.iter_mut().find(|d| d.id == dataset);
+                let Some(Content::Msa(alignment)) = doc.map(|d| &mut d.content) else {
+                    unreachable!("the session takes no command while a sort runs");
+                };
+                let applied = alignment.commit_sort(&sorted);
+                self.history.push(line);
+                self.realign();
                 Ok(Outcome {
                     message: applied.message,
                 })
@@ -3820,6 +3853,79 @@ mod tests {
             let mut again = Session::new(None);
             crate::replay(&text, &mut again).unwrap();
             assert_eq!(names(&again, 0), ["r2", "r3", "r1"]);
+        }
+    }
+
+    /// `msa sort` runs as a job.
+    mod sort_job {
+        use super::follow_tree::names;
+        use super::*;
+        use crate::msa::testing::SORTABLE;
+
+        fn sortable() -> (TempDir, PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_path_buf();
+            fs::write(path.join("s.fa"), SORTABLE).unwrap();
+            (dir, path)
+        }
+
+        #[test]
+        fn msa_sort_runs_as_a_job() {
+            let (_keep, dir) = sortable();
+            let mut s = opened(&dir, &["s.fa"]);
+            let job = running(start(&mut s, "msa sort --by identity").unwrap());
+            assert_eq!(job.label(), "sorting s.fa");
+            assert!(s.is_busy());
+            let out = s.finish(job.run()).unwrap();
+            assert_eq!(
+                out.message,
+                "sorted 3 sequences by identity to the consensus: 100.0% to 75.0%"
+            );
+            assert_eq!(names(&s, 0), ["r3", "r1", "r2"]);
+            assert_eq!(s.history().last().unwrap(), "msa sort --by identity");
+        }
+
+        #[test]
+        fn a_cancelled_sort_changes_nothing() {
+            let (_keep, dir) = sortable();
+            let log = dir.join("s.log");
+            let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+            s.execute(open(&dir.join("s.fa"))).unwrap();
+            let revision = s.datasets()[0].msa().unwrap().revision();
+            let job = running(start(&mut s, "msa sort --by identity").unwrap());
+            job.progress().cancel();
+            assert!(matches!(s.finish(job.run()), Err(Error::Cancelled)));
+            assert_eq!(names(&s, 0), ["r1", "r2", "r3"]);
+            assert_eq!(s.datasets()[0].msa().unwrap().revision(), revision);
+            assert_eq!(s.history().len(), 1);
+            assert!(!s.is_busy());
+            assert!(!fs::read_to_string(&log).unwrap().contains("msa sort"));
+        }
+
+        #[test]
+        fn extract_after_sort_writes_the_sorted_order() {
+            let (_keep, dir) = sortable();
+            let mut s = opened(&dir, &["s.fa"]);
+            ex(&mut s, "msa sort --by identity").unwrap();
+            ex_in(&mut s, &dir, "msa extract --out {}/o.fa").unwrap();
+            assert_eq!(
+                fs::read_to_string(dir.join("o.fa")).unwrap(),
+                ">r3\nACGAT\n>r1\nac-AC\n>r2\n-CGAG\n"
+            );
+        }
+
+        #[test]
+        fn a_sort_replays() {
+            let (_keep, dir) = sortable();
+            let log = dir.join("s.log");
+            let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+            s.execute(open(&dir.join("s.fa"))).unwrap();
+            ex(&mut s, "msa sort --by identity").unwrap();
+            drop(s);
+            let text = fs::read_to_string(&log).unwrap();
+            let mut again = Session::new(None);
+            crate::replay(&text, &mut again).unwrap();
+            assert_eq!(names(&again, 0), ["r3", "r1", "r2"]);
         }
     }
 }
