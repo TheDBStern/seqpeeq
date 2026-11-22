@@ -695,8 +695,10 @@ impl App {
                     return;
                 };
                 let stamps = self.order_stamps();
-                let ended = self.session.finish(finished);
-                self.unselect_moved(&stamps);
+                let mut ended = self.session.finish(finished);
+                if let (Ok(outcome), Some(dropped)) = (&mut ended, self.unselect_moved(&stamps)) {
+                    outcome.message.push_str(dropped);
+                }
                 // A queued open does not take the tab from a prompt, a
                 // pending fill, a question or a typed run: those were aimed
                 // at the file on screen and must land on it.
@@ -828,14 +830,32 @@ impl App {
 
     /// Let go of the selection on every alignment whose rows were
     /// reordered or deleted since `before` was taken: it named rows by
-    /// place.
-    fn unselect_moved(&mut self, before: &[(u64, u64)]) {
+    /// place. So do a rename prompt and a fill waiting for its character
+    /// on the visible tab; returns what the status line should add then.
+    fn unselect_moved(&mut self, before: &[(u64, u64)]) -> Option<&'static str> {
+        let visible = self.session.datasets().get(self.active).map(|d| d.id);
+        let mut dropped = None;
         for (id, stamp) in self.order_stamps() {
             let moved = before.iter().any(|&(was, old)| was == id && old != stamp);
-            if moved && let Some(view) = self.views.get_mut(&id) {
+            if !moved {
+                continue;
+            }
+            if let Some(view) = self.views.get_mut(&id) {
                 view.clear_selection();
             }
+            if Some(id) != visible {
+                continue;
+            }
+            dropped = match &self.mode {
+                Mode::Prompt(prompt) if matches!(prompt.kind, PromptKind::Rename { .. }) => {
+                    Some("; rows moved, so the rename was dropped")
+                }
+                Mode::FillChar => Some("; rows moved, so the fill was dropped"),
+                _ => continue,
+            };
+            self.mode = Mode::Normal;
         }
+        dropped
     }
 
     fn view_mut(&mut self) -> Option<&mut MsaView> {
@@ -2448,8 +2468,10 @@ impl App {
         let revisions = self.alignment_revisions();
         let stamps = self.order_stamps();
         match self.session.start(cmd)? {
-            Started::Done(outcome) => {
-                self.unselect_moved(&stamps);
+            Started::Done(mut outcome) => {
+                if let Some(dropped) = self.unselect_moved(&stamps) {
+                    outcome.message.push_str(dropped);
+                }
                 if unselects && let Some(view) = self.view_mut() {
                     view.clear_selection();
                 }
@@ -2846,6 +2868,55 @@ mod tests {
         app.handle_event(&key('s'));
         settle(&mut app);
         assert!(!view(&app).has_selection());
+    }
+
+    /// Press `s`, then `keys` while the sort runs, then let it finish.
+    fn sort_under(keys: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        type_str(&mut app, keys);
+        settle(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"]);
+        (app, dir)
+    }
+
+    #[test]
+    fn a_rename_aimed_at_a_moved_row_is_dropped() {
+        let (mut app, _dir) = sort_under("rx");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status
+                .ends_with("; rows moved, so the rename was dropped"),
+            "{}",
+            app.status
+        );
+        enter(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"], "nothing renamed");
+    }
+
+    #[test]
+    fn typing_cannot_start_while_a_sort_runs() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        app.handle_event(&key('R'));
+        assert!(
+            app.status.starts_with("error: still busy: sorting"),
+            "{}",
+            app.status
+        );
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_fill_waiting_for_its_character_is_dropped_when_rows_move() {
+        let (app, _dir) = sort_under("f");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status
+                .ends_with("; rows moved, so the fill was dropped"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
