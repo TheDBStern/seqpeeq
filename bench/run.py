@@ -53,7 +53,7 @@ LEFT_BEHIND_GRACE = 0.5
 QUIT = {"asciigenome": b"q\r"}
 
 # Which tools are timed on which kind of file.
-TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
+TOOLS = {"msa": ["seqpeeq", "termal", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
 FILES = {
     "tiny": [("msa", "tiny.fa"), ("tree", "tiny.nwk"), ("bam", "tiny.bam")],
     "small": [("msa", "aln_1k.fa"), ("tree", "tree_1k.nwk"), ("bam", "reads_10x.bam")],
@@ -77,8 +77,12 @@ def _rss_bytes(rusage):
     return rusage.ru_maxrss if sys.platform == "darwin" else rusage.ru_maxrss * 1024
 
 
+# A terminal escape sequence: CSI (ESC [ … final byte) or ESC and one character.
+ESCAPE = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|.)")
+
+
 def _ended(status, output, seconds, rusage):
-    text = output.decode(errors="replace")
+    text = ESCAPE.sub("", output.decode(errors="replace"))
     if "OutOfMemoryError" in text:
         return Run(seconds, _rss_bytes(rusage), "out of memory", text[-300:])
     code = os.waitstatus_to_exitcode(status)
@@ -245,6 +249,12 @@ def _window_shown(screen):
             and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 
 
+def termal_ready(screen) -> bool:
+    """When termal has drawn its first frame: the first sequence's row, and
+    the help line at the bottom, which is drawn last."""
+    return re.search(r"│ *1│", screen) is not None and "Press '?' for help" in screen
+
+
 def tview_ready(screen) -> bool:
     """When samtools tview has drawn the window: its ruler, the reference
     under it, and reads below those."""
@@ -274,6 +284,8 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
     scratch.mkdir(parents=True, exist_ok=True)
     if tool == "seqpeeq":
         return [str(SEQPEEQ), "--no-log", str(file)]
+    if tool == "termal":
+        return [str(TERMAL), str(file)]
     if tool == "tview":
         start = WINDOW.split("-")[0]
         return [str(BENCH / "bin" / "samtools"), "tview", "-p", start, str(file), str(_reference(file))]
@@ -312,7 +324,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return {"seqpeeq": seqpeeq_steps(kind), "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
+    return {"seqpeeq": seqpeeq_steps(kind), "termal": termal_ready, "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
 
 
 def _output(argv):
@@ -403,7 +415,7 @@ def main(argv=None):
     args.add_argument("--data", required=True, type=Path)
     args.add_argument("--out", required=True, type=Path)
     args.add_argument("--only", choices=list(FILES), default="all")
-    args.add_argument("--tools", nargs="*", default=["seqpeeq", "tview", "asciigenome", "igv", "figtree", "jalview"])
+    args.add_argument("--tools", nargs="*", default=["seqpeeq", "termal", "tview", "asciigenome", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
     args = args.parse_args(argv)

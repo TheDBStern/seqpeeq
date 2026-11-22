@@ -53,6 +53,14 @@ class Measure(unittest.TestCase):
         self.assertEqual(got.outcome, "ok", got.detail)
         self.assertLess(time.monotonic() - started, 15)
 
+    def test_a_terminal_tool_failing_leaves_no_escape_codes(self):
+        got = run.measure(["/bin/sh", "-c", r"printf '\033[?1049h\033[2Jboom\n'; exit 101"], timeout=5,
+                          ready=run.screen_shows("never"))
+        self.assertEqual(got.outcome, "failed")
+        self.assertIn("boom", got.detail)
+        self.assertNotIn("\033", got.detail)
+        self.assertNotIn("[2J", got.detail)
+
     def test_out_of_memory_is_recorded(self):
         got = run.measure(["/bin/sh", "-c", "echo java.lang.OutOfMemoryError >&2; exit 1"], timeout=5)
         self.assertEqual(got.outcome, "out of memory")
@@ -118,8 +126,29 @@ c1:1-1000; 1,000 bp; 6.2 bp/char
 Enter h for help:
 """
 
+# termal, as captured: partway through its first frame, and the end of the
+# frame on a 10,000-sequence file, whose row numbers are right-aligned.
+TERMAL_PARTWAY = """\
+┌─┌────────────┌──┌ tiny.fa | 5/5s x 140/20c | Dark JalView-nt Inv | Zoomed in ──────
+│1│s000001     │▋ │G-ATCCTCGATGCTCCACAC
+│2│s000002     │▊ │TCG--TGCA-GAGTGTAGCA
+"""
+TERMAL_DRAWN = """\
+┌─────┌────────┌──┌ data/aln_10k.fa | 41/10000s x 140/10000c | Dark JalView-nt Inv | Zoomed in ─────
+│    1│s000001 │▍ │G-ATCCTCGATGCTCCACACTCG--TGCA-GAGTGTAGCAGTGCTGGTATGTATAATTTCCAGTTCAGT-AGTCGAGTTTG
+│   34│s000034 │▌ │AACCCCGCTTAACGCAGAACGAAGGTCATT-AGTCT-AATAGGGCGC-AAGGAGTCCAGGTCACGCTAAGGGTT-ACCCAT
+└─────└────────└──└🬹🬹═══════════════════════════════════════════════════════════════════════════════
+│Position         │1       10        20        30        40        50        60        70        80
+└ Press '?' for help ───────────────────────────────────────────────────────────────────────────────
+"""
+
 
 class Ready(unittest.TestCase):
+    def test_termal_ready_needs_the_whole_first_frame(self):
+        self.assertFalse(run.termal_ready(""))
+        self.assertFalse(run.termal_ready(TERMAL_PARTWAY))
+        self.assertTrue(run.termal_ready(TERMAL_DRAWN))
+
     def test_asciigenome_ready_needs_the_reads_and_the_window(self):
         self.assertFalse(run.asciigenome_ready(""))
         self.assertFalse(run.asciigenome_ready(ASCIIGENOME_COVERAGE))
@@ -192,6 +221,14 @@ class Tools(unittest.TestCase):
         self.assertEqual(argv[-1], str(run._reference(bam).resolve()))
         got = run.measure(argv, timeout=30, ready=run._ready_for("tview", "bam"))
         self.assertEqual(got.outcome, "ok", got.detail)
+
+    def test_termal_shows_an_alignment(self):
+        argv = run.commands("termal", self.dir / "tiny.fa", self.scratch("t"))
+        self.assertEqual(argv, [str(run.TERMAL), str((self.dir / "tiny.fa").resolve())])
+        started = time.monotonic()
+        got = run.measure(argv, timeout=30, ready=run._ready_for("termal", "msa"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertLess(time.monotonic() - started - got.seconds, 3)
 
     def test_asciigenome_runs_java_itself(self):
         scratch = self.scratch("ag").resolve()
