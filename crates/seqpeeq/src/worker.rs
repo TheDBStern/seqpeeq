@@ -40,10 +40,6 @@ impl Jobs {
     /// Cancel every job, then wait for their threads, but no longer than
     /// `limit`. Returns whether they all ended. A cancelled write removes
     /// what it had written, so waiting is what keeps partial files away.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the watchdog calls it from the next commit")
-    )]
     pub fn cancel_and_wait(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let all_ended = || {
@@ -224,7 +220,6 @@ impl Worker {
     }
 
     /// The running threads, to be stopped from elsewhere.
-    #[expect(dead_code, reason = "the watchdog calls it from the next commit")]
     pub fn jobs(&self) -> Jobs {
         self.jobs.clone()
     }

@@ -15,6 +15,7 @@ jiff.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
 signal-hook.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 seqpeeq-core = { workspace = true, features = ["testing"] }
