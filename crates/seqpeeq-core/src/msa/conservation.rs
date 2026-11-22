@@ -51,7 +51,7 @@ const LETTERS: usize = 26;
 
 /// Columns counted together. The table of counters for one block takes
 /// under 7 MB, however long the alignment.
-const BLOCK: usize = 1 << 16;
+pub(crate) const BLOCK: usize = 1 << 16;
 
 impl View {
     /// Count every column. `None` if cancelled through `progress`, or if the
@@ -68,9 +68,24 @@ impl View {
         if !self.is_aligned() {
             return None;
         }
+        progress.set_total(self.count_units(block));
+        Some(Conservation {
+            revision: self.revision(),
+            majority: self.count_majorities(progress, block)?,
+        })
+    }
+
+    /// The progress units [`View::count_majorities`] adds: one per row per
+    /// block of columns.
+    pub(crate) fn count_units(&self, block: usize) -> u64 {
+        (self.rows() * self.cols().div_ceil(block)) as u64
+    }
+
+    /// The conserved residue of every column, 0 where none, counted `block`
+    /// columns at a time. Adds [`View::count_units`] to `progress` but
+    /// leaves its total alone. `None` if cancelled. Aligned views only.
+    pub(crate) fn count_majorities(&self, progress: &Progress, block: usize) -> Option<Vec<u8>> {
         let (rows, cols) = (self.rows(), self.cols());
-        let blocks = cols.div_ceil(block);
-        progress.set_total((rows * blocks) as u64);
         let mut majority = Vec::with_capacity(cols);
         let mut counts = vec![0u32; block.min(cols) * LETTERS];
         let mut residues = Vec::with_capacity(block.min(cols));
@@ -106,10 +121,7 @@ impl View {
                 }
             }));
         }
-        Some(Conservation {
-            revision: self.revision(),
-            majority,
-        })
+        Some(majority)
     }
 }
 

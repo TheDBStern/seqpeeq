@@ -20,7 +20,7 @@ mod write;
 
 pub use command::bam::BamCmd;
 pub use command::help::{HelpPage, help_request};
-pub use command::msa::{MsaCmd, RowSel};
+pub use command::msa::{MsaCmd, RowSel, SortKey};
 pub use command::tree::{NodeSel, TreeCmd};
 pub use command::{Command, Kind};
 pub use error::{Error, Result};

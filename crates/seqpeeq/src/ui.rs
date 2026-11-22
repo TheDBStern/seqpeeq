@@ -650,7 +650,7 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          u U undo redo   w save the whole alignment",
     "          c cycle colors   [ ] adjust name width",
     "          msa delete-rows  delete-cols  fill  overwrite",
-    "          msa insert  remove  extract  rename",
+    "          msa insert  remove  extract  rename  sort",
 ];
 
 /// The keys of a tree tab.

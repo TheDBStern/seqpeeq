@@ -4,6 +4,7 @@ pub(crate) mod conservation;
 pub(crate) mod layer;
 pub(crate) mod overview;
 pub(crate) mod shift;
+pub(crate) mod sort;
 pub(crate) mod source;
 pub(crate) mod write;
 
@@ -325,6 +326,10 @@ impl Alignment {
             } => self
                 .plan_extract(rows, cols.as_ref(), *wrap, out)?
                 .run(&Progress::new()),
+            MsaCmd::Sort { by } => {
+                let sorted = self.plan_sort(*by)?.run(&Progress::new())?;
+                Ok(self.commit_sort(&sorted))
+            }
         }
     }
 
@@ -457,6 +462,12 @@ impl Alignment {
         self.edit(step, |layer, source| layer.delete_rows(source, &ranges));
     }
 
+    /// A number that changes whenever the rows are reordered or deleted,
+    /// undo and redo included, and at no other time.
+    pub fn order_stamp(&self) -> u64 {
+        self.view.layer.order
+    }
+
     /// The edits as they are now, for putting back with [`Alignment::restore`].
     pub(crate) fn snapshot(&self) -> Layer {
         self.view.layer.clone()
@@ -525,6 +536,9 @@ impl Alignment {
     fn edit(&mut self, name: &'static str, change: impl FnOnce(&mut Layer, &Source)) {
         let before = self.view.layer.clone();
         change(&mut self.view.layer, &self.view.source);
+        if !self.view.layer.same_rows(&before) {
+            self.view.layer.order = self.next_revision;
+        }
         self.view.layer.revision = self.next_revision;
         self.next_revision += 1;
         self.undo.push(Step::new(before, name));
@@ -961,6 +975,10 @@ pub(crate) mod testing {
 
     /// Three sequences of ten columns, used throughout the tests.
     pub(crate) const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+
+    /// Column 5 has no majority residue; r1 is partly lower case and has a
+    /// gap where the consensus has G. Scores: r1 75%, r2 75%, r3 100%.
+    pub(crate) const SORTABLE: &str = ">r1\nac-AC\n>r2\n-CGAG\n>r3\nACGAT\n";
 
     /// Apply `msa <text>`.
     pub(crate) fn run(aln: &mut Alignment, text: &str) -> Result<Applied> {

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use super::{Words, path_word};
 use crate::Result;
@@ -39,6 +39,21 @@ impl RowSel {
         }
         if let Some(matching) = &self.matching {
             words.flag("--match", matching);
+        }
+    }
+}
+
+/// What `msa sort` orders the rows by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SortKey {
+    /// The share of columns with a majority residue where a row carries it
+    Identity,
+}
+
+impl SortKey {
+    fn word(self) -> &'static str {
+        match self {
+            SortKey::Identity => "identity",
         }
     }
 }
@@ -122,6 +137,11 @@ pub enum MsaCmd {
         #[arg(long)]
         tree: bool,
     },
+    /// Reorder the sequences, most like the consensus first.
+    Sort {
+        #[arg(long, value_enum)]
+        by: SortKey,
+    },
 }
 
 impl MsaCmd {
@@ -136,6 +156,7 @@ impl MsaCmd {
             MsaCmd::Remove { .. } => "remove",
             MsaCmd::Extract { .. } => "extract",
             MsaCmd::Rename { .. } => "rename",
+            MsaCmd::Sort { .. } => "sort",
         }
     }
 
@@ -197,6 +218,7 @@ impl MsaCmd {
                     words.switch("--tree");
                 }
             }
+            MsaCmd::Sort { by } => words.flag("--by", by.word()),
         }
         Ok(())
     }

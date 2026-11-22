@@ -66,6 +66,8 @@ pub(crate) struct Layer {
     added: u32,
     /// The number of this state, given by the alignment that owns it.
     pub(crate) revision: u64,
+    /// The revision at which the rows were last reordered or deleted.
+    pub(crate) order: u64,
 }
 
 impl Layer {
@@ -81,6 +83,7 @@ impl Layer {
             fills: Vec::new(),
             added: 0,
             revision: 0,
+            order: 0,
         };
         if layer.aligned {
             layer.set_cols(whole(source.width()));
@@ -178,6 +181,18 @@ impl Layer {
                 }
             }
         }
+    }
+
+    /// Whether `other` has the very same rows, in the same order: true for
+    /// a state whose edit left the rows alone.
+    pub(crate) fn same_rows(&self, other: &Layer) -> bool {
+        Arc::ptr_eq(&self.rows, &other.rows)
+    }
+
+    /// Put the rows in a new order: `order` lists current rows, each once.
+    pub(crate) fn reorder(&mut self, order: &[u32]) {
+        debug_assert_eq!(order.len(), self.rows.len());
+        self.rows = Arc::new(order.iter().map(|&row| self.rows[row as usize]).collect());
     }
 
     pub(crate) fn delete_rows(&mut self, source: &Source, rows: &Ranges) {
