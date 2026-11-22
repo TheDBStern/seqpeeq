@@ -386,9 +386,13 @@ pub struct Session {
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
     /// For each tree kept in step with an alignment: that alignment's id,
-    /// and the tree's and the alignment's revisions when the rows last
-    /// followed it. Revisions count per file, so the id is part of the key.
-    aligned_at: HashMap<u64, (u64, u64, u64)>,
+    /// the tree's revision, and the alignment's order and name stamps when
+    /// the rows last followed it. Only these change where rows go; stamps
+    /// count per file, so the id is part of the key.
+    aligned_at: HashMap<u64, (u64, u64, u64, u64)>,
+    /// How many times the rows' places in a tree were worked out.
+    #[cfg(test)]
+    realigns: usize,
     /// BAMs shown as one stack, by dataset id, each in the order it was
     /// formed; every stack has at least two.
     stacks: Vec<Vec<u64>>,
@@ -450,6 +454,8 @@ impl Session {
             clock,
             links: HashMap::new(),
             aligned_at: HashMap::new(),
+            #[cfg(test)]
+            realigns: 0,
             stacks: Vec::new(),
             next_pair: 1,
             cache_dir: default_cache_dir(),
@@ -1533,9 +1539,18 @@ impl Session {
             else {
                 continue;
             };
-            let now = (aln_id, doc.revision(), alignment.revision());
+            let now = (
+                aln_id,
+                doc.revision(),
+                alignment.order_stamp(),
+                alignment.name_stamp(),
+            );
             if self.aligned_at.get(&tree_id) == Some(&now) {
                 continue;
+            }
+            #[cfg(test)]
+            {
+                self.realigns += 1;
             }
             // The place of each row name's first tip, found by walking the
             // tips once: the map holds the rows' names, not the tips', as a
@@ -1556,12 +1571,11 @@ impl Session {
             let keys: Vec<usize> = (0..rows).map(|row| place[alignment.name(row)]).collect();
             let mut order: Vec<u32> = (0..rows as u32).collect();
             order.sort_by_key(|&row| keys[row as usize]);
-            let tree_revision = doc.revision();
             let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
                 unreachable!("checked above");
             };
             alignment.follow(&order);
-            let aligned = (aln_id, tree_revision, alignment.revision());
+            let aligned = (now.0, now.1, alignment.order_stamp(), now.3);
             self.aligned_at.insert(tree_id, aligned);
         }
     }
@@ -3960,6 +3974,20 @@ mod tests {
                 out.message
             );
             assert_eq!(names(&s, 0), ["r1", "r2", "r3"]);
+        }
+
+        #[test]
+        fn only_order_and_name_changes_rebuild_the_tip_places() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            let built = s.realigns;
+            ex(&mut s, "msa fill --rows 1 --cols 1 --with N").unwrap();
+            ex(&mut s, "msa overwrite --row 2 --col 2 --seq A").unwrap();
+            assert_eq!(s.realigns, built, "edits to residues need no re-align");
+            ex(&mut s, "msa rename --name r2 --to x").unwrap();
+            assert_eq!(s.realigns, built + 1);
+            assert_eq!(names(&s, 0), ["r3", "r1", "x"]);
         }
 
         #[test]

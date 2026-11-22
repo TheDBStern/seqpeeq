@@ -68,6 +68,8 @@ pub(crate) struct Layer {
     pub(crate) revision: u64,
     /// The revision at which the rows were last reordered or deleted.
     pub(crate) order: u64,
+    /// The revision at which a name was last changed.
+    pub(crate) naming: u64,
 }
 
 impl Layer {
@@ -84,6 +86,7 @@ impl Layer {
             added: 0,
             revision: 0,
             order: 0,
+            naming: 0,
         };
         if layer.aligned {
             layer.set_cols(whole(source.width()));
@@ -187,6 +190,12 @@ impl Layer {
     /// a state whose edit left the rows alone.
     pub(crate) fn same_rows(&self, other: &Layer) -> bool {
         Arc::ptr_eq(&self.rows, &other.rows)
+    }
+
+    /// Whether `other` has the very same names: true for a state whose edit
+    /// renamed nothing.
+    pub(crate) fn same_names(&self, other: &Layer) -> bool {
+        Arc::ptr_eq(&self.names, &other.names)
     }
 
     /// Put the rows in a new order: `order` lists current rows, each once.

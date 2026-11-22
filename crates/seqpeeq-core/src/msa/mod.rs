@@ -487,6 +487,12 @@ impl Alignment {
         self.view.layer.order
     }
 
+    /// A number that changes whenever a sequence is renamed, undo and redo
+    /// included, and at no other time.
+    pub fn name_stamp(&self) -> u64 {
+        self.view.layer.naming
+    }
+
     /// The edits as they are now, for putting back with [`Alignment::restore`].
     pub(crate) fn snapshot(&self) -> Layer {
         self.view.layer.clone()
@@ -557,6 +563,9 @@ impl Alignment {
         change(&mut self.view.layer, &self.view.source);
         if !self.view.layer.same_rows(&before) {
             self.view.layer.order = self.next_revision;
+        }
+        if !self.view.layer.same_names(&before) {
+            self.view.layer.naming = self.next_revision;
         }
         self.view.layer.revision = self.next_revision;
         self.next_revision += 1;
