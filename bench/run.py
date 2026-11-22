@@ -81,9 +81,13 @@ def _rss_bytes(rusage):
 ESCAPE = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|.)")
 
 
+def publishable(text) -> str:
+    """`text` fit for the public page: no escape codes, and ~ for the home folder."""
+    return ESCAPE.sub("", text).replace(str(Path.home()), "~")
+
+
 def _ended(status, output, seconds, rusage):
-    # The notes are published: no escape codes, and ~ for the home folder.
-    text = ESCAPE.sub("", output.decode(errors="replace")).replace(str(Path.home()), "~")
+    text = publishable(output.decode(errors="replace"))
     if "OutOfMemoryError" in text:
         return Run(seconds, _rss_bytes(rusage), "out of memory", text[-300:])
     code = os.waitstatus_to_exitcode(status)
@@ -216,7 +220,8 @@ def _measure_screen(argv, timeout, env, ready, size, quit):
         run = _ended(status, bytes(output), time.monotonic() - started, rusage)
         if run.outcome == "ok":
             return Run(run.seconds, run.max_rss, "failed",
-                       "exited before showing the file: " + "\n".join(screen.display).strip()[-300:])
+                       "exited before showing the file: "
+                       + publishable("\n".join(screen.display).strip())[-300:])
         return run
     return Run(shown, _rss_bytes(rusage), "ok")
 
@@ -355,6 +360,8 @@ def architecture(program) -> str:
 def versions():
     found = {}
     for name, program in [("seqpeeq", SEQPEEQ), ("termal", TERMAL)]:
+        if not program.exists():
+            continue
         version = _output([str(program), "--version"]).split()[-1:]
         found[name] = f"{' '.join(version)} ({architecture(program)})"
     javas = {BENCH: "FigTree, Jalview", BENCH_IGV: "IGV", BENCH_ASCII: "ASCIIGenome"}

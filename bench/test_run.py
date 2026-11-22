@@ -68,6 +68,14 @@ class Measure(unittest.TestCase):
         self.assertIn("panicked at ~/.cargo/x.rs", got.detail)
         self.assertNotIn(str(Path.home()), got.detail)
 
+    def test_an_early_exit_note_hides_the_home_folder(self):
+        # A tool that exits before the file is shown: its last screen is the note.
+        got = run.measure(["/bin/sh", "-c", f"echo cannot open {Path.home()}/x.fa; exit 0"], timeout=5,
+                          ready=run.screen_shows("never"))
+        self.assertEqual(got.outcome, "failed")
+        self.assertIn("cannot open ~/x.fa", got.detail)
+        self.assertNotIn(str(Path.home()), got.detail)
+
     def test_out_of_memory_is_recorded(self):
         got = run.measure(["/bin/sh", "-c", "echo java.lang.OutOfMemoryError >&2; exit 1"], timeout=5)
         self.assertEqual(got.outcome, "out of memory")
@@ -94,6 +102,12 @@ class Build(unittest.TestCase):
         for key in ["termal", "samtools", "asciigenome", "java (ASCIIGenome)"]:
             self.assertIn(key, found)
             self.assertTrue(found[key], key)
+
+    def test_versions_leave_out_a_tool_not_installed(self):
+        with mock.patch.object(run, "TERMAL", Path.home() / "nonexistent" / "termal"):
+            found = run.versions()
+        self.assertNotIn("termal", found)
+        self.assertNotIn(str(Path.home()), str(found))
 
     def test_missing_tools_are_named(self):
         everything = ["seqpeeq", "termal", "tview", "asciigenome", "jalview", "figtree", "igv"]
