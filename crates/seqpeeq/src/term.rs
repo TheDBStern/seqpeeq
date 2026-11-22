@@ -1,9 +1,11 @@
 //! Terminal set-up, the event loop, and putting the terminal back afterwards.
 
-use std::io;
+use std::io::{self, IsTerminal};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -13,7 +15,7 @@ use ratatui::crossterm::execute;
 
 use crate::app::App;
 use crate::ui;
-use crate::worker::Worker;
+use crate::worker::{Jobs, Worker};
 
 /// How long to wait for input before redrawing while work is running, so
 /// that its progress is seen to move.
@@ -22,6 +24,19 @@ const TICK: Duration = Duration::from_millis(50);
 /// How long to wait for input otherwise. The loop still has to wake up to
 /// notice a signal.
 const IDLE: Duration = Duration::from_millis(250);
+
+/// How often the watchdog looks at the terminal.
+const CHECK: Duration = Duration::from_millis(250);
+
+/// How long after the terminal hangs up the event loop has to leave by
+/// itself before the watchdog ends the process.
+const GRACE: Duration = Duration::from_secs(1);
+
+/// How long the watchdog waits for cancelled jobs to clean up.
+const JOBS_LIMIT: Duration = Duration::from_secs(10);
+
+/// The exit status after a hang-up: 128 + SIGHUP, as if killed by it.
+const HANGUP_STATUS: i32 = 129;
 
 /// Notices the signals that ask the program to end: SIGTERM (a cluster's
 /// time limit, `kill`) and SIGHUP (the terminal or SSH session closing).
@@ -43,6 +58,93 @@ impl Signals {
     /// Whether one of the signals has arrived.
     pub fn stop(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+
+    /// The flag the signals set, for others to set too.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop)
+    }
+}
+
+/// Whether the terminal on `fd` has hung up: its window or SSH session is
+/// gone. Asks without waiting and reads nothing. macOS reports the hang-up
+/// only to a caller asking whether input is waiting, so that is asked too;
+/// input alone means nothing here.
+fn terminal_gone(fd: BorrowedFd) -> bool {
+    let mut poll = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd, and `fd` is open for the call.
+    let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+    ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+/// The terminal crossterm reads keys from, given standard input: standard
+/// input itself if it is a terminal, else `/dev/tty`. A finished pipe on
+/// standard input reads as hung up, so it must not be what is watched.
+/// `None` when there is no terminal to read from.
+fn terminal_to_watch(stdin: BorrowedFd) -> Option<OwnedFd> {
+    if stdin.is_terminal() {
+        return stdin.try_clone_to_owned().ok();
+    }
+    let tty = std::fs::File::open("/dev/tty").ok()?;
+    tty.is_terminal().then(|| tty.into())
+}
+
+/// Ends the process when its terminal has hung up and the event loop has
+/// not left by itself.
+///
+/// crossterm 0.29 reads a hung-up terminal forever: every read returns end
+/// of input, and its loop only stops on "nothing yet" or an error. The
+/// event loop is then stuck inside `event::poll` and never sees the stop
+/// flag, so the process would run at full CPU until killed. The watchdog
+/// sets the flag on a hang-up, gives the loop [`GRACE`] to leave the
+/// ordinary way, then cancels the jobs, lets them clean up and exits.
+///
+/// A signal with the terminal still there is left to the event loop, which
+/// sees it within [`IDLE`] and puts the terminal back.
+struct Watchdog {
+    done: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+impl Watchdog {
+    /// Watch `terminal`, the one keys are read from.
+    fn start(terminal: OwnedFd, stop: Arc<AtomicBool>, jobs: Jobs) -> Watchdog {
+        let done = Arc::new(AtomicBool::new(false));
+        let standing_down = Arc::clone(&done);
+        let thread = std::thread::spawn(move || {
+            let mut gone_since: Option<Instant> = None;
+            loop {
+                std::thread::park_timeout(CHECK);
+                if standing_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                if !terminal_gone(terminal.as_fd()) {
+                    continue;
+                }
+                stop.store(true, Ordering::SeqCst);
+                if gone_since.get_or_insert_with(Instant::now).elapsed() < GRACE {
+                    continue;
+                }
+                jobs.cancel_and_wait(JOBS_LIMIT);
+                // The loop may have left after all, and is shutting down.
+                if standing_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::process::exit(HANGUP_STATUS);
+            }
+        });
+        Watchdog { done, thread }
+    }
+
+    /// The event loop has left: stop watching.
+    fn stand_down(self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.thread.thread().unpark();
+        let _ = self.thread.join();
     }
 }
 
@@ -73,7 +175,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, signals: &Signals) -> io::Result<()> {
     let mut worker = Worker::new();
+    let watchdog = terminal_to_watch(io::stdin().as_fd())
+        .map(|watched| Watchdog::start(watched, signals.flag(), worker.jobs()));
     let result = turns(terminal, app, signals, &mut worker);
+    if let Some(watchdog) = watchdog {
+        watchdog.stand_down();
+    }
     // Do not leave a thread writing a file behind: ask it to stop, and wait.
     app.cancel_jobs();
     worker.join();
@@ -116,6 +223,68 @@ fn turns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_is_gone_once_its_other_end_closes() {
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+        let (mut master, mut slave) = (0, 0);
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "{}", io::Error::last_os_error());
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        assert!(!terminal_gone(slave.as_fd()));
+        drop(master);
+        assert!(terminal_gone(slave.as_fd()));
+    }
+
+    #[test]
+    fn a_pipe_on_stdin_is_not_the_terminal_watched() {
+        use std::io::IsTerminal;
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+        let mut ends = [0; 2];
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        let (read, write) =
+            unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        drop(write);
+        assert!(
+            terminal_gone(read.as_fd()),
+            "a finished pipe reads as hung up"
+        );
+        // As crossterm reads: /dev/tty, if this process has one; else none.
+        if let Some(watched) = terminal_to_watch(read.as_fd()) {
+            assert!(watched.is_terminal());
+        }
+    }
+
+    #[test]
+    fn a_terminal_on_stdin_is_the_one_watched() {
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+        let (mut master, mut slave) = (0, 0);
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "{}", io::Error::last_os_error());
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let watched = terminal_to_watch(slave.as_fd()).expect("a terminal is watched");
+        assert!(!terminal_gone(watched.as_fd()));
+        drop(master);
+        assert!(terminal_gone(watched.as_fd()));
+    }
 
     #[test]
     fn a_termination_signal_sets_the_stop_flag_instead_of_killing() {

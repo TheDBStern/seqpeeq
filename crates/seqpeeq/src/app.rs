@@ -254,6 +254,22 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// The handle that cancels this request's work.
+    pub fn progress(&self) -> Arc<Progress> {
+        match self {
+            Request::Run(job) => job.progress(),
+            Request::Conserve { progress, .. }
+            | Request::Summarise { progress, .. }
+            | Request::Window { progress, .. }
+            | Request::Pass { progress, .. }
+            | Request::Gather { progress, .. }
+            | Request::Search { progress, .. }
+            | Request::Jump { progress, .. } => Arc::clone(progress),
+        }
+    }
+}
+
 /// Work that a worker thread has finished.
 pub enum Done {
     Command(Finished),

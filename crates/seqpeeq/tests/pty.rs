@@ -195,6 +195,74 @@ fn a_signal_puts_the_terminal_back() {
 }
 
 #[test]
+fn a_viewer_whose_terminal_closes_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.fa"), TRIO).unwrap();
+    let size = PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let pair = native_pty_system().openpty(size).unwrap();
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_seqpeeq"));
+    command.args(["--no-log", "a.fa"]);
+    command.cwd(dir.path());
+    command.env("TERM", "xterm-256color");
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    // Read until the file is on screen, then let go of the reader: every
+    // handle on the terminal's other end must close for it to hang up.
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let (drawn, on_screen) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut screen =
+            vt100::Parser::new(NonZero::new(24).unwrap(), NonZero::new(80).unwrap(), 0);
+        let mut chunk = [0; 4096];
+        while let Ok(read) = reader.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            screen.process(&chunk[..read]);
+            if screen.screen().contents().contains("opened a.fa") {
+                let _ = drawn.send(());
+                return;
+            }
+        }
+    });
+    if on_screen.recv_timeout(PATIENCE).is_err() {
+        let _ = child.kill();
+        panic!("the file never showed");
+    }
+    drop(pair.master);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the viewer was still running 5 s after its terminal closed");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.exit_code(), 129, "{status:?}");
+}
+
+#[test]
+fn an_idle_viewer_with_its_terminal_open_keeps_running() {
+    let mut run = Pty::start(&["--no-log", "a.fa"]);
+    run.wait_for("opened a.fa");
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        run.child.try_wait().unwrap().is_none(),
+        "the viewer ended by itself"
+    );
+}
+
+#[test]
 fn the_grid_is_drawn_and_an_edit_reaches_the_log() {
     let mut run = Pty::start(&["--log", "s.log", "a.fa"]);
     run.wait_for("s3 third one");

@@ -1,7 +1,11 @@
 //! Threads for work that would otherwise freeze the screen.
 
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use seqpeeq_core::Progress;
 
 use crate::app::{Done, Request};
 use crate::bam_view::{Loaded, PASS_BINS, READS_LIMIT};
@@ -11,7 +15,62 @@ use crate::bam_view::{Loaded, PASS_BINS, READS_LIMIT};
 pub struct Worker {
     results: Receiver<Done>,
     sender: Sender<Done>,
-    threads: Vec<JoinHandle<()>>,
+    jobs: Jobs,
+}
+
+/// The threads running requests, each with the handle that cancels it.
+/// Shared, so that a thread other than the interface's can stop them.
+#[derive(Clone, Default)]
+pub struct Jobs(Arc<Mutex<Vec<Running>>>);
+
+/// A thread and the handle that cancels its work.
+type Running = (Arc<Progress>, JoinHandle<()>);
+
+impl Jobs {
+    /// Keep `thread`, which `progress` cancels; let go of finished ones.
+    pub fn add(&self, progress: Arc<Progress>, thread: JoinHandle<()>) {
+        let mut jobs = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs.retain(|(_, thread)| !thread.is_finished());
+        jobs.push((progress, thread));
+    }
+
+    /// Cancel every job, then wait for their threads, but no longer than
+    /// `limit`. Returns whether they all ended. A cancelled write removes
+    /// what it had written, so waiting is what keeps partial files away.
+    pub fn cancel_and_wait(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        let all_ended = || {
+            let jobs = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (progress, _) in jobs.iter() {
+                progress.cancel();
+            }
+            jobs.iter().all(|(_, thread)| thread.is_finished())
+        };
+        loop {
+            if all_ended() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Take every thread out, to be joined.
+    fn take(&self) -> Vec<JoinHandle<()>> {
+        let mut jobs = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs.drain(..).map(|(_, thread)| thread).collect()
+    }
 }
 
 /// Do the work `request` asks for on this thread, handing each result to
@@ -140,28 +199,34 @@ impl Worker {
         Worker {
             results,
             sender,
-            threads: Vec::new(),
+            jobs: Jobs::default(),
         }
     }
 
     /// Start `request` on a new thread.
     pub fn submit(&mut self, request: Request) {
-        self.threads.retain(|thread| !thread.is_finished());
         let sender = self.sender.clone();
-        self.threads.push(std::thread::spawn(move || {
+        let progress = request.progress();
+        let thread = std::thread::spawn(move || {
             perform(request, &mut |done| {
                 let _ = sender.send(done);
             });
-        }));
+        });
+        self.jobs.add(progress, thread);
     }
 
     pub fn poll(&self) -> Option<Done> {
         self.results.try_recv().ok()
     }
 
+    /// The running threads, to be stopped from elsewhere.
+    pub fn jobs(&self) -> Jobs {
+        self.jobs.clone()
+    }
+
     /// Wait for every thread to end.
     pub fn join(self) {
-        for thread in self.threads {
+        for thread in self.jobs.take() {
             let _ = thread.join();
         }
     }
@@ -170,8 +235,43 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use seqpeeq_core::{Command, Session, Started};
+    use seqpeeq_core::{Command, Progress, Session, Started};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
+
+    /// A thread that runs until `progress` is cancelled, then sets `ended`.
+    fn until_cancelled(progress: &Arc<Progress>, ended: &Arc<AtomicBool>) -> JoinHandle<()> {
+        let (progress, ended) = (Arc::clone(progress), Arc::clone(ended));
+        std::thread::spawn(move || {
+            while !progress.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ended.store(true, Ordering::SeqCst);
+        })
+    }
+
+    #[test]
+    fn cancel_and_wait_cancels_and_waits_for_every_job() {
+        let jobs = Jobs::default();
+        let ended: Vec<Arc<AtomicBool>> = (0..2).map(|_| Arc::default()).collect();
+        for ended in &ended {
+            let progress = Arc::new(Progress::new());
+            jobs.add(Arc::clone(&progress), until_cancelled(&progress, ended));
+        }
+        assert!(jobs.cancel_and_wait(Duration::from_secs(5)));
+        assert!(ended.iter().all(|ended| ended.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn cancel_and_wait_gives_up_after_its_limit() {
+        let jobs = Jobs::default();
+        let deaf = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(2)));
+        jobs.add(Arc::new(Progress::new()), deaf);
+        let started = Instant::now();
+        assert!(!jobs.cancel_and_wait(Duration::from_millis(100)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn a_job_runs_on_another_thread_and_comes_back() {

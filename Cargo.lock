@@ -1856,6 +1856,7 @@ dependencies = [
  "flate2",
  "insta",
  "jiff",
+ "libc",
  "portable-pty",
  "ratatui",
  "seqpeeq-core",

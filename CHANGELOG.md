@@ -21,6 +21,11 @@ All notable changes to seqpeeq are listed here. The format follows
   archives include both, the README's pictures and `examples/`.
 - CI uses actions/checkout v7, which runs on Node.js 24.
 
+### Fixed
+
+- A viewer whose terminal closes (a closed tab, a dropped SSH session) now ends, instead of running at full CPU until
+  killed. A job writing a file is cancelled and cleans up first.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added
