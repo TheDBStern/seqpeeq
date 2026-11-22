@@ -293,7 +293,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failed_record_writes_nothing_and_blocks_the_log() {
-        let (mut log, buffer) = limited_log(200);
+        // The header names the working directory, so measure it rather
+        // than assuming a size.
+        let (mut probe, written) = limited_log(usize::MAX);
+        probe.ensure_open(&fixed()).unwrap();
+        let header = written.lock().unwrap().len();
+        let (mut log, buffer) = limited_log(header + 100);
         log.ensure_open(&fixed()).unwrap();
         let header = buffer.lock().unwrap().clone();
         let long = "x".repeat(300);
