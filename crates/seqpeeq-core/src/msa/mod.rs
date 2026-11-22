@@ -462,6 +462,25 @@ impl Alignment {
         self.edit(step, |layer, source| layer.delete_rows(source, &ranges));
     }
 
+    /// Put the rows in `order` (current rows, each once) without an undo
+    /// step: the rows of a linked alignment following its tree. Returns
+    /// whether the order changed; the revision moves only if it did.
+    pub(crate) fn follow(&mut self, order: &[u32]) -> bool {
+        if order
+            .iter()
+            .enumerate()
+            .all(|(at, &row)| at == row as usize)
+        {
+            return false;
+        }
+        let layer = &mut self.view.layer;
+        layer.reorder(order);
+        layer.revision = self.next_revision;
+        layer.order = self.next_revision;
+        self.next_revision += 1;
+        true
+    }
+
     /// A number that changes whenever the rows are reordered or deleted,
     /// undo and redo included, and at no other time.
     pub fn order_stamp(&self) -> u64 {
@@ -979,6 +998,8 @@ pub(crate) mod testing {
     /// Column 5 has no majority residue; r1 is partly lower case and has a
     /// gap where the consensus has G. Scores: r1 75%, r2 75%, r3 100%.
     pub(crate) const SORTABLE: &str = ">r1\nac-AC\n>r2\n-CGAG\n>r3\nACGAT\n";
+    /// Its tree: tip order r2, r3, r1.
+    pub(crate) const SORTABLE_TREE: &str = "((r2,r3),r1);";
 
     /// Apply `msa <text>`.
     pub(crate) fn run(aln: &mut Alignment, text: &str) -> Result<Applied> {

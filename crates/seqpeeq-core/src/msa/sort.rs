@@ -214,6 +214,17 @@ mod tests {
     }
 
     #[test]
+    fn follow_reorders_without_an_undo_step() {
+        let mut a = Alignment::from_text(SORTABLE);
+        assert!(a.follow(&[2, 0, 1]));
+        assert_eq!(names(&a), ["r3", "r1", "r2"]);
+        assert_eq!(error(a.undo()), "nothing to undo");
+        let revision = a.revision();
+        assert!(!a.follow(&[0, 1, 2]));
+        assert_eq!(a.revision(), revision);
+    }
+
+    #[test]
     fn order_stamp_moves_only_with_the_order() {
         let mut a = Alignment::from_text(SORTABLE);
         let first = a.order_stamp();

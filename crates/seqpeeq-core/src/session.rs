@@ -374,6 +374,9 @@ pub struct Session {
     clock: fn() -> Zoned,
     /// Trees linked to alignments, by dataset id.
     links: HashMap<u64, u64>,
+    /// For each tree kept in step with its alignment: the tree's and the
+    /// alignment's revisions when the rows last followed it.
+    aligned_at: HashMap<u64, (u64, u64)>,
     /// BAMs shown as one stack, by dataset id, each in the order it was
     /// formed; every stack has at least two.
     stacks: Vec<Vec<u64>>,
@@ -434,6 +437,7 @@ impl Session {
             log,
             clock,
             links: HashMap::new(),
+            aligned_at: HashMap::new(),
             stacks: Vec::new(),
             next_pair: 1,
             cache_dir: default_cache_dir(),
@@ -618,6 +622,7 @@ impl Session {
             return Err(error);
         }
         self.history.push(line);
+        self.realign();
         Ok(Started::Done(Outcome {
             message: applied.message,
         }))
@@ -810,6 +815,7 @@ impl Session {
         // stacks the same.
         let linked = self.auto_link(id);
         let stacked = self.auto_stack(id);
+        self.realign();
         Ok(Outcome {
             message: message + &linked + &stacked,
         })
@@ -1048,7 +1054,8 @@ impl Session {
                 let (tree, alignment) = (one.0.id, one.1.id);
                 let name = other_name(one);
                 self.links.insert(tree, alignment);
-                format!("; linked to {name}")
+                let follows = self.follows_note(tree);
+                format!("; linked to {name}{follows}")
             }
             [] => match (taken.as_slice(), pairs.as_slice()) {
                 ([(alignment, tree)], _) => {
@@ -1405,6 +1412,72 @@ impl Session {
         }
     }
 
+    /// The alignment whose rows follow the tree with id `tree`: the one it
+    /// is linked to, if that alignment has no other tree.
+    fn kept_in_step(&self, tree: u64) -> Option<u64> {
+        let alignment = *self.links.get(&tree)?;
+        (self.trees_linked_to(alignment).len() == 1).then_some(alignment)
+    }
+
+    /// `; rows follow t.nwk` when the tree with id `tree` is kept in step.
+    fn follows_note(&self, tree: u64) -> String {
+        match (
+            self.kept_in_step(tree),
+            self.datasets.iter().find(|d| d.id == tree),
+        ) {
+            (Some(_), Some(doc)) => format!("; rows follow {}", doc.file_name()),
+            _ => String::new(),
+        }
+    }
+
+    /// Put the rows of every alignment kept in step with a tree in the
+    /// tree's tip order: rows by the place of their name's first tip, rows
+    /// with no tip last, ties in their current order. A rule, not a logged
+    /// command: replaying the commands does the same. Pairs unchanged since
+    /// the last time are skipped.
+    fn realign(&mut self) {
+        let mut trees: Vec<u64> = self.links.keys().copied().collect();
+        trees.sort_unstable();
+        for tree_id in trees {
+            let Some(aln_id) = self.kept_in_step(tree_id) else {
+                continue;
+            };
+            let find = |id: u64| self.datasets.iter().position(|d| d.id == id);
+            let (Some(tree_at), Some(aln_at)) = (find(tree_id), find(aln_id)) else {
+                continue;
+            };
+            let (Some(doc), Some(alignment)) =
+                (self.datasets[tree_at].tree(), self.datasets[aln_at].msa())
+            else {
+                continue;
+            };
+            if self.aligned_at.get(&tree_id) == Some(&(doc.revision(), alignment.revision())) {
+                continue;
+            }
+            let tree = doc.tree();
+            let mut place: HashMap<&str, usize> = HashMap::new();
+            for (at, tip) in tree.tips().into_iter().enumerate() {
+                if let Some(name) = tree.label(tip) {
+                    place.entry(name).or_insert(at);
+                }
+            }
+            let mut order: Vec<u32> = (0..alignment.rows() as u32).collect();
+            order.sort_by_key(|&row| {
+                place
+                    .get(alignment.name(row as usize))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+            let tree_revision = doc.revision();
+            let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
+                unreachable!("checked above");
+            };
+            alignment.follow(&order);
+            let aligned = (tree_revision, alignment.revision());
+            self.aligned_at.insert(tree_id, aligned);
+        }
+    }
+
     /// The dataset ids of the trees linked to the alignment `alignment`.
     pub fn trees_linked_to(&self, alignment: u64) -> Vec<u64> {
         let mut trees: Vec<u64> = self
@@ -1605,8 +1678,9 @@ impl Session {
         );
         self.links.insert(tree_id, aln_id);
         let counts = self.link_counts().expect("just linked");
+        let follows = self.follows_note(tree_id);
         Ok(Applied {
-            message: format!("{message}: {}{}", counts.matched, counts.unmatched),
+            message: format!("{message}: {}{}{follows}", counts.matched, counts.unmatched),
             note: None,
             created: Vec::new(),
         })
@@ -2305,7 +2379,7 @@ mod tests {
         let mut s = opened(&dir, &["a.fa", "t.nwk"]);
         assert_eq!(
             ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap().message,
-            "linked t.nwk to a.fa: 3 of 3 tips have a sequence; 1 sequence has no tip: Z"
+            "linked t.nwk to a.fa: 3 of 3 tips have a sequence; 1 sequence has no tip: Z; rows follow t.nwk"
         );
         ex(&mut s, "use 1").unwrap();
         ex(&mut s, "msa fill --name A --cols 1 --with N").unwrap();
@@ -2349,7 +2423,7 @@ mod tests {
         let mut s = opened(&dir, &["d.fa", "t.nwk"]);
         assert_eq!(
             ex_in(&mut s, &dir, "tree link {}/d.fa").unwrap().message,
-            "linked t.nwk to d.fa: 2 of 3 tips have a sequence; tips without one: C"
+            "linked t.nwk to d.fa: 2 of 3 tips have a sequence; tips without one: C; rows follow t.nwk"
         );
         let out = ex_in(&mut s, &dir, "tree extract --out {}/s.nwk --seqs {}/s.fa").unwrap();
         assert!(
@@ -2450,7 +2524,7 @@ mod tests {
         );
         assert_eq!(
             ex_in(&mut s, &dir, "tree link {}/a.fa").unwrap().message,
-            "linked t.nwk to a.fa: 2 of 3 tips have a sequence; tips without one: Q; 2 sequences have no tip: A, Z"
+            "linked t.nwk to a.fa: 2 of 3 tips have a sequence; tips without one: Q; 2 sequences have no tip: A, Z; rows follow t.nwk"
         );
         assert_eq!(
             ex(&mut s, "tree unlink").unwrap().message,
@@ -3161,9 +3235,13 @@ mod tests {
             out.message
         );
         let a = s.datasets()[0].msa().unwrap();
-        assert_eq!((a.name(0), a.name(3)), ("Q", "Q"), "every copy");
+        assert_eq!(
+            (a.name(0), a.name(1)),
+            ("Q", "Q"),
+            "every copy, together in tree order"
+        );
         ex(&mut s, "use 1").unwrap();
-        let out = ex(&mut s, "msa rename --rows 2 --to R --tree").unwrap();
+        let out = ex(&mut s, "msa rename --rows 3 --to R --tree").unwrap();
         assert!(
             out.message.ends_with("; renamed 1 tip in l.nwk"),
             "{}",
@@ -3414,7 +3492,11 @@ mod tests {
         let mut s = Session::new(None);
         s.execute(open(&dir.join("a.fa"))).unwrap();
         let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
-        assert!(out.message.ends_with("; linked to a.fa"), "{}", out.message);
+        assert!(
+            out.message.ends_with("; linked to a.fa; rows follow t.nwk"),
+            "{}",
+            out.message
+        );
         assert_eq!(s.link_of(s.datasets()[1].id), Some(s.datasets()[0].id));
     }
 
@@ -3425,7 +3507,8 @@ mod tests {
         s.execute(open(&dir.join("t.nwk"))).unwrap();
         let out = s.execute(open(&dir.join("a.fa"))).unwrap();
         assert!(
-            out.message.ends_with("; linked to t.nwk"),
+            out.message
+                .ends_with("; linked to t.nwk; rows follow t.nwk"),
             "{}",
             out.message
         );
@@ -3574,5 +3657,169 @@ mod tests {
         assert!(!same_contigs(&a, &c));
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+    }
+
+    /// A linked alignment's rows follow its tree.
+    mod follow_tree {
+        use super::*;
+        use crate::msa::testing::{SORTABLE, SORTABLE_TREE};
+
+        /// A temp dir holding `s.fa` (SORTABLE) and `t.nwk` (its tree).
+        fn linked_dir() -> (TempDir, PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_path_buf();
+            fs::write(path.join("s.fa"), SORTABLE).unwrap();
+            fs::write(path.join("t.nwk"), SORTABLE_TREE).unwrap();
+            (dir, path)
+        }
+
+        pub(super) fn names(s: &Session, at: usize) -> Vec<String> {
+            let a = s.datasets()[at].msa().unwrap();
+            (0..a.rows()).map(|row| a.name(row).to_string()).collect()
+        }
+
+        pub(super) fn tips(s: &Session, at: usize) -> Vec<String> {
+            let tree = s.datasets()[at].tree().unwrap().tree();
+            tree.tips()
+                .into_iter()
+                .map(|n| tree.label(n).unwrap_or_default().to_string())
+                .collect()
+        }
+
+        /// The rows with a tip are in the tips' order, and come before
+        /// every row without one.
+        pub(super) fn follows(s: &Session, aln: usize, tree: usize) {
+            let (names, tips) = (names(s, aln), tips(s, tree));
+            let with_tip: Vec<&String> = names.iter().filter(|n| tips.contains(n)).collect();
+            let with_row: Vec<&String> = tips.iter().filter(|t| names.contains(t)).collect();
+            assert_eq!(with_tip, with_row, "rows {names:?}, tips {tips:?}");
+            let first_without = names.iter().position(|n| !tips.contains(n));
+            if let Some(at) = first_without {
+                assert!(
+                    names[at..].iter().all(|n| !tips.contains(n)),
+                    "rows {names:?}, tips {tips:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn opening_a_linked_pair_puts_rows_in_tree_order() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa"]);
+            let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            assert!(
+                out.message.contains("; rows follow t.nwk"),
+                "{}",
+                out.message
+            );
+            assert!(s.datasets()[0].msa().unwrap().is_modified());
+        }
+
+        #[test]
+        fn a_tree_already_in_file_order_changes_nothing() {
+            let (_keep, dir) = linked_dir();
+            fs::write(dir.join("t.nwk"), "((r1,r2),r3);").unwrap();
+            let mut s = opened(&dir, &["s.fa"]);
+            let revision = s.datasets()[0].msa().unwrap().revision();
+            s.execute(open(&dir.join("t.nwk"))).unwrap();
+            let a = s.datasets()[0].msa().unwrap();
+            assert_eq!(a.revision(), revision);
+            assert!(!a.is_modified());
+        }
+
+        #[test]
+        fn ladderize_reorders_the_rows() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            ex(&mut s, "use 2").unwrap();
+            ex(&mut s, "tree ladderize").unwrap();
+            assert_eq!(names(&s, 0), ["r1", "r2", "r3"]);
+        }
+
+        #[test]
+        fn reroot_and_prune_keep_rows_in_step() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "tree reroot --outgroup r3").unwrap();
+            follows(&s, 0, 1);
+            ex(&mut s, "tree prune --tip r1 --seqs").unwrap();
+            follows(&s, 0, 1);
+            assert_eq!(names(&s, 0).len(), 2);
+        }
+
+        #[test]
+        fn a_renamed_row_with_no_tip_goes_last() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "msa rename --name r2 --to x").unwrap();
+            assert_eq!(names(&s, 0), ["r3", "r1", "x"]);
+        }
+
+        #[test]
+        fn undoing_an_edit_from_before_the_link_keeps_tree_order() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa"]);
+            ex(&mut s, "msa delete-rows --name r2").unwrap();
+            s.execute(open(&dir.join("t.nwk"))).unwrap();
+            assert_eq!(s.link_of(s.datasets()[1].id), None);
+            ex(&mut s, "tree link s.fa").unwrap();
+            assert_eq!(names(&s, 0), ["r3", "r1"]);
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "undo").unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+        }
+
+        #[test]
+        fn unlinking_keeps_the_order() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "tree unlink").unwrap();
+            ex(&mut s, "tree ladderize").unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+        }
+
+        #[test]
+        fn two_trees_mean_no_reordering() {
+            let (_keep, dir) = linked_dir();
+            fs::write(dir.join("u.nwk"), "(r1,(r2,r3));").unwrap();
+            let mut s = opened(&dir, &["s.fa", "t.nwk", "u.nwk"]);
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+            let out = ex(&mut s, "tree link s.fa").unwrap();
+            assert!(!out.message.contains("rows follow"), "{}", out.message);
+            ex(&mut s, "tree ladderize --reverse").unwrap();
+            assert_eq!(names(&s, 0), ["r2", "r3", "r1"]);
+        }
+
+        #[test]
+        fn realign_skips_unchanged_links() {
+            let (_keep, dir) = linked_dir();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            let stamp = s.datasets()[0].msa().unwrap().order_stamp();
+            ex(&mut s, "msa fill --rows 1 --cols 1 --with N").unwrap();
+            let revision = s.datasets()[0].msa().unwrap().revision();
+            assert_eq!(s.datasets()[0].msa().unwrap().order_stamp(), stamp);
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "use 1").unwrap();
+            assert_eq!(s.datasets()[0].msa().unwrap().revision(), revision);
+        }
+
+        #[test]
+        fn replay_reproduces_the_order() {
+            let (_keep, dir) = linked_dir();
+            let log = dir.join("s.log");
+            let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
+            s.execute(open(&dir.join("s.fa"))).unwrap();
+            s.execute(open(&dir.join("t.nwk"))).unwrap();
+            ex(&mut s, "tree ladderize --reverse").unwrap();
+            drop(s);
+            let text = fs::read_to_string(&log).unwrap();
+            let mut again = Session::new(None);
+            crate::replay(&text, &mut again).unwrap();
+            assert_eq!(names(&again, 0), ["r2", "r3", "r1"]);
+        }
     }
 }
