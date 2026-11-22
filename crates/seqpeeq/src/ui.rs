@@ -648,7 +648,7 @@ const HELP_ALIGNMENT: &[&str] = &[
     "          i insert (shifts)   R type over   Esc stop",
     "Zoom      - out   + in   z view whole alignment",
     "          u U undo redo   w save the whole alignment",
-    "          c cycle colors   [ ] adjust name width",
+    "          c cycle colors  [ ] adjust name width  s sort",
     "          msa delete-rows  delete-cols  fill  overwrite",
     "          msa insert  remove  extract  rename  sort",
 ];

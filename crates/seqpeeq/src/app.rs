@@ -11,8 +11,8 @@ use ratatui::layout::Size;
 use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Read, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, HelpPage, Job, MsaCmd, NodeId,
-    NodeSel, Progress, Ranges, Session, Started, Summary, TreeCmd, TreeDoc, View, help_request,
-    summary_block,
+    NodeSel, Progress, Ranges, Session, SortKey, Started, Summary, TreeCmd, TreeDoc, View,
+    help_request, summary_block,
 };
 
 use crate::bam_view::{BamView, Loaded, Want};
@@ -694,7 +694,9 @@ impl App {
                 let Some(busy) = self.busy.take() else {
                     return;
                 };
+                let stamps = self.order_stamps();
                 let ended = self.session.finish(finished);
+                self.unselect_moved(&stamps);
                 // A queued open does not take the tab from a prompt, a
                 // pending fill, a question or a typed run: those were aimed
                 // at the file on screen and must land on it.
@@ -813,6 +815,27 @@ impl App {
             .iter()
             .filter_map(|d| Some((d.id, d.msa()?.revision())))
             .collect()
+    }
+
+    /// Each alignment's id and order stamp, to see whose rows moved.
+    fn order_stamps(&self) -> Vec<(u64, u64)> {
+        self.session
+            .datasets()
+            .iter()
+            .filter_map(|d| Some((d.id, d.msa()?.order_stamp())))
+            .collect()
+    }
+
+    /// Let go of the selection on every alignment whose rows were
+    /// reordered or deleted since `before` was taken: it named rows by
+    /// place.
+    fn unselect_moved(&mut self, before: &[(u64, u64)]) {
+        for (id, stamp) in self.order_stamps() {
+            let moved = before.iter().any(|&(was, old)| was == id && old != stamp);
+            if moved && let Some(view) = self.views.get_mut(&id) {
+                view.clear_selection();
+            }
+        }
     }
 
     fn view_mut(&mut self) -> Option<&mut MsaView> {
@@ -1708,6 +1731,11 @@ impl App {
             KeyCode::Char('w') => return self.start_save(),
             KeyCode::Char('u') => return self.act(Command::Undo),
             KeyCode::Char('U') => return self.act(Command::Redo),
+            KeyCode::Char('s') => {
+                return self.act(Command::Msa(MsaCmd::Sort {
+                    by: SortKey::Identity,
+                }));
+            }
             KeyCode::Char('r') => {
                 let Some((alignment, view)) = self.alignment() else {
                     return;
@@ -2418,8 +2446,10 @@ impl App {
                 | Command::Msa(MsaCmd::DeleteRows { .. } | MsaCmd::DeleteCols { .. })
         );
         let revisions = self.alignment_revisions();
+        let stamps = self.order_stamps();
         match self.session.start(cmd)? {
             Started::Done(outcome) => {
+                self.unselect_moved(&stamps);
                 if unselects && let Some(view) = self.view_mut() {
                     view.clear_selection();
                 }
@@ -2787,6 +2817,94 @@ mod tests {
     }
 
     const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+    /// Scores r1 75%, r2 75%, r3 100%; its tree's tip order is r2, r3, r1.
+    const SORTABLE: &str = ">r1\nac-AC\n>r2\n-CGAG\n>r3\nACGAT\n";
+    const SORTABLE_TREE: &str = "((r2,r3),r1);";
+
+    /// The names of the visible alignment's rows, top to bottom.
+    fn row_names(app: &App) -> Vec<String> {
+        let (alignment, _) = app.alignment().unwrap();
+        (0..alignment.rows())
+            .map(|row| alignment.name(row).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn s_sorts_the_rows() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert_eq!(last(&app), "msa sort --by identity");
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"]);
+    }
+
+    #[test]
+    fn a_sort_clears_the_selection() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('V'));
+        assert!(view(&app).has_selection());
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert!(!view(&app).has_selection());
+    }
+
+    #[test]
+    fn s_on_an_unaligned_file_says_why() {
+        let (mut app, _dir) = with_text(">a\nACGT\n>b\nAC\n");
+        let before = app.session.history().len();
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert!(
+            app.status
+                .starts_with("error: sorting needs every sequence to be the same length"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.session.history().len(), before);
+    }
+
+    #[test]
+    fn a_ladderize_clears_the_linked_alignments_selection() {
+        let (mut app, dir) = with_text(SORTABLE);
+        let tree = dir.path().join("t.nwk");
+        fs::write(&tree, SORTABLE_TREE).unwrap();
+        type_str(&mut app, &format!(":open {}", tree.display()));
+        enter(&mut app);
+        app.focus(0);
+        app.handle_event(&key('V'));
+        assert!(view(&app).has_selection());
+        app.focus(1);
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        app.focus(0);
+        assert_eq!(row_names(&app), ["r1", "r2", "r3"]);
+        assert!(!view(&app).has_selection());
+    }
+
+    #[test]
+    fn a_fill_keeps_the_selection() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('V'));
+        type_str(&mut app, ":msa fill --rows 1 --with N");
+        enter(&mut app);
+        assert_eq!(last(&app), "msa fill --rows 1 --with N");
+        assert!(view(&app).has_selection());
+    }
+
+    #[test]
+    fn sorting_a_linked_alignment_clears_its_selection() {
+        let (mut app, dir) = with_text(SORTABLE);
+        let tree = dir.path().join("t.nwk");
+        fs::write(&tree, SORTABLE_TREE).unwrap();
+        type_str(&mut app, &format!(":open {}", tree.display()));
+        enter(&mut app);
+        app.focus(0);
+        app.handle_event(&key('V'));
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r2", "r1"]);
+        assert!(!view(&app).has_selection());
+    }
 
     /// An app with two ten-column alignments open; the second is visible.
     fn with_two_alignments() -> (App, TempDir) {
