@@ -5844,6 +5844,100 @@ mod tests {
         fs::write(&out, text).unwrap();
     }
 
+    /// Time `msa sort` and the linked re-align on the benchmark files. The
+    /// trees' tips are renamed copies (`t123` → `s000123`) so they match
+    /// the alignment's names.
+    #[test]
+    #[ignore = "timing on bench/data; run with SEQPEEQ_BENCH_DATA=… SEQPEEQ_SORT_TREES=… SEQPEEQ_SORT_ALN=… cargo test --release -p seqpeeq -- --ignored sort_timings"]
+    fn sort_timings_on_the_benchmark_files() {
+        use std::time::Instant;
+        let data = PathBuf::from(std::env::var("SEQPEEQ_BENCH_DATA").expect("SEQPEEQ_BENCH_DATA"));
+        let trees = PathBuf::from(std::env::var("SEQPEEQ_SORT_TREES").expect("SEQPEEQ_SORT_TREES"));
+        fn time<T>(what: &str, step: impl FnOnce() -> T) -> T {
+            let started = Instant::now();
+            let out = step();
+            eprintln!("{what}: {:.4} s", started.elapsed().as_secs_f64());
+            out
+        }
+        /// Start `cmd`. A quick one is timed whole; a job is timed in two
+        /// parts: its work (on the worker in the app) and taking in its
+        /// result (on the interface thread).
+        fn run(app: &mut App, what: &str, cmd: Command) {
+            app.enqueue(cmd);
+            time(&format!("{what}: quick part"), || app.pump());
+            let Some(at) = app.outbox.iter().position(|r| matches!(r, Request::Run(_))) else {
+                eprintln!("  -> {}", app.status);
+                return;
+            };
+            let Request::Run(job) = app.outbox.remove(at) else {
+                unreachable!()
+            };
+            let finished = time(&format!("{what}: job, on the worker"), || job.run());
+            time(&format!("{what}: finish, on the interface thread"), || {
+                app.handle_done(Done::Command(finished))
+            });
+            eprintln!("  -> {}", app.status);
+        }
+        let line = |text: &str| Command::parse_line(text).unwrap();
+        // bench/make_data.py's residues are uniformly random, so its
+        // alignment has no consensus to sort by: SEQPEEQ_SORT_ALN names one
+        // of the same size that has.
+        let aln = std::env::var("SEQPEEQ_SORT_ALN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data.join("aln_100k.fa"));
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 60));
+        let open = |path: &Path| Command::Open {
+            path: path.to_path_buf(),
+            kind: None,
+        };
+        run(&mut app, "open the alignment", open(&aln));
+        app.outbox.clear();
+        run(&mut app, "sort, unlinked", line("msa sort --by identity"));
+        assert!(app.status.starts_with("sorted "), "{}", app.status);
+        run(&mut app, "undo the sort", line("undo"));
+        run(
+            &mut app,
+            "open tree_100k_s.nwk, auto-link and re-align",
+            open(&trees.join("tree_100k_s.nwk")),
+        );
+        assert!(app.status.contains("rows follow"), "{}", app.status);
+        run(
+            &mut app,
+            "ladderize 100k tree + re-align",
+            line("tree ladderize"),
+        );
+        run(&mut app, "use the alignment", line("use 1"));
+        run(&mut app, "sort, linked", line("msa sort --by identity"));
+        assert!(app.status.contains("clades to match"), "{}", app.status);
+        run(&mut app, "use the tree", line("use 2"));
+        run(&mut app, "close the 100k tree", line("close"));
+        app.outbox.clear();
+        run(
+            &mut app,
+            "open tree_1m_s.nwk",
+            open(&trees.join("tree_1m_s.nwk")),
+        );
+        app.outbox.clear();
+        run(
+            &mut app,
+            "link the 1m tree + re-align",
+            line(&format!("tree link {}", aln.display())),
+        );
+        assert!(app.status.contains("rows follow"), "{}", app.status);
+        run(
+            &mut app,
+            "ladderize 1m tree + re-align",
+            line("tree ladderize"),
+        );
+        run(&mut app, "unlink", line("tree unlink"));
+        run(
+            &mut app,
+            "ladderize 1m tree, unlinked (baseline)",
+            line("tree ladderize --reverse"),
+        );
+    }
+
     #[test]
     fn a_stack_is_one_tab_and_tab_walks_its_members() {
         use crate::ui::{active_tab, tab_groups, tab_labels};
