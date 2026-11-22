@@ -48,9 +48,12 @@ WINDOW = "c1:1-1000"
 # contig opens zoomed out with a depth already shown, at a coarser scale.
 WINDOW_SCALE = 10
 LEFT_BEHIND_GRACE = 0.5
+# What each terminal tool is sent to quit, when it isn't `q`: ASCIIGenome
+# reads a command line, ended by Enter.
+QUIT = {"asciigenome": b"q\r"}
 
 # Which tools are timed on which kind of file.
-TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "igv"]}
+TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
 FILES = {
     "tiny": [("msa", "tiny.fa"), ("tree", "tiny.nwk"), ("bam", "tiny.bam")],
     "small": [("msa", "aln_1k.fa"), ("tree", "tree_1k.nwk"), ("bam", "reads_10x.bam")],
@@ -87,7 +90,8 @@ def _ended(status, output, seconds, rusage):
 def _kill(pid):
     try:
         os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # Gone, or (on macOS) only its unreaped leader is left.
         pass
 
 
@@ -107,7 +111,7 @@ def _left_behind(pgid):
         time.sleep(0.02)
 
 
-def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS)) -> Run:
+def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS), quit=b"q") -> Run:
     """Run `argv` once in its own process group and say how it went.
 
     Without `ready`, the time is until the program exits. With `ready`,
@@ -115,12 +119,13 @@ def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS
     passes the last of its steps; it is then sent `q` to quit. `ready` is a
     test of the screen's text, or a list of (test, keys) steps: when a
     step's test holds its keys are typed, and the last step has keys None.
+    `quit` is what is typed once the last step holds.
     On `timeout` the whole process group is killed, and a group that
     outlives its leader is a failure.
     """
     if ready is None:
         return _measure_exit(argv, timeout, env)
-    return _measure_screen(argv, timeout, env, ready, pty_size)
+    return _measure_screen(argv, timeout, env, ready, pty_size, quit)
 
 
 def _measure_exit(argv, timeout, env):
@@ -147,7 +152,7 @@ def _measure_exit(argv, timeout, env):
         return _ended(status, out.read(), seconds, rusage)
 
 
-def _measure_screen(argv, timeout, env, ready, size):
+def _measure_screen(argv, timeout, env, ready, size, quit):
     steps = ready if isinstance(ready, list) else [(ready, None)]
     step = 0
     rows, cols = size
@@ -192,7 +197,7 @@ def _measure_screen(argv, timeout, env, ready, size):
                     if keys is None:
                         shown = time.monotonic() - started
                         quit_sent = time.monotonic()
-                        os.write(master, b"q")
+                        os.write(master, quit)
                     else:
                         os.write(master, keys)
                         step += 1
@@ -248,6 +253,12 @@ def tview_ready(screen) -> bool:
             and any(line.strip() for line in lines[2:]))
 
 
+def asciigenome_ready(screen) -> bool:
+    """When ASCIIGenome has drawn the window: its read track, and the footer
+    naming the window, which is drawn after the tracks."""
+    return "; Reads: " in screen and f"\n{WINDOW}; " in screen
+
+
 def _java(env):
     return str(env / "lib" / "jvm" / "bin" / "java")
 
@@ -266,6 +277,11 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
     if tool == "tview":
         start = WINDOW.split("-")[0]
         return [str(BENCH / "bin" / "samtools"), "tview", "-p", start, str(file), str(_reference(file))]
+    if tool == "asciigenome":
+        # The jar run directly: Bioconda's wrapper script would be timed, and
+        # it sets its own heap size. Its history goes to the scratch folder.
+        return [_java(BENCH_ASCII), MEMORY, f"-Duser.home={scratch}", "-jar",
+                str(BENCH_ASCII / "bin" / "ASCIIGenome.jar"), "-r", WINDOW, "-fa", str(_reference(file)), str(file)]
     if tool == "figtree":
         jar = _jar("figtree-*/figtree.jar")
         return [_java(BENCH), MEMORY, "-jar", str(jar), "-graphic", "PNG", "-width", "1200",
@@ -296,7 +312,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return {"seqpeeq": seqpeeq_steps(kind), "tview": tview_ready}.get(tool)
+    return {"seqpeeq": seqpeeq_steps(kind), "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
 
 
 def _output(argv):
@@ -365,7 +381,8 @@ def missing_tools(tools) -> list[str]:
 def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout):
     runs = []
     for _ in range(repeats):
-        got = measure(commands(tool, file, scratch), timeout=timeout, ready=_ready_for(tool, kind))
+        got = measure(commands(tool, file, scratch), timeout=timeout, ready=_ready_for(tool, kind),
+                      quit=QUIT.get(tool, b"q"))
         runs.append(got)
         print(f"  {tool:8} {file.name:16} {got.outcome:13} {got.seconds:8.2f} s "
               f"{got.max_rss / 1e6:9.0f} MB", flush=True)
@@ -386,7 +403,7 @@ def main(argv=None):
     args.add_argument("--data", required=True, type=Path)
     args.add_argument("--out", required=True, type=Path)
     args.add_argument("--only", choices=list(FILES), default="all")
-    args.add_argument("--tools", nargs="*", default=["seqpeeq", "tview", "igv", "figtree", "jalview"])
+    args.add_argument("--tools", nargs="*", default=["seqpeeq", "tview", "asciigenome", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
     args = args.parse_args(argv)

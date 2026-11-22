@@ -44,6 +44,15 @@ class Measure(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(left.stdout.strip(), "", "the process left behind was not killed")
 
+    def test_a_tool_that_ignores_quit_is_killed(self):
+        # Killed 10 s after `q`; killing its group again once only a
+        # zombie is left must not crash the harness.
+        started = time.monotonic()
+        got = run.measure(["/bin/sh", "-c", "echo shown; exec sleep 31.9"], timeout=30,
+                          ready=run.screen_shows("shown"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertLess(time.monotonic() - started, 15)
+
     def test_out_of_memory_is_recorded(self):
         got = run.measure(["/bin/sh", "-c", "echo java.lang.OutOfMemoryError >&2; exit 1"], timeout=5)
         self.assertEqual(got.outcome, "out of memory")
@@ -88,8 +97,34 @@ CGTTAATTACTCCTCCGGAATTTGTCCTACACTACCTAGCATACCCATGTAGCGTCGACTCGCAC
                                                             ..
 """
 
+# ASCIIGenome on tiny.bam at c1:1-1000, as captured: the coverage track drawn
+# before the reads, then the whole window with its footer and prompt.
+ASCIIGENOME_COVERAGE = """\
+********************250*****************500*****************760*******
+tiny.bam#1; ylim[auto auto]; range[1.0 5.0]
+                            .::::::             :     :::
+                            :::::::.           .:     :::.
+"""
+ASCIIGENOME_DRAWN = """\
+********************250*****************500*****************
+tiny.bam#1; ylim[auto auto]; range[1.0 5.0]
+          _.::::::::::::::::::::::::::::::::::::::::::::::::
+tiny.bam@2; Reads: 18
+                            <<<<<<<<<<<<<<<<<<<<<<<<
+                                 >>>>>>>>>>>>>>>>>>>>>>>>>
+1         65        125       190       250       315
+0         .06       .13       .19       .25       .31
+c1:1-1000; 1,000 bp; 6.2 bp/char
+Enter h for help:
+"""
+
 
 class Ready(unittest.TestCase):
+    def test_asciigenome_ready_needs_the_reads_and_the_window(self):
+        self.assertFalse(run.asciigenome_ready(""))
+        self.assertFalse(run.asciigenome_ready(ASCIIGENOME_COVERAGE))
+        self.assertTrue(run.asciigenome_ready(ASCIIGENOME_DRAWN))
+
     def test_tview_ready_needs_the_reads(self):
         self.assertFalse(run.tview_ready(""))
         # The ruler and the reference alone: no reads drawn yet.
@@ -157,6 +192,34 @@ class Tools(unittest.TestCase):
         self.assertEqual(argv[-1], str(run._reference(bam).resolve()))
         got = run.measure(argv, timeout=30, ready=run._ready_for("tview", "bam"))
         self.assertEqual(got.outcome, "ok", got.detail)
+
+    def test_asciigenome_runs_java_itself(self):
+        scratch = self.scratch("ag").resolve()
+        argv = run.commands("asciigenome", self.mid_bam(), scratch)
+        self.assertEqual(argv[0], run._java(run.BENCH_ASCII))
+        self.assertIn(run.MEMORY, argv)
+        self.assertIn(f"-Duser.home={scratch}", argv)
+        self.assertEqual(argv[argv.index("-r") + 1], run.WINDOW)
+
+    def test_asciigenome_never_uses_the_home_folder(self):
+        def snapshot():
+            return {path: path.read_bytes() for path in Path.home().glob(".asciigenome*") if path.is_file()}
+
+        before = snapshot()
+        argv = run.commands("asciigenome", self.mid_bam(), self.scratch("agh"))
+        got = run.measure(argv, timeout=120, ready=run._ready_for("asciigenome", "bam"),
+                          quit=run.QUIT.get("asciigenome", b"q"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertEqual(snapshot(), before)
+
+    def test_asciigenome_quits_when_asked(self):
+        # Not killed after the harness's 10 s wait.
+        argv = run.commands("asciigenome", self.dir / "tiny.bam", self.scratch("agq"))
+        started = time.monotonic()
+        got = run.measure(argv, timeout=120, ready=run._ready_for("asciigenome", "bam"),
+                          quit=run.QUIT.get("asciigenome", b"q"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertLess(time.monotonic() - started - got.seconds, 3)
 
     def test_jalview_never_uses_the_home_folder(self):
         props = Path.home() / ".jalview_properties"
