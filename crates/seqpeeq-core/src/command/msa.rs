@@ -137,7 +137,7 @@ pub enum MsaCmd {
         #[arg(long)]
         tree: bool,
     },
-    /// Reorder the sequences, most like the consensus first.
+    /// Reorder the sequences by identity to the consensus.
     Sort {
         #[arg(long, value_enum)]
         by: SortKey,
