@@ -13,8 +13,17 @@ All notable changes to seqpeeq are listed here. The format follows
   `cargo run -p seqpeeq-core --features testing --example make_examples -- examples` writes them again.
 - The README shows the example files in the interface. The pictures are drawn by the tests, which fail when the
   interface no longer draws them that way.
+- `msa sort --by identity`, and `s` on an alignment tab, reorder the sequences by identity to the consensus, to group
+  similar sequences and find outliers. It runs in the background, and Esc cancels it. On an alignment linked to one
+  tree, it reorders the tree's clades instead and the rows follow the tree.
 
 ### Changed
+
+- A linked alignment's rows now follow its tree's order, as the docs said they did: on linking, and after
+  ladderizing, re-rooting, pruning, renaming, undo and redo. Unlinking leaves the rows in the order they have.
+  Opening a linked pair whose orders differ counts as an unsaved change.
+- Session logs gain a `# rows follow linked trees` header line. Logs from 0.3.0 and earlier lack it and replay with a
+  linked alignment's rows left in file order, so their row numbers still name the same sequences.
 
 - The keys and commands moved from the README to [docs/keys.md](docs/keys.md) and
   [docs/commands.md](docs/commands.md). The README keeps installation, the quick start and the examples. The release
