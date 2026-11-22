@@ -9,7 +9,12 @@ import json
 from pathlib import Path
 
 KINDS = [("msa", "Alignment"), ("tree", "Tree"), ("bam", "BAM")]
-NAMES = {"seqpeeq": "seqpeeq", "jalview": "Jalview", "figtree": "FigTree", "igv": "IGV"}
+NAMES = {"seqpeeq": "seqpeeq", "termal": "termal", "tview": "samtools tview", "asciigenome": "ASCIIGenome",
+         "samtools": "samtools", "jalview": "Jalview", "figtree": "FigTree", "igv": "IGV"}
+# The columns of each table: seqpeeq, then the terminal tools, then the GUIs.
+ORDER = ["seqpeeq", "termal", "tview", "asciigenome", "jalview", "figtree", "igv"]
+# The tools run on Java, which grow toward the heap limit they are given.
+JAVA = {"jalview", "figtree", "igv", "asciigenome"}
 FILES = {
     "tiny.fa": "start-up: 5 × 20", "aln_1k.fa": "1,000 × 1,000", "aln_10k.fa": "10,000 × 10,000",
     "aln_30k.fa": "30,000 × 30,000", "aln_100k.fa": "100,000 × 30,000",
@@ -51,7 +56,7 @@ def _cell(result, timeout, notes, limit="16g"):
         return "–"
     if result["outcome"] == "ok":
         cell = f"{format_seconds(result['median_seconds'])} · {format_bytes(result['max_rss'])}"
-        if result["tool"] != "seqpeeq" and result["max_rss"] >= 0.95 * _heap_bytes(limit):
+        if result["tool"] in JAVA and result["max_rss"] >= 0.95 * _heap_bytes(limit):
             notes.append(f"{NAMES[result['tool']]} on `{result['file']}` reached its "
                          f"{limit.upper().replace('G', ' GB')} heap limit. A Java program's memory grows "
                          "toward the limit it is given, so this is not what it needs, and its time "
@@ -71,7 +76,7 @@ def tables(results, notes):
         rows = [r for r in results["results"] if r["kind"] == kind]
         if not rows:
             continue
-        tools = list(dict.fromkeys(r["tool"] for r in rows))
+        tools = sorted(dict.fromkeys(r["tool"] for r in rows), key=ORDER.index)
         files = list(dict.fromkeys(r["file"] for r in rows))
         out.append(f"| {title} | File | " + " | ".join(NAMES[t] for t in tools) + " |")
         out.append("|---|---:|" + "---:|" * len(tools))
@@ -102,12 +107,18 @@ def page(results, only):
     timeout = results.get("timeout_seconds", 600)
     memory = results.get("memory_limit", "16g").upper().replace("G", " GB")
     notes = []
+    termal = versions.get("termal", "").split()[:1]
+    termal_install = "cargo install termal-msa" + "".join(f"@{v}" for v in termal)
     lines = [
         "# Benchmarks",
         "",
-        "Comparing times for opening files. Jalview for alignments, FigTree for trees and IGV for BAMs."
-        " The files are random but",
-        "seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10× to 1,000× read depth.",
+        "Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal for",
+        "alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,",
+        "FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,",
+        "so trees are compared with FigTree only.",
+        "",
+        "The files are random but seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10×",
+        "to 1,000× read depth.",
         "",
         "## Machine",
         "",
@@ -120,36 +131,51 @@ def page(results, only):
         "**What is timed:** the wall time from launch until the tool has shown the file, and the peak",
         "memory (the largest resident size the operating system reports for the process).",
         "",
+        "The terminal tools run in a hidden 160 × 48 terminal, and the screen is read as it is drawn. Each",
+        "is timed until the file is on screen, then sent `q` to quit.",
+        "",
+        "- **seqpeeq**:",
+        "  - for an alignment or a tree, it is timed until the first screen of the file is drawn;",
+        f"  - a BAM opens on the whole contig, so it is sent `g {WINDOW_TEXT}` (the window IGV is sent to) and",
+        "    timed until that window's reads have been read and drawn.",
+        "- **termal** is timed until its first screen is drawn, down to the help line at its bottom. It",
+        "  draws nothing until it has read the whole file, so its time includes reading all of it.",
+        f"- **samtools tview** is opened at `{WINDOW_TEXT.split('-')[0]}`, the start of IGV's window, with the reference. It is",
+        "  timed until the reads under its ruler and reference are drawn. It shows one screen's width of",
+        "  bases, one to a column.",
+        f"- **ASCIIGenome** is opened on `{WINDOW_TEXT}` with the reference, and timed until the line naming",
+        "  that window is drawn under the reads. Its prompt takes commands, so it is sent `q` and Enter.",
+        "",
+        "The GUI programs are run in their script modes and timed until they exit:",
+        "",
         "- **Jalview** is run headless with `--open FILE --close`: it reads the alignment in and exits. It is",
         "  timed to its exit. It doesn't save an image, because `--image`",
         "  draws the whole alignment shrunk onto one picture, which is a lot of work.",
         "- **FigTree** draws the tree to a 1200 × 800 PNG (`-graphic PNG`) and exits. It is timed to its exit.",
         f"- **IGV** runs a batch script: load the reference and the BAM, go to `{WINDOW_TEXT}`, save a",
         "  snapshot, exit. It is timed to its exit.",
-        "- **seqpeeq** runs in a hidden 160 × 48 terminal, and the screen is read as it is drawn:",
-        "  - for an alignment or a tree, it is timed until the first screen of the file is drawn;",
-        f"  - a BAM opens on the whole contig, so it is sent `g {WINDOW_TEXT}` (the window IGV is sent to) and",
-        "    timed until that window's reads have been read and drawn.",
-        "",
-        "  It is then sent `q`.",
         "",
         "**Fairness:**",
         "",
         f"- **Memory:** each Java tool is given {memory} (`-Xmx`). Each runs on Java from its own conda",
-        "  environment: Jalview 2.11.5 needs Java below 12 and IGV 2.19 needs Java 21.",
+        "  environment: Jalview 2.11.5 needs Java below 12, IGV 2.19 needs Java 21 and ASCIIGenome 1.21",
+        "  needs Java 17 or later.",
         "- **IGV's settings:** IGV runs with its home folder set to a scratch folder, so it never reads or",
         "  writes anyone's `~/igv`. Its preferences there make the benchmark reference the default genome, so",
         "  it does not download a human genome when it starts.",
+        "- **ASCIIGenome** runs its jar on Java directly, not through Bioconda's wrapper script, so the",
+        f"  Java process is the one measured and the {memory} limit applies. Its home folder is a scratch folder",
+        "  too, so its command history never touches anyone's home.",
         "- **Jalview** is started by its own main class. The jar's entry point is a launcher that starts",
         "  Jalview in a second Java process and exits at once, so timing it would time only the launcher.",
         "  Any run that exits while processes it started are still running is recorded as a failure.",
         "- **Start-up:** the first row of each table is a tiny file, so it shows each tool's start-up cost,",
-        "  most of it the Java virtual machine's for the three Java tools.",
+        "  most of it the Java virtual machine's for the four Java tools.",
         "- **Repeats:** each number is the median of 3 runs, or of 1 run when the first takes over a minute.",
         f"- **Limits:** each run stops after {timeout / 60:g} minutes. If a tool runs out of memory, crashes",
         "  or hits the limit, that's recorded as such, with the reason in a note.",
-        "- **Build:** seqpeeq is built with `--release`, for the machine's own CPU. All four tools run",
-        "  natively.",
+        "- **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both for the",
+        "  machine's own CPU. All seven tools run natively.",
         "",
         "## Results",
         "",
@@ -173,6 +199,8 @@ def page(results, only):
         "```sh",
         "conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte",
         "conda env create -f bench/env-igv.yml    # IGV, with Java 21",
+        "conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later",
+        f'RUSTFLAGS="-C target-cpu=native" {termal_install} --locked --root bench/tools',
         "cargo build --release -p seqpeeq     # on Apple silicon, with an aarch64-apple-darwin toolchain",
         "PY=$(conda run -n seqpeeq-bench which python)",
         "$PY bench/make_data.py --out bench/data --only all          # about 4 GB",
@@ -183,7 +211,7 @@ def page(results, only):
         "    --out docs/benchmarks.md",
         "```",
         "",
-        "`run.py` looks for the two environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the",
+        "`run.py` looks for the three environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the",
         "folder that holds them if they are elsewhere.",
     ]
     if notes:

@@ -9,7 +9,7 @@ import report
 ROOT = Path(__file__).resolve().parent.parent
 
 MACHINE = {"chip": "Apple M9", "cores": 8, "memory_bytes": 24 * 2**30, "os": "macOS 99"}
-VERSIONS = {"seqpeeq": "0.1.0", "jalview": "2.11.5.1", "igv": "2.19.8", "figtree": "1.4.4"}
+VERSIONS = {"seqpeeq": "0.1.0", "termal": "2.1.0 (arm64)", "jalview": "2.11.5.1", "igv": "2.19.8", "figtree": "1.4.4"}
 
 
 def result(tool, kind, file, outcome, seconds, rss, detail=""):
@@ -77,6 +77,30 @@ class Page(unittest.TestCase):
         row = next(line for line in page.splitlines() if line.startswith("| 1,000 × 1,000"))
         self.assertIn("[^", row)
         self.assertIn("16 GB heap limit", page)
+
+    def test_columns_put_terminal_tools_before_the_gui(self):
+        page = report.page({**RESULTS, "results": [
+            result("jalview", "msa", "aln_1k.fa", "ok", 2.5, 412_000_000),
+            result("termal", "msa", "aln_1k.fa", "ok", 0.3, 20_000_000),
+            result("seqpeeq", "msa", "aln_1k.fa", "ok", 0.21, 9_000_000)]}, ONLY)
+        self.assertIn("| Alignment | File | seqpeeq | termal | Jalview |", page)
+
+    def test_only_java_tools_get_the_heap_note(self):
+        page = report.page({**RESULTS, "results": [
+            result("seqpeeq", "bam", "reads_10x.bam", "ok", 0.1, 9_000_000),
+            result("tview", "bam", "reads_10x.bam", "ok", 0.1, 16_400_000_000)]}, ONLY)
+        self.assertNotIn("heap limit", page)
+        page = report.page({**RESULTS, "results": [
+            result("seqpeeq", "bam", "reads_10x.bam", "ok", 0.1, 9_000_000),
+            result("asciigenome", "bam", "reads_10x.bam", "ok", 9.0, 16_400_000_000)]}, ONLY)
+        self.assertIn("ASCIIGenome on `reads_10x.bam` reached its 16 GB heap limit", page)
+
+    def test_page_describes_every_tool(self):
+        for bullet in ["- **termal**", "- **samtools tview**", "- **ASCIIGenome**"]:
+            self.assertIn(bullet, self.page)
+        self.assertIn("env-asciigenome.yml", self.page)
+        self.assertIn("cargo install termal-msa@", self.page)
+        self.assertIn("no interactive terminal tree viewer", self.page)
 
     def test_page_names_the_machine_and_versions(self):
         self.assertIn("Apple M9", self.page)

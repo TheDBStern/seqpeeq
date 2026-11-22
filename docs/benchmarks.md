@@ -1,7 +1,12 @@
 # Benchmarks
 
-Comparing times for opening files. Jalview for alignments, FigTree for trees and IGV for BAMs. The files are random but
-seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10× to 1,000× read depth.
+Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal for
+alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,
+FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,
+so trees are compared with FigTree only.
+
+The files are random but seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10×
+to 1,000× read depth.
 
 ## Machine
 
@@ -13,36 +18,51 @@ seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10× to 1,
 **What is timed:** the wall time from launch until the tool has shown the file, and the peak
 memory (the largest resident size the operating system reports for the process).
 
+The terminal tools run in a hidden 160 × 48 terminal, and the screen is read as it is drawn. Each
+is timed until the file is on screen, then sent `q` to quit.
+
+- **seqpeeq**:
+  - for an alignment or a tree, it is timed until the first screen of the file is drawn;
+  - a BAM opens on the whole contig, so it is sent `g c1:1-1000` (the window IGV is sent to) and
+    timed until that window's reads have been read and drawn.
+- **termal** is timed until its first screen is drawn, down to the help line at its bottom. It
+  draws nothing until it has read the whole file, so its time includes reading all of it.
+- **samtools tview** is opened at `c1:1`, the start of IGV's window, with the reference. It is
+  timed until the reads under its ruler and reference are drawn. It shows one screen's width of
+  bases, one to a column.
+- **ASCIIGenome** is opened on `c1:1-1000` with the reference, and timed until the line naming
+  that window is drawn under the reads. Its prompt takes commands, so it is sent `q` and Enter.
+
+The GUI programs are run in their script modes and timed until they exit:
+
 - **Jalview** is run headless with `--open FILE --close`: it reads the alignment in and exits. It is
   timed to its exit. It doesn't save an image, because `--image`
   draws the whole alignment shrunk onto one picture, which is a lot of work.
 - **FigTree** draws the tree to a 1200 × 800 PNG (`-graphic PNG`) and exits. It is timed to its exit.
 - **IGV** runs a batch script: load the reference and the BAM, go to `c1:1-1000`, save a
   snapshot, exit. It is timed to its exit.
-- **seqpeeq** runs in a hidden 160 × 48 terminal, and the screen is read as it is drawn:
-  - for an alignment or a tree, it is timed until the first screen of the file is drawn;
-  - a BAM opens on the whole contig, so it is sent `g c1:1-1000` (the window IGV is sent to) and
-    timed until that window's reads have been read and drawn.
-
-  It is then sent `q`.
 
 **Fairness:**
 
 - **Memory:** each Java tool is given 16 GB (`-Xmx`). Each runs on Java from its own conda
-  environment: Jalview 2.11.5 needs Java below 12 and IGV 2.19 needs Java 21.
+  environment: Jalview 2.11.5 needs Java below 12, IGV 2.19 needs Java 21 and ASCIIGenome 1.21
+  needs Java 17 or later.
 - **IGV's settings:** IGV runs with its home folder set to a scratch folder, so it never reads or
   writes anyone's `~/igv`. Its preferences there make the benchmark reference the default genome, so
   it does not download a human genome when it starts.
+- **ASCIIGenome** runs its jar on Java directly, not through Bioconda's wrapper script, so the
+  Java process is the one measured and the 16 GB limit applies. Its home folder is a scratch folder
+  too, so its command history never touches anyone's home.
 - **Jalview** is started by its own main class. The jar's entry point is a launcher that starts
   Jalview in a second Java process and exits at once, so timing it would time only the launcher.
   Any run that exits while processes it started are still running is recorded as a failure.
 - **Start-up:** the first row of each table is a tiny file, so it shows each tool's start-up cost,
-  most of it the Java virtual machine's for the three Java tools.
+  most of it the Java virtual machine's for the four Java tools.
 - **Repeats:** each number is the median of 3 runs, or of 1 run when the first takes over a minute.
 - **Limits:** each run stops after 10 minutes. If a tool runs out of memory, crashes
   or hits the limit, that's recorded as such, with the reason in a note.
-- **Build:** seqpeeq is built with `--release`, for the machine's own CPU. All four tools run
-  natively.
+- **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both for the
+  machine's own CPU. All seven tools run natively.
 
 ## Results
 
@@ -106,6 +126,8 @@ behind the zoomed-out overview.
 ```sh
 conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte
 conda env create -f bench/env-igv.yml    # IGV, with Java 21
+conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later
+RUSTFLAGS="-C target-cpu=native" cargo install termal-msa --locked --root bench/tools
 cargo build --release -p seqpeeq     # on Apple silicon, with an aarch64-apple-darwin toolchain
 PY=$(conda run -n seqpeeq-bench which python)
 $PY bench/make_data.py --out bench/data --only all          # about 4 GB
@@ -116,5 +138,5 @@ $PY bench/report.py --results bench/results.json --seqpeeq-only bench/seqpeeq_on
     --out docs/benchmarks.md
 ```
 
-`run.py` looks for the two environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the
+`run.py` looks for the three environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the
 folder that holds them if they are elsewhere.
