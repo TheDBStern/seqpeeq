@@ -242,7 +242,7 @@ mod tests {
     use super::*;
     use crate::Error;
     use crate::command::bam::BamCmd;
-    use crate::command::msa::{MsaCmd, RowSel};
+    use crate::command::msa::{MsaCmd, RowSel, SortKey};
     use crate::command::tree::{NodeSel, TreeCmd};
     use crate::ranges::Ranges;
     use proptest::prelude::*;
@@ -346,6 +346,7 @@ mod tests {
         "msa insert --row 3 --col 27 --seq AC",
         "msa insert --row 1 --col 1 --seq=-",
         "msa remove --row 3 --col 27 --count 2",
+        "msa sort --by identity",
         "tree extract --mrca A --mrca B --out sub.nwk --seqs sub.fa --wrap 60",
         "tree extract --out all.nwk",
         "tree prune --tip 'Homo sapiens (human)'",
@@ -430,6 +431,7 @@ mod tests {
             "msa delete-cols",
             "msa fill --cols 1 --with NN",
             "msa delete-cols --cols 0",
+            "msa sort --by name",
         ] {
             assert!(
                 matches!(Command::parse_line(line), Err(Error::Parse(_))),
@@ -497,6 +499,9 @@ mod tests {
         let fill_char = any::<char>().prop_filter("loggable", |c| !['\n', '\r', '\0'].contains(c));
         prop_oneof![
             row_sel().prop_map(|rows| MsaCmd::DeleteRows { rows }),
+            Just(MsaCmd::Sort {
+                by: SortKey::Identity
+            }),
             ranges().prop_map(|cols| MsaCmd::DeleteCols { cols }),
             (row_sel(), cols(), fill_char).prop_map(|(rows, cols, with)| MsaCmd::Fill {
                 rows,
@@ -678,9 +683,10 @@ mod tests {
             ("msa extract", "missing --out <OUT>"),
             ("msa delete-cols", "missing --cols <COLS>"),
             ("msa rename --regex a", "missing --replace <REPLACE>"),
+            ("msa sort", "missing --by <BY>"),
             (
                 "msa",
-                "msa needs one of: delete-rows, delete-cols, fill, overwrite, insert, remove, extract, rename",
+                "msa needs one of: delete-rows, delete-cols, fill, overwrite, insert, remove, extract, rename, sort",
             ),
         ] {
             let Err(Error::Parse(m)) = Command::parse_line(line) else {

@@ -45,6 +45,7 @@ names).
 | `msa remove --row ROW --col COL --count N` | Remove characters from one row at a column. The residues after them move left as far as the next gap, leaving gaps behind. |
 | `msa extract [rows] [--cols COLS] [--wrap N] --out FILE` | Write sequences, or parts of them, to a new FASTA file. `--wrap` sets residues per line; the default is one line per sequence. |
 | `msa rename [rows] --to NAME \| --regex RE --replace TEXT [--tree]` | Rename one sequence with `--to`, or many with `--regex` and `--replace`. `--tree` also renames the matching tips in the linked tree. |
+| `msa sort --by identity` | Reorder the sequences by identity to the consensus. Gaps count as mismatches. When the alignment is linked to one tree, the tree's clades are reordered instead and the rows follow the tree. |
 
 ## Trees
 
@@ -125,6 +126,9 @@ The options of `bam export-reads`:
   deleting the earlier outputs also works.
 - Paths are kept as they were typed, so relative paths are read from the folder you replay in. Copy the inputs
   there, or give full paths when you work.
+- Logs from seqpeeq 0.3.0 and earlier replay as they were written: a linked alignment's rows stay in file order
+  rather than following the tree, so row numbers name the same sequences. Newer logs say
+  `# rows follow linked trees` in their header.
 
 **If the log fails:** when the log can't be written (a full disk, e.g.), seqpeeq refuses further changes rather than
 make ones it can't record. `:rescue FILE` still saves the current alignment, so no work is lost.

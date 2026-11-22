@@ -11,8 +11,8 @@ use ratatui::layout::Size;
 use seqpeeq_core::bam::{BamDoc, BamSource, Coverage, Direction, Read, Stretch};
 use seqpeeq_core::{
     Alignment, Command, Conservation, Dataset, Error, Finished, HelpPage, Job, MsaCmd, NodeId,
-    NodeSel, Progress, Ranges, Session, Started, Summary, TreeCmd, TreeDoc, View, help_request,
-    summary_block,
+    NodeSel, Progress, Ranges, Session, SortKey, Started, Summary, TreeCmd, TreeDoc, View,
+    help_request, summary_block,
 };
 
 use crate::bam_view::{BamView, Loaded, Want};
@@ -710,7 +710,11 @@ impl App {
                 let Some(busy) = self.busy.take() else {
                     return;
                 };
-                let ended = self.session.finish(finished);
+                let stamps = self.order_stamps();
+                let mut ended = self.session.finish(finished);
+                if let (Ok(outcome), Some(dropped)) = (&mut ended, self.unselect_moved(&stamps)) {
+                    outcome.message.push_str(dropped);
+                }
                 // A queued open does not take the tab from a prompt, a
                 // pending fill, a question or a typed run: those were aimed
                 // at the file on screen and must land on it.
@@ -829,6 +833,45 @@ impl App {
             .iter()
             .filter_map(|d| Some((d.id, d.msa()?.revision())))
             .collect()
+    }
+
+    /// Each alignment's id and order stamp, to see whose rows moved.
+    fn order_stamps(&self) -> Vec<(u64, u64)> {
+        self.session
+            .datasets()
+            .iter()
+            .filter_map(|d| Some((d.id, d.msa()?.order_stamp())))
+            .collect()
+    }
+
+    /// Let go of the selection on every alignment whose rows were
+    /// reordered or deleted since `before` was taken: it named rows by
+    /// place. So do a rename prompt and a fill waiting for its character
+    /// on the visible tab; returns what the status line should add then.
+    fn unselect_moved(&mut self, before: &[(u64, u64)]) -> Option<&'static str> {
+        let visible = self.session.datasets().get(self.active).map(|d| d.id);
+        let mut dropped = None;
+        for (id, stamp) in self.order_stamps() {
+            let moved = before.iter().any(|&(was, old)| was == id && old != stamp);
+            if !moved {
+                continue;
+            }
+            if let Some(view) = self.views.get_mut(&id) {
+                view.clear_selection();
+            }
+            if Some(id) != visible {
+                continue;
+            }
+            dropped = match &self.mode {
+                Mode::Prompt(prompt) if matches!(prompt.kind, PromptKind::Rename { .. }) => {
+                    Some("; rows moved, so the rename was dropped")
+                }
+                Mode::FillChar => Some("; rows moved, so the fill was dropped"),
+                _ => continue,
+            };
+            self.mode = Mode::Normal;
+        }
+        dropped
     }
 
     fn view_mut(&mut self) -> Option<&mut MsaView> {
@@ -1724,6 +1767,11 @@ impl App {
             KeyCode::Char('w') => return self.start_save(),
             KeyCode::Char('u') => return self.act(Command::Undo),
             KeyCode::Char('U') => return self.act(Command::Redo),
+            KeyCode::Char('s') => {
+                return self.act(Command::Msa(MsaCmd::Sort {
+                    by: SortKey::Identity,
+                }));
+            }
             KeyCode::Char('r') => {
                 let Some((alignment, view)) = self.alignment() else {
                     return;
@@ -2434,8 +2482,12 @@ impl App {
                 | Command::Msa(MsaCmd::DeleteRows { .. } | MsaCmd::DeleteCols { .. })
         );
         let revisions = self.alignment_revisions();
+        let stamps = self.order_stamps();
         match self.session.start(cmd)? {
-            Started::Done(outcome) => {
+            Started::Done(mut outcome) => {
+                if let Some(dropped) = self.unselect_moved(&stamps) {
+                    outcome.message.push_str(dropped);
+                }
                 if unselects && let Some(view) = self.view_mut() {
                     view.clear_selection();
                 }
@@ -2803,6 +2855,143 @@ mod tests {
     }
 
     const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+    /// Scores r1 75%, r2 75%, r3 100%; its tree's tip order is r2, r3, r1.
+    const SORTABLE: &str = ">r1\nac-AC\n>r2\n-CGAG\n>r3\nACGAT\n";
+    const SORTABLE_TREE: &str = "((r2,r3),r1);";
+
+    /// The names of the visible alignment's rows, top to bottom.
+    fn row_names(app: &App) -> Vec<String> {
+        let (alignment, _) = app.alignment().unwrap();
+        (0..alignment.rows())
+            .map(|row| alignment.name(row).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn s_sorts_the_rows() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert_eq!(last(&app), "msa sort --by identity");
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"]);
+    }
+
+    #[test]
+    fn a_sort_clears_the_selection() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('V'));
+        assert!(view(&app).has_selection());
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert!(!view(&app).has_selection());
+    }
+
+    /// Press `s`, then `keys` while the sort runs, then let it finish.
+    fn sort_under(keys: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        type_str(&mut app, keys);
+        settle(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"]);
+        (app, dir)
+    }
+
+    #[test]
+    fn a_rename_aimed_at_a_moved_row_is_dropped() {
+        let (mut app, _dir) = sort_under("rx");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status
+                .ends_with("; rows moved, so the rename was dropped"),
+            "{}",
+            app.status
+        );
+        enter(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r1", "r2"], "nothing renamed");
+    }
+
+    #[test]
+    fn typing_cannot_start_while_a_sort_runs() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('s'));
+        app.handle_event(&key('R'));
+        assert!(
+            app.status.starts_with("error: still busy: sorting"),
+            "{}",
+            app.status
+        );
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_fill_waiting_for_its_character_is_dropped_when_rows_move() {
+        let (app, _dir) = sort_under("f");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status
+                .ends_with("; rows moved, so the fill was dropped"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn s_on_an_unaligned_file_says_why() {
+        let (mut app, _dir) = with_text(">a\nACGT\n>b\nAC\n");
+        let before = app.session.history().len();
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert!(
+            app.status
+                .starts_with("error: sorting needs every sequence to be the same length"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.session.history().len(), before);
+    }
+
+    #[test]
+    fn a_ladderize_clears_the_linked_alignments_selection() {
+        let (mut app, dir) = with_text(SORTABLE);
+        let tree = dir.path().join("t.nwk");
+        fs::write(&tree, SORTABLE_TREE).unwrap();
+        type_str(&mut app, &format!(":open {}", tree.display()));
+        enter(&mut app);
+        app.focus(0);
+        app.handle_event(&key('V'));
+        assert!(view(&app).has_selection());
+        app.focus(1);
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        app.focus(0);
+        assert_eq!(row_names(&app), ["r1", "r2", "r3"]);
+        assert!(!view(&app).has_selection());
+    }
+
+    #[test]
+    fn a_fill_keeps_the_selection() {
+        let (mut app, _dir) = with_text(SORTABLE);
+        app.handle_event(&key('V'));
+        type_str(&mut app, ":msa fill --rows 1 --with N");
+        enter(&mut app);
+        assert_eq!(last(&app), "msa fill --rows 1 --with N");
+        assert!(view(&app).has_selection());
+    }
+
+    #[test]
+    fn sorting_a_linked_alignment_clears_its_selection() {
+        let (mut app, dir) = with_text(SORTABLE);
+        let tree = dir.path().join("t.nwk");
+        fs::write(&tree, SORTABLE_TREE).unwrap();
+        type_str(&mut app, &format!(":open {}", tree.display()));
+        enter(&mut app);
+        app.focus(0);
+        app.handle_event(&key('V'));
+        app.handle_event(&key('s'));
+        settle(&mut app);
+        assert_eq!(row_names(&app), ["r3", "r2", "r1"]);
+        assert!(!view(&app).has_selection());
+    }
 
     /// An app with two ten-column alignments open; the second is visible.
     fn with_two_alignments() -> (App, TempDir) {
@@ -5740,6 +5929,112 @@ mod tests {
             json(&tree)
         );
         fs::write(&out, text).unwrap();
+    }
+
+    /// Time `msa sort` and the linked re-align on the benchmark files. The
+    /// trees' tips are renamed copies (`t123` → `s000123`) so they match
+    /// the alignment's names.
+    #[test]
+    #[ignore = "timing on bench/data; run with SEQPEEQ_BENCH_DATA=… SEQPEEQ_SORT_TREES=… SEQPEEQ_SORT_ALN=… cargo test --release -p seqpeeq -- --ignored sort_timings"]
+    fn sort_timings_on_the_benchmark_files() {
+        use std::time::Instant;
+        let data = PathBuf::from(std::env::var("SEQPEEQ_BENCH_DATA").expect("SEQPEEQ_BENCH_DATA"));
+        let trees = PathBuf::from(std::env::var("SEQPEEQ_SORT_TREES").expect("SEQPEEQ_SORT_TREES"));
+        fn time<T>(what: &str, step: impl FnOnce() -> T) -> T {
+            let started = Instant::now();
+            let out = step();
+            eprintln!("{what}: {:.4} s", started.elapsed().as_secs_f64());
+            out
+        }
+        /// Start `cmd`. A quick one is timed whole; a job is timed in two
+        /// parts: its work (on the worker in the app) and taking in its
+        /// result (on the interface thread).
+        fn run(app: &mut App, what: &str, cmd: Command) {
+            app.enqueue(cmd);
+            time(&format!("{what}: quick part"), || app.pump());
+            let Some(at) = app.outbox.iter().position(|r| matches!(r, Request::Run(_))) else {
+                eprintln!("  -> {}", app.status);
+                return;
+            };
+            let Request::Run(job) = app.outbox.remove(at) else {
+                unreachable!()
+            };
+            let finished = time(&format!("{what}: job, on the worker"), || job.run());
+            time(&format!("{what}: finish, on the interface thread"), || {
+                app.handle_done(Done::Command(finished))
+            });
+            eprintln!("  -> {}", app.status);
+        }
+        let line = |text: &str| Command::parse_line(text).unwrap();
+        // bench/make_data.py's residues are uniformly random, so its
+        // alignment has no consensus to sort by: SEQPEEQ_SORT_ALN names one
+        // of the same size that has.
+        let aln = std::env::var("SEQPEEQ_SORT_ALN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data.join("aln_100k.fa"));
+        let mut app = App::new(Session::new(None));
+        app.resize(Size::new(200, 60));
+        let open = |path: &Path| Command::Open {
+            path: path.to_path_buf(),
+            kind: None,
+        };
+        run(&mut app, "open the alignment", open(&aln));
+        app.outbox.clear();
+        run(&mut app, "sort, unlinked", line("msa sort --by identity"));
+        assert!(app.status.starts_with("sorted "), "{}", app.status);
+        run(&mut app, "undo the sort", line("undo"));
+        run(
+            &mut app,
+            "open tree_100k_s.nwk, auto-link and re-align",
+            open(&trees.join("tree_100k_s.nwk")),
+        );
+        assert!(app.status.contains("rows follow"), "{}", app.status);
+        run(
+            &mut app,
+            "ladderize 100k tree + re-align",
+            line("tree ladderize"),
+        );
+        run(&mut app, "use the alignment", line("use 1"));
+        run(&mut app, "sort, linked", line("msa sort --by identity"));
+        assert!(app.status.contains("clades to match"), "{}", app.status);
+        run(&mut app, "use the tree", line("use 2"));
+        run(&mut app, "close the 100k tree", line("close"));
+        app.outbox.clear();
+        run(
+            &mut app,
+            "open tree_1m_s.nwk",
+            open(&trees.join("tree_1m_s.nwk")),
+        );
+        app.outbox.clear();
+        run(
+            &mut app,
+            "link the 1m tree + re-align",
+            line(&format!("tree link {}", aln.display())),
+        );
+        assert!(app.status.contains("rows follow"), "{}", app.status);
+        run(
+            &mut app,
+            "ladderize 1m tree + re-align",
+            line("tree ladderize"),
+        );
+        run(&mut app, "unlink", line("tree unlink"));
+        run(
+            &mut app,
+            "ladderize 1m tree, unlinked (baseline)",
+            line("tree ladderize --reverse"),
+        );
+        run(
+            &mut app,
+            "relink the 1m tree + re-align",
+            line(&format!("tree link {}", aln.display())),
+        );
+        run(&mut app, "use the alignment", line("use 1"));
+        run(
+            &mut app,
+            "sort, linked to the 1m tree",
+            line("msa sort --by identity"),
+        );
+        assert!(app.status.contains("clades to match"), "{}", app.status);
     }
 
     #[test]

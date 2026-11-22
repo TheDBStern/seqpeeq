@@ -202,6 +202,52 @@ impl Tree {
         }
     }
 
+    /// Order every node's children by the mean score of the tips below
+    /// them, highest first; children with no scored tip go last. Ties keep
+    /// their order. `tip_scores` is indexed by node number. Returns whether
+    /// any children moved.
+    pub(crate) fn sort_clades(&mut self, tip_scores: &[Option<f64>]) -> bool {
+        let order = self.preorder();
+        // The sum and count of the scores below each node, leaves first.
+        let mut below = vec![(0.0, 0u32); self.node_slots()];
+        for &n in order.iter().rev() {
+            if let Some(Some(score)) = tip_scores.get(n as usize)
+                && self.is_tip(n)
+            {
+                below[n as usize] = (*score, 1);
+            }
+            if let Some(parent) = self.parent(n) {
+                let (sum, count) = below[n as usize];
+                let up = &mut below[parent as usize];
+                *up = (up.0 + sum, up.1 + count);
+            }
+        }
+        let mean = |c: NodeId| {
+            let (sum, count) = below[c as usize];
+            (count > 0).then(|| sum / count as f64)
+        };
+        // Higher means first, then children with no scored tip.
+        let before = |a: NodeId, b: NodeId| match (mean(a), mean(b)) {
+            (Some(a), Some(b)) => b.total_cmp(&a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        let mut children = Vec::new();
+        let mut moved = false;
+        for n in order {
+            children.clear();
+            children.extend(self.children(n));
+            if children.len() < 2 || children.is_sorted_by(|&a, &b| before(a, b).is_le()) {
+                continue;
+            }
+            moved = true;
+            children.sort_by(|&a, &b| before(a, b));
+            self.set_children(n, &children);
+        }
+        moved
+    }
+
     /// Refuse renames that would give a name to more than one tip. Only
     /// names given by the rename count: names already shared stay allowed.
     fn check_clashes(&self, renames: &[(NodeId, String)]) -> Result<()> {
@@ -437,6 +483,41 @@ pub(crate) mod tests {
         const T: &str = "((A,B),C,(D,(E,F)));";
         assert_eq!(after(T, |t| t.ladderize(false)), "(C,(A,B),(D,(E,F)));\n");
         assert_eq!(after(T, |t| t.ladderize(true)), "(((E,F),D),(A,B),C);\n");
+    }
+
+    /// The tips of `text` after sorting its clades by these tip scores.
+    fn sorted_tips(text: &str, scores: &[(&str, f64)]) -> Vec<String> {
+        let mut t = tree(text);
+        let mut by_node = vec![None; t.node_slots()];
+        for &(name, score) in scores {
+            by_node[tip(&t, name) as usize] = Some(score);
+        }
+        let moved = t.sort_clades(&by_node);
+        let tips: Vec<String> = names(&t).into_iter().map(String::from).collect();
+        assert_eq!(
+            moved,
+            tips != names(&tree(text)),
+            "moved says whether tips moved"
+        );
+        tips
+    }
+
+    #[test]
+    fn sort_clades_puts_the_higher_mean_first() {
+        let scores = [("a", 0.5), ("b", 0.5), ("c", 0.1), ("d", 0.9)];
+        assert_eq!(sorted_tips("((a,b),(c,d));", &scores), ["a", "b", "d", "c"]);
+    }
+
+    #[test]
+    fn a_higher_clade_moves_up() {
+        let scores = [("a", 0.2), ("b", 0.2), ("c", 0.9)];
+        assert_eq!(sorted_tips("((a,b),c);", &scores), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn unscored_clades_go_last() {
+        let scores = [("a", 0.1), ("b", 0.1)];
+        assert_eq!(sorted_tips("(x,(a,b));", &scores), ["a", "b", "x"]);
     }
 
     #[test]

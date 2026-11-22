@@ -4,6 +4,7 @@ pub(crate) mod conservation;
 pub(crate) mod layer;
 pub(crate) mod overview;
 pub(crate) mod shift;
+pub(crate) mod sort;
 pub(crate) mod source;
 pub(crate) mod write;
 
@@ -325,6 +326,10 @@ impl Alignment {
             } => self
                 .plan_extract(rows, cols.as_ref(), *wrap, out)?
                 .run(&Progress::new()),
+            MsaCmd::Sort { by } => {
+                let sorted = self.plan_sort(*by)?.run(&Progress::new())?;
+                Ok(self.commit_sort(&sorted))
+            }
         }
     }
 
@@ -457,6 +462,51 @@ impl Alignment {
         self.edit(step, |layer, source| layer.delete_rows(source, &ranges));
     }
 
+    /// Put the rows in `order` (current rows, each once) without an undo
+    /// step: the rows of a linked alignment following its tree. Returns
+    /// whether the order changed; the revision moves only if it did.
+    pub(crate) fn follow(&mut self, order: &[u32]) -> bool {
+        if order
+            .iter()
+            .enumerate()
+            .all(|(at, &row)| at == row as usize)
+        {
+            return false;
+        }
+        let layer = &mut self.view.layer;
+        layer.reorder(order);
+        layer.revision = self.next_revision;
+        layer.order = self.next_revision;
+        self.next_revision += 1;
+        // Undo and redo put back whole states, rows and all: give the
+        // states kept for them the same order, by record, so that the
+        // order holds even once the rows no longer follow a tree.
+        let mut rank = vec![u32::MAX; self.view.source.rows()];
+        for at in 0..self.view.layer.rows() {
+            rank[self.view.layer.id(at)] = at as u32;
+        }
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if step.state.rank_rows(&rank) {
+                step.state.revision = self.next_revision;
+                step.state.order = self.next_revision;
+                self.next_revision += 1;
+            }
+        }
+        true
+    }
+
+    /// A number that changes whenever the rows are reordered or deleted,
+    /// undo and redo included, and at no other time.
+    pub fn order_stamp(&self) -> u64 {
+        self.view.layer.order
+    }
+
+    /// A number that changes whenever a sequence is renamed, undo and redo
+    /// included, and at no other time.
+    pub fn name_stamp(&self) -> u64 {
+        self.view.layer.naming
+    }
+
     /// The edits as they are now, for putting back with [`Alignment::restore`].
     pub(crate) fn snapshot(&self) -> Layer {
         self.view.layer.clone()
@@ -525,6 +575,12 @@ impl Alignment {
     fn edit(&mut self, name: &'static str, change: impl FnOnce(&mut Layer, &Source)) {
         let before = self.view.layer.clone();
         change(&mut self.view.layer, &self.view.source);
+        if !self.view.layer.same_rows(&before) {
+            self.view.layer.order = self.next_revision;
+        }
+        if !self.view.layer.same_names(&before) {
+            self.view.layer.naming = self.next_revision;
+        }
         self.view.layer.revision = self.next_revision;
         self.next_revision += 1;
         self.undo.push(Step::new(before, name));
@@ -961,6 +1017,12 @@ pub(crate) mod testing {
 
     /// Three sequences of ten columns, used throughout the tests.
     pub(crate) const TRIO: &str = ">s1\nACGT-ACGTA\n>s2\nACGTTACG-A\n>s3 third one\nAC--TACGTA\n";
+
+    /// Column 5 has no majority residue; r1 is partly lower case and has a
+    /// gap where the consensus has G. Scores: r1 75%, r2 75%, r3 100%.
+    pub(crate) const SORTABLE: &str = ">r1\nac-AC\n>r2\n-CGAG\n>r3\nACGAT\n";
+    /// Its tree: tip order r2, r3, r1.
+    pub(crate) const SORTABLE_TREE: &str = "((r2,r3),r1);";
 
     /// Apply `msa <text>`.
     pub(crate) fn run(aln: &mut Alignment, text: &str) -> Result<Applied> {

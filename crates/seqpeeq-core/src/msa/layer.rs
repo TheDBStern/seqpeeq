@@ -66,6 +66,10 @@ pub(crate) struct Layer {
     added: u32,
     /// The number of this state, given by the alignment that owns it.
     pub(crate) revision: u64,
+    /// The revision at which the rows were last reordered or deleted.
+    pub(crate) order: u64,
+    /// The revision at which a name was last changed.
+    pub(crate) naming: u64,
 }
 
 impl Layer {
@@ -81,6 +85,8 @@ impl Layer {
             fills: Vec::new(),
             added: 0,
             revision: 0,
+            order: 0,
+            naming: 0,
         };
         if layer.aligned {
             layer.set_cols(whole(source.width()));
@@ -178,6 +184,38 @@ impl Layer {
                 }
             }
         }
+    }
+
+    /// Whether `other` has the very same rows, in the same order: true for
+    /// a state whose edit left the rows alone.
+    pub(crate) fn same_rows(&self, other: &Layer) -> bool {
+        Arc::ptr_eq(&self.rows, &other.rows)
+    }
+
+    /// Whether `other` has the very same names: true for a state whose edit
+    /// renamed nothing.
+    pub(crate) fn same_names(&self, other: &Layer) -> bool {
+        Arc::ptr_eq(&self.names, &other.names)
+    }
+
+    /// Put the rows in a new order: `order` lists current rows, each once.
+    pub(crate) fn reorder(&mut self, order: &[u32]) {
+        debug_assert_eq!(order.len(), self.rows.len());
+        self.rows = Arc::new(order.iter().map(|&row| self.rows[row as usize]).collect());
+    }
+
+    /// Put the rows in the order of `rank`, indexed by record id; rows
+    /// whose record has no rank (`u32::MAX`) go last. Ties keep their
+    /// order. Returns whether any row moved.
+    pub(crate) fn rank_rows(&mut self, rank: &[u32]) -> bool {
+        let key = |id: &u32| rank.get(*id as usize).copied().unwrap_or(u32::MAX);
+        if self.rows.is_sorted_by_key(key) {
+            return false;
+        }
+        let mut rows = self.rows.to_vec();
+        rows.sort_by_key(key);
+        self.rows = Arc::new(rows);
+        true
     }
 
     pub(crate) fn delete_rows(&mut self, source: &Source, rows: &Ranges) {

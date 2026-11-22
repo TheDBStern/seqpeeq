@@ -141,6 +141,15 @@ pub const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        path: "msa sort",
+        syntax: "msa sort --by identity",
+        about: "Reorder the sequences by identity to the consensus. Gaps count as mismatches.",
+        notes: &[
+            "When the alignment is linked to one tree, the tree's clades are reordered \
+                  instead and the rows follow the tree.",
+        ],
+    },
+    Entry {
         path: "tree extract",
         syntax: "tree extract [clade] --out FILE [--seqs FILE] [--wrap N]",
         about: "Write a clade, or the whole tree with no clade given, to a new file. With --seqs, \

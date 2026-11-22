@@ -15,15 +15,18 @@ Edit      d delete/gap   f fill   e extract   r rename
           i insert (shifts)   R type over   Esc stop
 Zoom      - out   + in   z view whole alignment
           u U undo redo   w save the whole alignment
-          c cycle colors   [ ] adjust name width
+          c cycle colors  [ ] adjust name width  s sort
           msa delete-rows  delete-cols  fill  overwrite
-          msa insert  remove  extract  rename
+          msa insert  remove  extract  rename  sort
 ```
 `c` cycles through three color modes:
 
 - **shade the majority base** (the default)
 - **color each base** by its letter
 - **no color**
+
+`s` sorts the rows by identity to the consensus (`msa sort --by identity`). On an alignment
+linked to a tree, it reorders the clades and the rows match the tree.
 
 ## Tree
 
@@ -48,8 +51,9 @@ own when you open the second file, or with `p` or `:tree link`. Once linked:
 - the alignment's rows follow the tree's order
 - pruning a clade in the tree also deletes its sequences
 - renaming a tip or a sequence renames it in both
+- sorting the alignment (`s`) reorders the tree's clades to match
 
-`:tree unlink` undoes the link.
+`:tree unlink` undoes the link; the rows keep their order.
 
 ## BAM
 

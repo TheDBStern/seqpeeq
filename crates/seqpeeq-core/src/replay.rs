@@ -1,5 +1,6 @@
 //! Re-running a session log without an interface.
 
+use crate::log::FOLLOWS_TREES;
 use crate::{Command, Error, Result, Session};
 
 /// What a replay did.
@@ -22,9 +23,24 @@ pub struct ReplayReport {
 /// its `# input … size=N` comment is checked against the file's current size.
 /// Only size is compared, because copying a file between machines changes its
 /// modification time.
+///
+/// A log whose header lacks [`FOLLOWS_TREES`] was written before a linked
+/// alignment's rows followed their tree, so they do not follow it in the
+/// replay either: its row numbers then name the sequences they named when
+/// it was written. Scripts with no header follow the rule of today.
 pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let header = || {
+        lines
+            .iter()
+            .take_while(|line| line.is_empty() || line.starts_with('#'))
+    };
+    if header().any(|line| line.starts_with("# seqpeeq "))
+        && !header().any(|&line| line == FOLLOWS_TREES)
+    {
+        session.set_follow_trees(false);
+    }
     let at_line = |index: usize| {
         move |cause| Error::Replay {
             line: index + 1,
@@ -109,6 +125,61 @@ mod tests {
         let path = dir.path().join("a.fa");
         fs::write(&path, crate::msa::testing::TRIO).unwrap();
         (dir, path)
+    }
+
+    /// Replay `header`, then: open the alignment and its tree, and delete
+    /// row 1. Returns the names left.
+    fn linked_replay(header: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let (fa, nwk) = (dir.path().join("s.fa"), dir.path().join("t.nwk"));
+        fs::write(&fa, crate::msa::testing::SORTABLE).unwrap();
+        fs::write(&nwk, crate::msa::testing::SORTABLE_TREE).unwrap();
+        let mut s = Session::new(None);
+        let text = format!(
+            "{header}open {}\nopen {}\nuse 1\nmsa delete-rows --rows 1\n",
+            fa.display(),
+            nwk.display()
+        );
+        replay(&text, &mut s).unwrap();
+        let alignment = s.datasets()[0].msa().unwrap();
+        (0..alignment.rows())
+            .map(|row| alignment.name(row).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn older_logs_keep_rows_in_file_order() {
+        let old = "# seqpeeq 0.3.0\n# started 2026-11-01T10:00:00-08:00\n# cwd /x\n";
+        assert_eq!(
+            linked_replay(old),
+            ["r2", "r3"],
+            "r1 was row 1 in file order"
+        );
+    }
+
+    #[test]
+    fn newer_logs_and_scripts_follow_the_tree() {
+        let new = "# seqpeeq 0.3.0\n# started 2026-11-23T10:00:00-08:00\n# cwd /x\n\
+                   # rows follow linked trees\n";
+        assert_eq!(
+            linked_replay(new),
+            ["r3", "r1"],
+            "r2 was row 1 in tree order"
+        );
+        assert_eq!(linked_replay(""), ["r3", "r1"], "a script with no header");
+    }
+
+    #[test]
+    fn replaying_an_older_log_writes_an_older_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("again.log");
+        let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+        let fa = dir.path().join("s.fa");
+        fs::write(&fa, crate::msa::testing::SORTABLE).unwrap();
+        replay(&format!("# seqpeeq 0.3.0\nopen {}\n", fa.display()), &mut s).unwrap();
+        drop(s);
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(!text.contains(FOLLOWS_TREES), "{text}");
     }
 
     #[test]
