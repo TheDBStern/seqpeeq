@@ -50,7 +50,7 @@ WINDOW_SCALE = 10
 LEFT_BEHIND_GRACE = 0.5
 
 # Which tools are timed on which kind of file.
-TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "igv"]}
+TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "igv"]}
 FILES = {
     "tiny": [("msa", "tiny.fa"), ("tree", "tiny.nwk"), ("bam", "tiny.bam")],
     "small": [("msa", "aln_1k.fa"), ("tree", "tree_1k.nwk"), ("bam", "reads_10x.bam")],
@@ -240,6 +240,14 @@ def _window_shown(screen):
             and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 
 
+def tview_ready(screen) -> bool:
+    """When samtools tview has drawn the window: its ruler, the reference
+    under it, and reads below those."""
+    lines = screen.splitlines()
+    return (len(lines) > 2 and lines[0][:1].isdigit() and lines[1].strip() != ""
+            and any(line.strip() for line in lines[2:]))
+
+
 def _java(env):
     return str(env / "lib" / "jvm" / "bin" / "java")
 
@@ -255,6 +263,9 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
     scratch.mkdir(parents=True, exist_ok=True)
     if tool == "seqpeeq":
         return [str(SEQPEEQ), "--no-log", str(file)]
+    if tool == "tview":
+        start = WINDOW.split("-")[0]
+        return [str(BENCH / "bin" / "samtools"), "tview", "-p", start, str(file), str(_reference(file))]
     if tool == "figtree":
         jar = _jar("figtree-*/figtree.jar")
         return [_java(BENCH), MEMORY, "-jar", str(jar), "-graphic", "PNG", "-width", "1200",
@@ -285,7 +296,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return seqpeeq_steps(kind) if tool == "seqpeeq" else None
+    return {"seqpeeq": seqpeeq_steps(kind), "tview": tview_ready}.get(tool)
 
 
 def _output(argv):
@@ -375,7 +386,7 @@ def main(argv=None):
     args.add_argument("--data", required=True, type=Path)
     args.add_argument("--out", required=True, type=Path)
     args.add_argument("--only", choices=list(FILES), default="all")
-    args.add_argument("--tools", nargs="*", default=["seqpeeq", "igv", "figtree", "jalview"])
+    args.add_argument("--tools", nargs="*", default=["seqpeeq", "tview", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
     args = args.parse_args(argv)

@@ -80,7 +80,22 @@ class Build(unittest.TestCase):
             self.assertEqual(run.missing_tools(["asciigenome", "tview"]), ["asciigenome"])
 
 
+# samtools tview on tiny.bam at c1:1, as captured: ruler, reference, reads.
+TVIEW_READS = """\
+1         11        21        31        41        51        61
+CGTTAATTACTCCTCCGGAATTTGTCCTACACTACCTAGCATACCCATGTAGCGTCGACTCGCAC
+                                                            ..
+                                                            ..
+"""
+
+
 class Ready(unittest.TestCase):
+    def test_tview_ready_needs_the_reads(self):
+        self.assertFalse(run.tview_ready(""))
+        # The ruler and the reference alone: no reads drawn yet.
+        self.assertFalse(run.tview_ready("\n".join(TVIEW_READS.splitlines()[:2])))
+        self.assertTrue(run.tview_ready(TVIEW_READS))
+
     def test_bam_ready_needs_the_reads_drawn(self):
         ready = run.seqpeeq_ready("bam")
         self.assertFalse(ready("t.bam\nopened t.bam (bam, 1 contig)\nc1:1"))
@@ -108,11 +123,17 @@ class Tools(unittest.TestCase):
         path.mkdir(exist_ok=True)
         return path
 
+    def mid_bam(self):
+        """A 300 kb BAM, which opens zoomed out past its reads."""
+        bam = self.dir / "mid.bam"
+        if not bam.exists():
+            make_data.write_bam(self.dir, depth=1, seed=1, length=300_000, ref="ref.fa", name="mid.bam")
+        return bam
+
     def test_seqpeeq_shows_the_reads_of_the_igv_window(self):
         # 300 kb opens zoomed out past the reads, so seqpeeq must be taken
         # to the window IGV is sent to before its reads are drawn.
-        bam = make_data.write_bam(self.dir, depth=1, seed=1, length=300_000,
-                                  ref="mid_ref.fa", name="mid.bam")
+        bam = self.mid_bam()
         argv = run.commands("seqpeeq", bam, self.scratch("s"))
         got = run.measure(argv, timeout=30, ready=run.seqpeeq_steps("bam"))
         self.assertEqual(got.outcome, "ok", got.detail)
@@ -128,6 +149,14 @@ class Tools(unittest.TestCase):
         self.assertFalse(shown("c1:1  mean depth 2.0  20 bp a column"))
         self.assertTrue(shown("c1:1  mean depth 2.0  10 bp a column"))
         self.assertTrue(shown("c1:1  depth 2  1 bp a column"))
+
+    def test_tview_shows_the_window(self):
+        bam = self.mid_bam()
+        argv = run.commands("tview", bam, self.scratch("tv"))
+        self.assertIn("c1:1", argv)
+        self.assertEqual(argv[-1], str(run._reference(bam).resolve()))
+        got = run.measure(argv, timeout=30, ready=run._ready_for("tview", "bam"))
+        self.assertEqual(got.outcome, "ok", got.detail)
 
     def test_jalview_never_uses_the_home_folder(self):
         props = Path.home() / ".jalview_properties"
