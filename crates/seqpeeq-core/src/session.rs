@@ -10,7 +10,7 @@ use crate::bam::{BamDoc, BamExport, Contig, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::sort::{Sorted, Sorting};
-use crate::msa::{Alignment, Applied, Extraction, NameMatch, count, write};
+use crate::msa::{Alignment, Applied, Extraction, NameMatch, count, sequence_id, write};
 use crate::pair::Pair;
 use crate::progress::Progress;
 use crate::tree::newick::save_newick;
@@ -1293,23 +1293,55 @@ impl Session {
         // A tip whose name other tips share is renamed with them, as every
         // row carrying the name is, so no tip loses its sequence.
         let mut shared = None;
+        let names = NameMatch::new(alignment);
         let rows = match (to, regex, replace) {
             (Some(to), _, _) => {
                 let old = doc.tip_name(at)?;
-                let map = HashMap::from([(old.clone(), to.trim().to_string())]);
-                let rows = alignment.renames_for(&map);
+                let to = to.trim();
+                let rows = names
+                    .rows(&old)
+                    .iter()
+                    .map(|&row| (row, names.renamed(row, &old, to)))
+                    .collect();
                 if !old.is_empty() && doc.tips_named(&old) > 1 {
-                    shared = Some((old, map));
+                    shared = Some((old.clone(), HashMap::from([(old, to.to_string())])));
                 }
                 rows
             }
             (None, Some(pattern), Some(replace)) if at.is_empty() => {
-                alignment.regex_renames(pattern, replace)?
+                // A row a tip matches by ID has the pattern replaced in its
+                // ID, as the tip has, and keeps its description.
+                let tree = doc.tree();
+                let by_id: HashMap<usize, &str> = tree
+                    .tips()
+                    .into_iter()
+                    .filter_map(|n| tree.label(n))
+                    .flat_map(|tip| names.rows(tip).iter().map(move |&row| (row, tip)))
+                    .filter(|&(row, _)| names.by_id(row))
+                    .collect();
+                let mut rows: Vec<(usize, String)> = alignment
+                    .regex_renames(pattern, replace)?
+                    .into_iter()
+                    .filter(|(row, _)| !by_id.contains_key(row))
+                    .collect();
+                let re = crate::msa::regex(pattern)?;
+                for (&row, &tip) in &by_id {
+                    let new = re.replace_all(tip, replace);
+                    let new = new.trim();
+                    if !new.is_empty() && new != tip {
+                        rows.push((row, names.renamed(row, tip, new)));
+                    }
+                }
+                rows.sort_unstable();
+                rows
             }
             // The tree's own rename says what is wrong.
             _ => return self.current_tree()?.apply(cmd),
         };
-        if let Some(name) = alignment.name_clash(&rows) {
+        if let Some(name) = alignment
+            .name_clash(&rows)
+            .or_else(|| names.id_clash(&rows))
+        {
             return Err(row_clash(&aln_name, &name));
         }
         let mut applied = match shared {
@@ -1389,8 +1421,28 @@ impl Session {
             to.as_deref(),
             regex.as_deref().zip(replace.as_deref()),
         )?;
-        let plan = alignment.renames_for(&map);
-        if let Some(name) = alignment.name_clash(&plan) {
+        let mut plan = alignment.renames_for(&map);
+        // A row its tip matches by ID: `--to` replaces its ID and keeps its
+        // description, and the tip takes the row's new ID.
+        let names = NameMatch::new(alignment);
+        let doc = self.datasets[tree_at].tree().expect("a tree");
+        let mut map = map;
+        for (row, new) in &mut plan {
+            let old = alignment.name(*row);
+            let id = sequence_id(old);
+            if !names.by_id(*row) || doc.tips_named(id) == 0 || doc.tips_named(old) > 0 {
+                continue;
+            }
+            if to.is_some() {
+                *new = names.renamed(*row, id, sequence_id(new));
+            }
+            map.remove(old);
+            map.insert(id.to_string(), sequence_id(new).to_string());
+        }
+        if let Some(name) = alignment
+            .name_clash(&plan)
+            .or_else(|| names.id_clash(&plan))
+        {
             return Err(row_clash(&aln_name, &name));
         }
         let mut applied = match (plan.as_slice(), &map.iter().next()) {
@@ -3928,6 +3980,72 @@ mod tests {
                 .replace(">r1", ">r1 one")
                 .replace(">r2", ">r2 two")
                 .replace(">r3", ">r3\tthree")
+        }
+
+        /// d.fa (`>A one`, `>B\ttwo`, `>C`) and t.nwk linked; rows in tree
+        /// order A, B, C; the tree current.
+        fn described_pair() -> (TempDir, Session) {
+            let (keep, dir) = super::described();
+            let s = opened(&dir, &["d.fa", "t.nwk"]);
+            assert_eq!(names(&s, 0), ["A one", "B\ttwo", "C"]);
+            (keep, s)
+        }
+
+        #[test]
+        fn a_tree_rename_keeps_the_description() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "tree rename --tip B --to Q --seqs").unwrap();
+            assert_eq!(names(&s, 0), ["A one", "Q\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "Q", "C"]);
+        }
+
+        #[test]
+        fn a_tree_regex_rename_keeps_the_description() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "tree rename --regex ^B$ --replace R --seqs").unwrap();
+            assert_eq!(names(&s, 0), ["A one", "R\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "R", "C"]);
+        }
+
+        #[test]
+        fn an_msa_rename_keeps_the_description() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "msa rename --tree --rows 2 --to Q").unwrap();
+            assert_eq!(names(&s, 0), ["A one", "Q\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "Q", "C"]);
+        }
+
+        #[test]
+        fn an_msa_regex_rename_renames_the_tip_by_id() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "use 1").unwrap();
+            ex(
+                &mut s,
+                "msa rename --tree --rows 1-3 --regex one --replace uno",
+            )
+            .unwrap();
+            assert_eq!(names(&s, 0), ["A uno", "B\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "B", "C"], "the ID is unchanged");
+            ex(
+                &mut s,
+                "msa rename --tree --rows 1-3 --regex ^A --replace Z",
+            )
+            .unwrap();
+            assert_eq!(names(&s, 0), ["Z uno", "B\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["Z", "B", "C"]);
+        }
+
+        #[test]
+        fn a_rename_onto_another_rows_id_is_refused() {
+            let (_keep, mut s) = described_pair();
+            let err = ex(&mut s, "tree rename --tip B --to A --seqs").unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "d.fa: that would give 'A' to more than one sequence"
+            );
+            assert_eq!(names(&s, 0), ["A one", "B\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "B", "C"]);
         }
 
         #[test]

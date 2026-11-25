@@ -63,6 +63,52 @@ impl<'a> NameMatch<'a> {
         }
         format!("{to}{}", &name[sequence_id(name).len()..])
     }
+
+    /// Whether `row` is matched by its ID alone: it has a description, and
+    /// no row's whole name is its ID.
+    pub fn by_id(&self, row: usize) -> bool {
+        let name = self.alignment.name(row);
+        let id = sequence_id(name);
+        id != name && !self.full.contains_key(id)
+    }
+
+    /// The ID, if any, that `renames` would give to rows with different
+    /// IDs, when a renamed row keeps a description and so would be matched
+    /// by that ID: a tip of that name would then match several rows.
+    pub fn id_clash(&self, renames: &[(usize, String)]) -> Option<String> {
+        let renamed: HashMap<usize, &str> = renames.iter().map(|(r, n)| (*r, n.as_str())).collect();
+        let id_now = |row: usize| {
+            sequence_id(
+                renamed
+                    .get(&row)
+                    .copied()
+                    .unwrap_or(self.alignment.name(row)),
+            )
+        };
+        for (row, new) in renames {
+            let new_id = sequence_id(new);
+            if new_id == new || new_id == sequence_id(self.alignment.name(*row)) {
+                continue;
+            }
+            let others = self
+                .full
+                .get(new_id)
+                .into_iter()
+                .chain(self.id.get(new_id))
+                .flatten()
+                .chain(renames.iter().map(|(r, _)| r))
+                // Rows that share an ID may go on sharing one.
+                .filter(|&&other| {
+                    other != *row
+                        && sequence_id(self.alignment.name(other))
+                            != sequence_id(self.alignment.name(*row))
+                });
+            if others.into_iter().any(|&other| id_now(other) == new_id) {
+                return Some(new_id.to_string());
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

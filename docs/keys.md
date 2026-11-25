@@ -46,7 +46,9 @@ Tree      jk rows  h parent  l back  Enter open/close
 ```
 
 **Linking:** a tree is linked to an alignment when all the tip names match the MSA names. This happens on its
-own when you open the second file, or with `p` or `:tree link`. Once linked:
+own when you open the second file, or with `p` or `:tree link`. A tip matches a sequence of the same name, or one
+whose ID is the tip's name: the ID is the name up to the first space or tab, so tip `seqA` matches
+`>seqA Homo sapiens COI`. A sequence of the same whole name comes first. Once linked:
 
 - the alignment's rows follow the tree's order
 - pruning a clade in the tree also deletes its sequences
