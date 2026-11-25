@@ -44,6 +44,9 @@ fn walk(
     reference: Option<RefSlice<'_>>,
     mut each: impl FnMut(u64, Option<u8>, Option<Edit>),
 ) -> bool {
+    if read.seq.is_empty() {
+        return false;
+    }
     let md: Option<HashMap<u64, u8>> = match reference {
         Some(_) => None,
         None => match read.md_reference() {
@@ -61,8 +64,11 @@ fn walk(
             Piece::Base { pos, base } => {
                 let r = ref_at(pos);
                 let edit = match (base, r) {
+                    // `=` is SEQ's way of saying "as the reference".
                     (Some(b), Some(r))
-                        if !b.eq_ignore_ascii_case(&r) && !b.eq_ignore_ascii_case(&b'N') =>
+                        if !b.eq_ignore_ascii_case(&r)
+                            && !b.eq_ignore_ascii_case(&b'N')
+                            && b != b'=' =>
                     {
                         Some(Edit::Mismatch(b.to_ascii_uppercase()))
                     }
@@ -158,7 +164,8 @@ pub struct Tally {
 
 impl Tally {
     /// Count `reads` (those that count towards coverage) over `start..=end`.
-    /// `None` when no counted read had a reference to compare with.
+    /// `None` without `reference` when no counted read's MD tag said what
+    /// the reference is.
     pub fn of(
         reads: &[Read],
         reference: Option<RefSlice<'_>>,
@@ -211,7 +218,7 @@ impl Tally {
                 }
             });
         }
-        any.then_some(t)
+        (any || reference.is_some()).then_some(t)
     }
 
     fn index(&self, pos: u64) -> Option<usize> {
@@ -248,9 +255,16 @@ impl Tally {
         })
     }
 
+    /// The part of `a..=b` the tally covers; `None` when it covers none.
+    fn within(&self, a: u64, b: u64) -> Option<std::ops::RangeInclusive<u64>> {
+        let last = self.start + (self.aligned.len() as u64).checked_sub(1)?;
+        let (a, b) = (a.max(self.start), b.min(last));
+        (a <= b).then_some(a..=b)
+    }
+
     /// The strongest qualifying signal in `a..=b`, the first on a tie.
     pub fn strongest(&self, a: u64, b: u64) -> Option<Signal> {
-        (a..=b).filter_map(|pos| self.signal(pos)).fold(
+        self.within(a, b)?.filter_map(|pos| self.signal(pos)).fold(
             None,
             |best: Option<Signal>, s| match best {
                 Some(best) if best.fraction >= s.fraction => Some(best),
@@ -261,13 +275,15 @@ impl Tally {
 
     /// How many positions in `a..=b` have a qualifying signal.
     pub fn qualifying(&self, a: u64, b: u64) -> usize {
-        (a..=b).filter(|&pos| self.signal(pos).is_some()).count()
+        self.within(a, b).map_or(0, |range| {
+            range.filter(|&pos| self.signal(pos).is_some()).count()
+        })
     }
 
     /// Mismatch and indel rates over `a..=b`; `None` with no aligned base.
     pub fn summary(&self, a: u64, b: u64) -> Option<Summary> {
         let (mut aligned, mut mismatches, mut indels) = (0u64, 0u64, 0u64);
-        for i in (a..=b).filter_map(|pos| self.index(pos)) {
+        for i in self.within(a, b)?.filter_map(|pos| self.index(pos)) {
             aligned += u64::from(self.aligned[i]);
             mismatches += self.alt[i].iter().map(|&n| u64::from(n)).sum::<u64>();
             indels += u64::from(self.deletion_starts[i] + self.inserted[i]);
@@ -469,6 +485,42 @@ mod tests {
         assert_eq!(edits(&no_seq, None), None);
         assert_eq!(edits(&bad_md, None), None);
         assert!(Tally::of(&[no_seq, bad_md], None, 1, 10).is_none());
+    }
+
+    #[test]
+    fn reads_without_seq_add_nothing_with_a_reference_too() {
+        let no_seq = read(1, &[('M', 5)], "", None);
+        assert_eq!(edits(&no_seq, Some(REF)), None);
+        let plain = with(1, 5, &[]);
+        let t = Tally::of(&[no_seq, plain], Some(REF), 1, 5).unwrap();
+        assert_eq!(t.counts(3).unwrap().aligned, 1);
+    }
+
+    #[test]
+    fn equals_in_seq_matches_the_reference() {
+        let r = read(11, &[('M', 5)], "AA=AC", None);
+        assert_eq!(edits(&r, Some(REF)), Some(vec![(15, Edit::Mismatch(b'C'))]));
+    }
+
+    #[test]
+    fn with_a_reference_a_window_without_reads_still_has_a_tally() {
+        let t = Tally::of(&[], Some(REF), 1, 10).expect("a reference says what to compare with");
+        assert_eq!(t.counts(5).unwrap().depth(), 0);
+        assert_eq!(t.strongest(1, 10), None);
+        assert_eq!(t.summary(1, 10), None);
+    }
+
+    #[test]
+    fn queries_far_outside_the_tally_are_quick() {
+        let rs = reads(10, |_| with(1, 5, &[(3, b'C')]));
+        let t = Tally::of(&rs, Some(REF), 1, 10).unwrap();
+        let timer = std::time::Instant::now();
+        let far = 400_000_000;
+        assert_eq!(t.strongest(1, far).map(|s| s.pos), Some(3));
+        assert_eq!(t.qualifying(1, far), 1);
+        assert_eq!(t.summary(1, far), t.summary(1, 10));
+        assert_eq!(t.strongest(far, far + 10), None);
+        assert!(timer.elapsed().as_millis() < 100, "{:?}", timer.elapsed());
     }
 
     #[test]

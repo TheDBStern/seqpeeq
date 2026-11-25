@@ -1973,6 +1973,13 @@ impl App {
             return;
         }
         let left_click = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        if left_click {
+            // A readout lasts until a click elsewhere; a click on a coverage
+            // row starts one again.
+            for view in self.bams.values_mut() {
+                view.readout = false;
+            }
+        }
         if left_click && mouse.row == 0 {
             let ranges = ui::tab_ranges(
                 &ui::tab_labels(self),

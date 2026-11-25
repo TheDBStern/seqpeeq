@@ -11,7 +11,9 @@ use seqpeeq_core::bam::{Contig, Coverage, Edit, Piece, Read, Tally, grouped};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode};
-use crate::bam_view::{BamView, ContigList, ContigSort, READS_WIDTH, ReadId, details, read_kind};
+use crate::bam_view::{
+    BamView, ContigList, ContigSort, Loaded, READS_WIDTH, ReadId, details, read_kind,
+};
 use crate::palette;
 
 /// Where each row of the BAM tab goes. A row not shown has no height.
@@ -643,7 +645,7 @@ fn draw_coverage(
     let length = source.contigs()[view.contig].length;
     let depths = column_depths(view, length, pass, source);
     let most = depths.iter().copied().fold(0.0, f32::max);
-    let tally = tally_of(view);
+    let tally = tally_of(view, length);
     for (col, &depth) in depths.iter().enumerate() {
         let (a, b) = view.span_of(col);
         let style = tally
@@ -653,22 +655,29 @@ fn draw_coverage(
     }
 }
 
-/// The tally of the reads loaded for the contig shown, if any.
-fn tally_of(view: &BamView) -> Option<&Tally> {
+/// What was read for the view while it shows reads: the reads of a window
+/// covering what it shows. `None` zoomed out past reads, where a window
+/// read for an earlier view can linger.
+fn reads_loaded(view: &BamView, length: u64) -> Option<&Loaded> {
+    let region = &view.loaded.as_ref()?.window.region;
+    let shown = view.cols() * view.per_col < READS_WIDTH
+        && region.contig == view.contig
+        && region.start <= view.left
+        && region.end >= view.end(length);
     view.loaded
         .as_ref()
-        .filter(|l| l.window.region.contig == view.contig)
-        .and_then(|l| l.tally.as_ref())
+        .filter(|l| shown && l.asked_reads && l.window.reads.is_some())
+}
+
+/// The tally of the reads in view, while they are shown.
+fn tally_of(view: &BamView, length: u64) -> Option<&Tally> {
+    reads_loaded(view, length)?.tally.as_ref()
 }
 
 /// The details line in readout mode: the allele counts at the strongest
 /// position in the cursor's column (at the cursor, a base a column).
 pub fn readout_text(view: &BamView, contig: &Contig) -> String {
-    let loaded = view
-        .loaded
-        .as_ref()
-        .filter(|l| l.window.region.contig == view.contig && l.window.reads.is_some());
-    let Some(loaded) = loaded else {
+    let Some(loaded) = reads_loaded(view, contig.length) else {
         return "allele counts appear once the reads are read".to_string();
     };
     let Some(tally) = &loaded.tally else {
@@ -901,7 +910,7 @@ pub fn depth_text(view: &BamView, length: u64) -> Option<String> {
 /// view are read, nor without a reference or MD tags (the status line's
 /// `no reference` note says so then).
 pub fn variant_summary_text(view: &BamView, length: u64) -> Option<String> {
-    let summary = tally_of(view)?.summary(view.left, view.end(length))?;
+    let summary = tally_of(view, length)?.summary(view.left, view.end(length))?;
     Some(format!(
         "mismatches {:.2}%  indels {:.2}/kb",
         summary.mismatch_rate * 100.0,
@@ -1453,6 +1462,30 @@ mod tests {
             readout_at(&mut app, 11),
             "allele counts appear once the reads are read"
         );
+    }
+
+    #[test]
+    fn zoomed_out_past_reads_the_old_tally_is_not_drawn() {
+        let entry: (u64, &[u64], Option<u64>) = (1, &[10], None);
+        let sam = variant_sam(&[entry; 10]).replace("SN:c\tLN:1000", "SN:c\tLN:100000000");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 2);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert!(variant_summary_text(view, 100_000_000).is_some());
+        // The whole contig: no window is read, so the reads' window stays.
+        let whole = *crate::bam_view::zoom_levels(100_000_000, 80)
+            .last()
+            .unwrap();
+        zoomed_at(&mut app, 1, whole);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert!(view.loaded.as_ref().is_some_and(|l| l.tally.is_some()));
+        assert_eq!(variant_summary_text(view, 100_000_000), None);
+        let timer = std::time::Instant::now();
+        let terminal = render(&app, 80, 14);
+        assert!(timer.elapsed().as_millis() < 200, "{:?}", timer.elapsed());
+        let y = layout_of(&app).coverage.y;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y)].fg, palette::DEPTH.fg.unwrap());
     }
 
     fn sized(app: &mut App, width: u16, height: u16) {

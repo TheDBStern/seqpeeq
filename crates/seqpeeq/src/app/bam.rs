@@ -3649,6 +3649,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn any_other_click_ends_every_readout() {
+        let (mut app, _dir) = two_stacked();
+        let a = app.session.datasets()[0].id;
+        app.active = 0;
+        app.resize(Size::new(80, 20));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        click(&mut app, (9, layout.members[0].coverage.y));
+        assert!(app.bams[&a].readout);
+        click(&mut app, (9, layout.members[1].reads.y));
+        assert_eq!(app.active, 1);
+        assert!(
+            !app.bams[&a].readout,
+            "a press on the other member ends a's"
+        );
+
+        app.enqueue(Command::Open {
+            path: "tests/data/aln.fa".into(),
+            kind: None,
+        });
+        settle(&mut app);
+        app.focus(0);
+        settle(&mut app);
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        click(&mut app, (9, layout.members[0].coverage.y));
+        assert!(app.bams[&a].readout);
+        let ranges = crate::ui::tab_ranges(
+            &crate::ui::tab_labels(&app),
+            app.screen.width,
+            crate::ui::active_tab(&app),
+        );
+        let other = ranges.last().unwrap().start;
+        click(&mut app, (other, 0));
+        assert!(!app.bams[&a].readout, "a press on another tab ends it");
+    }
+
+    #[test]
     fn a_bam_joining_a_stack_takes_its_place_and_keeps_the_way_back() {
         let (mut app, dir) = with_bam();
         go(&mut app, "c2:301");
