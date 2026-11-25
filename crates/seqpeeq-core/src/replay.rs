@@ -1,6 +1,6 @@
 //! Re-running a session log without an interface.
 
-use crate::log::FOLLOWS_TREES;
+use crate::log::{FOLLOWS_TREES, MATCHES_IDS};
 use crate::{Command, Error, Result, Session};
 
 /// What a replay did.
@@ -27,7 +27,9 @@ pub struct ReplayReport {
 /// A log whose header lacks [`FOLLOWS_TREES`] was written before a linked
 /// alignment's rows followed their tree, so they do not follow it in the
 /// replay either: its row numbers then name the sequences they named when
-/// it was written. Scripts with no header follow the rule of today.
+/// it was written. In the same way, a log whose header lacks
+/// [`MATCHES_IDS`] matches tips to rows by whole name only. Scripts with no
+/// header follow the rules of today.
 pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
@@ -40,6 +42,11 @@ pub fn replay(text: &str, session: &mut Session) -> Result<ReplayReport> {
         && !header().any(|&line| line == FOLLOWS_TREES)
     {
         session.set_follow_trees(false);
+    }
+    if header().any(|line| line.starts_with("# seqpeeq "))
+        && !header().any(|&line| line == MATCHES_IDS)
+    {
+        session.set_match_ids(false);
     }
     let at_line = |index: usize| {
         move |cause| Error::Replay {
@@ -180,6 +187,53 @@ mod tests {
         drop(s);
         let text = fs::read_to_string(&log).unwrap();
         assert!(!text.contains(FOLLOWS_TREES), "{text}");
+    }
+
+    /// Replay `log` (its files in `dir`: g.fa with described headers and
+    /// g.nwk) then delete row 1: the names left.
+    fn left_after_deleting_row_1(header: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let (fa, nwk) = (dir.path().join("g.fa"), dir.path().join("g.nwk"));
+        fs::write(&fa, ">A one\nAC\n>B two\nAC\n>C three\nAC\n").unwrap();
+        fs::write(&nwk, "((C,B),A);").unwrap();
+        let mut s = Session::new(None);
+        let text = format!(
+            "{header}open {}\nopen {}\nuse 1\nmsa delete-rows --rows 1\n",
+            fa.display(),
+            nwk.display()
+        );
+        replay(&text, &mut s).unwrap();
+        let a = s.datasets()[0].msa().unwrap();
+        (0..a.rows()).map(|row| a.name(row).to_string()).collect()
+    }
+
+    #[test]
+    fn an_older_log_matches_tips_by_whole_name_only() {
+        // 0.4.0: no tip matched `A one`, so nothing was linked and row 1
+        // was `A one`.
+        let older = format!("# seqpeeq 0.4.0\n{FOLLOWS_TREES}\n");
+        assert_eq!(left_after_deleting_row_1(&older), ["B two", "C three"]);
+        let now = format!("# seqpeeq 0.4.0\n{FOLLOWS_TREES}\n{MATCHES_IDS}\n");
+        assert_eq!(left_after_deleting_row_1(&now), ["B two", "A one"]);
+        assert_eq!(left_after_deleting_row_1(""), ["B two", "A one"]);
+    }
+
+    #[test]
+    fn a_log_says_tips_match_by_id_unless_replaying_an_older_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa = dir.path().join("s.fa");
+        fs::write(&fa, crate::msa::testing::SORTABLE).unwrap();
+        for (header, says) in [
+            ("", true),
+            ("# seqpeeq 0.4.0\n# rows follow linked trees\n", false),
+        ] {
+            let log = dir.path().join(format!("{says}.log"));
+            let mut s = Session::new(Some(crate::SessionLog::new(log.clone())));
+            replay(&format!("{header}open {}\n", fa.display()), &mut s).unwrap();
+            drop(s);
+            let text = fs::read_to_string(&log).unwrap();
+            assert_eq!(text.contains(MATCHES_IDS), says, "{text}");
+        }
     }
 
     #[test]

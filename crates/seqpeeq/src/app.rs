@@ -2136,13 +2136,16 @@ impl App {
             );
             return;
         }
-        let found: std::collections::HashSet<&str> =
-            matches.iter().map(|&row| alignment.name(row)).collect();
+        let matched = seqpeeq_core::NameMatch::new(alignment);
+        let found = search
+            .names
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .filter(|name| matched.contains(name))
+            .count();
         let have = if tips == 1 { "tip has" } else { "tips have" };
-        let message = format!(
-            "{} of {tips} {have} a sequence; e extract  d delete  n N step",
-            found.len()
-        );
+        let message = format!("{found} of {tips} {have} a sequence; e extract  d delete  n N step");
         let first = matches[0];
         let rows = Ranges::new(matches.iter().map(|&row| row..row + 1));
         self.active = index;
@@ -5507,6 +5510,20 @@ mod tests {
     }
 
     #[test]
+    fn a_marks_rows_matched_by_id() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A one\nAA\n>B\ttwo\nCC\n>C\nGG\n");
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "a");
+        let (_, view) = app.alignment().expect("the alignment's tab is visible");
+        assert_eq!(view.search.as_ref().unwrap().matches, [0, 1]);
+        assert_eq!(
+            app.status,
+            "2 of 2 tips have a sequence; e extract  d delete  n N step"
+        );
+    }
+
+    #[test]
     fn a_marks_the_clades_sequences_in_the_linked_alignment() {
         let (mut app, dir) = with_tree("((A,B),(C,X));");
         link_alignment(&mut app, &dir, ">A\nAA\n>B\nCC\n>C\nGG\n>D\nTT\n");
@@ -5568,6 +5585,34 @@ mod tests {
         let view = &app.trees[&app.session.datasets()[0].id];
         assert_ne!(view.link_key, key, "the alignment changed");
         assert_eq!(view.link.unwrap().matched, 2);
+    }
+
+    #[test]
+    #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored many_described"]
+    fn a_linked_rename_of_many_described_rows_is_quick() {
+        use std::time::Instant;
+        let n = 10_000;
+        let tips: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
+        let (mut app, dir) = with_tree(&format!("({});", tips.join(",")));
+        let fasta: String = (0..n)
+            .map(|i| format!(">s{i} desc number {i}\nACGT\n"))
+            .collect();
+        link_alignment(&mut app, &dir, &fasta);
+        for line in [
+            "use 2",
+            "msa rename --tree --rows 1-10000 --regex ^s --replace t",
+            "use 1",
+            "tree rename --regex ^t --replace u --seqs",
+        ] {
+            let started = Instant::now();
+            run_typed(&mut app, line);
+            assert!(!app.status.starts_with("error"), "{line}: {}", app.status);
+            assert!(
+                started.elapsed() < crate::time_budget(500),
+                "{line}: {:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

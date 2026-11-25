@@ -129,6 +129,8 @@ The options of `bam export-reads`:
 - Logs from seqpeeq 0.3.0 and earlier replay as they were written: a linked alignment's rows stay in file order
   rather than following the tree, so row numbers name the same sequences. Newer logs say
   `# rows follow linked trees` in their header.
+- In the same way, logs from seqpeeq 0.4.0 and earlier match a tree's tips to sequences by whole name only, as they
+  did then. Newer logs say `# tips match sequences by ID` in their header.
 
 **If the log fails:** when the log can't be written (a full disk, e.g.), seqpeeq refuses further changes rather than
 make ones it can't record. `:rescue FILE` still saves the current alignment, so no work is lost.

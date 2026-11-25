@@ -6,7 +6,7 @@ mod facts;
 pub(crate) mod newick;
 pub(crate) mod reroot;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub use newick::Parsed;
 use crate::Result;
 use crate::command::tree::{NodeSel, TreeCmd};
 use crate::msa::write::write_fasta;
-use crate::msa::{Alignment, Applied, UNDO_LEVELS, View, count};
+use crate::msa::{Alignment, Applied, NameMatch, UNDO_LEVELS, View, count};
 use crate::pair::{Pair, Step, holds, last_pair};
 use crate::progress::Progress;
 use edit::{invalid, resolve};
@@ -779,6 +779,7 @@ impl TreeExtraction {
     pub(crate) fn add_seqs(
         &mut self,
         alignment: &Alignment,
+        ids: bool,
         name: &str,
         out: &Path,
         wrap: Option<usize>,
@@ -789,29 +790,20 @@ impl TreeExtraction {
         if out == self.out {
             return invalid("the tree and its sequences need two different files");
         }
-        let mut first: HashMap<&str, usize> = HashMap::new();
-        let mut repeated_names: HashSet<&str> = HashSet::new();
-        // The first row of each name is the one used.
-        for row in 0..alignment.rows() {
-            let seq = alignment.name(row);
-            if first.contains_key(seq) {
-                repeated_names.insert(seq);
-            } else {
-                first.insert(seq, row);
-            }
-        }
+        let names = NameMatch::with_ids(alignment, ids);
         let (mut rows, mut missing, mut repeated) = (Vec::new(), Vec::new(), 0);
         for tip in self.tree.preorder_from(self.from) {
             if !self.tree.is_tip(tip) {
                 continue;
             }
             let label = self.tree.label(tip).unwrap_or_default();
-            match first.get(label) {
-                Some(&row) => {
-                    rows.push(row);
-                    repeated += usize::from(repeated_names.contains(label));
+            // The first of the tip's rows is the one used.
+            match names.rows(label) {
+                [row, rest @ ..] => {
+                    rows.push(*row);
+                    repeated += usize::from(!rest.is_empty());
                 }
-                None => missing.push(label.to_string()),
+                [] => missing.push(label.to_string()),
             }
         }
         if rows.is_empty() {

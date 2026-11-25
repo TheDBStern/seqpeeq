@@ -268,8 +268,9 @@ pub struct Search {
     /// The revision of the alignment the matches were found in. Rows move
     /// when the alignment changes, so the matches are only good for this.
     pub revision: u64,
-    /// When set, the rows with these exact names are the matches, not the
-    /// rows matching `pattern`: the tips of a clade, from the tree view.
+    /// When set, the rows these tip names match (by whole name or ID, as a
+    /// linked tree matches them) are the matches, not the rows matching
+    /// `pattern`: the tips of a clade, from the tree view.
     pub names: Option<Arc<HashSet<String>>>,
 }
 
@@ -277,9 +278,17 @@ impl Search {
     /// The rows of `alignment` this search finds now.
     pub fn rows_in(&self, alignment: &seqpeeq_core::Alignment) -> Vec<usize> {
         match &self.names {
-            Some(names) => (0..alignment.rows())
-                .filter(|&row| names.contains(alignment.name(row)))
-                .collect(),
+            Some(names) => {
+                let matched = seqpeeq_core::NameMatch::new(alignment);
+                let mut rows: Vec<usize> = names
+                    .iter()
+                    .flat_map(|name| matched.rows(name))
+                    .copied()
+                    .collect();
+                rows.sort_unstable();
+                rows.dedup();
+                rows
+            }
             None => alignment.find_names(&self.pattern).unwrap_or_default(),
         }
     }

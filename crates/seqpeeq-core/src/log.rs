@@ -49,12 +49,21 @@ pub struct SessionLog {
     /// Whether the header says [`FOLLOWS_TREES`]: true unless the session
     /// is replaying an older log, whose rows did not follow trees.
     follows_trees: bool,
+    /// Whether the header says [`MATCHES_IDS`]: true unless the session is
+    /// replaying an older log, whose tips matched rows by whole name only.
+    matches_ids: bool,
 }
 
 /// The header line of a log written while a linked alignment's rows follow
 /// their tree. Logs from before that rule lack it, and replay keeps their
 /// rows where they were, so that row numbers name the same sequences.
 pub(crate) const FOLLOWS_TREES: &str = "# rows follow linked trees";
+
+/// The header line of a log written while a tip matches a row by its ID
+/// (the name up to its first whitespace) as well as its whole name. Replay
+/// matches whole names only for a log that lacks it, so that row numbers
+/// name the same sequences.
+pub(crate) const MATCHES_IDS: &str = "# tips match sequences by ID";
 
 /// A log that was created but never recorded a command (every command failed)
 /// holds only a header, so it is removed rather than left as clutter.
@@ -120,7 +129,13 @@ impl SessionLog {
             names: 0,
             broken: false,
             follows_trees: true,
+            matches_ids: true,
         }
+    }
+
+    /// Whether the header will say [`MATCHES_IDS`].
+    pub(crate) fn set_matches_ids(&mut self, ids: bool) {
+        self.matches_ids = ids;
     }
 
     /// Whether the header will say [`FOLLOWS_TREES`].
@@ -194,6 +209,10 @@ impl SessionLog {
         );
         if self.follows_trees {
             header.push_str(FOLLOWS_TREES);
+            header.push('\n');
+        }
+        if self.matches_ids {
+            header.push_str(MATCHES_IDS);
             header.push('\n');
         }
         self.write(&header)
@@ -288,7 +307,7 @@ pub(crate) mod tests {
         let text = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         let commands: Vec<_> = text.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(commands, ["open x.fa"]);
-        assert_eq!(text.lines().count(), 7);
+        assert_eq!(text.lines().count(), 8);
     }
 
     #[test]
