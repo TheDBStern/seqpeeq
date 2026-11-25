@@ -91,7 +91,17 @@
 <text x="823.2" y="64" textLength="8.4" fill="#5faf5f" xml:space="preserve">A</text>
 <text x="831.6" y="64" textLength="8.4" fill="#d7af00" xml:space="preserve">G</text>
 <text x="0" y="81" textLength="840" fill="#d4d4d4" opacity="0.5" xml:space="preserve"> reads.bam ─────────────────────────────────────────────────────────────────────────────────────────</text>
-<text x="0" y="98" textLength="840" fill="#5f87d7" xml:space="preserve">▆▆▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇███▇▇████████▇▇▇▇▇▇███████▇▇████▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▅▅▅███████▇▇▇▇▇▇</text>
+<text x="0" y="98" textLength="159.6" fill="#5f87d7" xml:space="preserve">▆▆▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇</text>
+<text x="159.6" y="98" textLength="8.4" fill="#d70000" xml:space="preserve">▇</text>
+<text x="168" y="98" textLength="201.6" fill="#5f87d7" xml:space="preserve">▇▇▇▇▇▇▇▇▇▇███▇▇████████▇</text>
+<text x="369.6" y="98" textLength="8.4" fill="#ffaf00" xml:space="preserve">▇</text>
+<text x="378" y="98" textLength="126" fill="#5f87d7" xml:space="preserve">▇▇▇▇███████▇▇██</text>
+<text x="504" y="98" textLength="8.4" fill="#d7afff" xml:space="preserve">█</text>
+<text x="512.4" y="98" textLength="75.6" fill="#5f87d7" xml:space="preserve">█▇▇▇▇▇▇▇▇</text>
+<text x="588" y="98" textLength="8.4" fill="#d70000" xml:space="preserve">▇</text>
+<text x="596.4" y="98" textLength="109.2" fill="#5f87d7" xml:space="preserve">▇▇▇▇▇▇▇▇▇▇▇▇▇</text>
+<text x="705.6" y="98" textLength="25.2" fill="#d7afff" xml:space="preserve">▅▅▅</text>
+<text x="730.8" y="98" textLength="109.2" fill="#5f87d7" xml:space="preserve">███████▇▇▇▇▇▇</text>
 <text x="0" y="115" textLength="159.6" fill="#d4d4d4" xml:space="preserve">...................</text>
 <text x="159.6" y="115" textLength="8.4" fill="#5faf5f" xml:space="preserve">A</text>
 <text x="168" y="115" textLength="201.6" fill="#d4d4d4" xml:space="preserve">........................</text>
@@ -188,7 +198,9 @@
 <text x="823.2" y="302" textLength="8.4" fill="#d75f5f" opacity="0.5" xml:space="preserve">t</text>
 <text x="831.6" y="302" textLength="8.4" fill="#5f87d7" opacity="0.5" xml:space="preserve">c</text>
 <text x="0" y="319" textLength="840" fill="#d4d4d4" opacity="0.5" xml:space="preserve">▸reads2.bam ────────────────────────────────────────────────────────────────────────────────────────</text>
-<text x="0" y="336" textLength="840" fill="#5f87d7" xml:space="preserve">▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇█████████████████████▇▇▇▇▇▇▇▇</text>
+<text x="0" y="336" textLength="268.8" fill="#5f87d7" xml:space="preserve">▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</text>
+<text x="268.8" y="336" textLength="8.4" fill="#d70000" xml:space="preserve">▅</text>
+<text x="277.2" y="336" textLength="562.8" fill="#5f87d7" xml:space="preserve">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇█████████████████████▇▇▇▇▇▇▇▇</text>
 <text x="0" y="353" textLength="268.8" fill="#d4d4d4" xml:space="preserve">................................</text>
 <text x="268.8" y="353" textLength="8.4" fill="#d7af00" xml:space="preserve">G</text>
 <text x="277.2" y="353" textLength="495.6" fill="#d4d4d4" xml:space="preserve">...........................................................</text>
