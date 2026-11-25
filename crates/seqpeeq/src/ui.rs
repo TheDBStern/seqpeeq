@@ -372,8 +372,11 @@ pub fn info_text(app: &App) -> (String, String) {
         let depth = bam::depth_text(view, contig.length)
             .map(|d| format!("  {d}"))
             .unwrap_or_default();
+        let differs = bam::variant_summary_text(view, contig.length)
+            .map(|s| format!("  ·  {s}"))
+            .unwrap_or_default();
         left = format!(
-            "{}:{}{depth}  {} bp a column",
+            "{}:{}{depth}  {} bp a column{differs}",
             contig.name, view.cursor, view.per_col
         );
         if !view.over.is_empty() {
@@ -397,7 +400,7 @@ pub fn info_text(app: &App) -> (String, String) {
                 1 => left.push_str("  1 read selected  e export  Esc clear"),
                 n => left.push_str(&format!("  {n} reads selected  e export  Esc clear")),
             }
-            if view.per_col == 1 && !bam::knows_reference(app) {
+            if !bam::knows_reference(app) {
                 left.push_str("  no reference (bam ref FILE)");
             }
         }

@@ -806,6 +806,19 @@ pub fn depth_text(view: &BamView, length: u64) -> Option<String> {
     })
 }
 
+/// How far the reads in view differ from the reference, for the status
+/// line: `mismatches 0.52%  indels 0.32/kb`. Nothing until the reads in
+/// view are read, nor without a reference or MD tags (the status line's
+/// `no reference` note says so then).
+pub fn variant_summary_text(view: &BamView, length: u64) -> Option<String> {
+    let summary = tally_of(view)?.summary(view.left, view.end(length))?;
+    Some(format!(
+        "mismatches {:.2}%  indels {:.2}/kb",
+        summary.mismatch_rate * 100.0,
+        summary.indels_per_kb
+    ))
+}
+
 /// The mean depth under each column in view: from the window when it was
 /// read at this zoom, else from the coverage pass, else from the sketch.
 fn column_depths(
@@ -1231,6 +1244,48 @@ mod tests {
         let view = app.bams.get_mut(&id(&app)).unwrap();
         view.selected = vec![ReadId::of(&view.reads()[0])];
         assert_eq!(first_read_row(&app)[0].bg, palette::SELECTED.bg.unwrap());
+    }
+
+    #[test]
+    fn the_status_line_gives_mismatch_and_indel_rates() {
+        let entries: Vec<(u64, &[u64], Option<u64>)> = (0..10)
+            .map(|i| match i {
+                0 => (1, &[3, 7, 9][..], None),
+                1 => (1, &[12, 30][..], Some(40)),
+                _ => (1, &[][..], None),
+            })
+            .collect();
+        let (mut app, _dir) = with_sam(&variant_sam(&entries));
+        zoomed_at(&mut app, 1, 2);
+        let want = "mismatches 1.00%  indels 2.00/kb";
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1000).as_deref(), Some(want));
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[12].contains(want), "{}", screen[12]);
+    }
+
+    #[test]
+    fn zoomed_out_without_a_reference_the_status_line_says_so() {
+        let sam = format!("{HEAD}a\t0\tc\t1\t60\t5M\t*\t0\t0\tACGTA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 2);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1000), None);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen[12].ends_with("no reference (bam ref FILE)"),
+            "{screen:#?}"
+        );
+        assert!(!screen[12].contains("mismatches"), "{}", screen[12]);
+    }
+
+    #[test]
+    fn no_summary_before_reads_load() {
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:big\tLN:1000000\n\
+                   a\t0\tbig\t1\t60\t10M\t*\t0\t0\t*\t*\n";
+        let (app, _dir) = with_sam(sam);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1_000_000), None);
     }
 
     fn sized(app: &mut App, width: u16, height: u16) {
