@@ -257,7 +257,7 @@ def seqpeeq_steps(kind):
 
 def _window_shown(screen):
     """The reads of WINDOW are drawn: a depth is shown at its scale."""
-    scale = re.search(r"([\d,]+) bp a column", screen)
+    scale = re.search(r"column = ([\d,]+) bp", screen)
     return (seqpeeq_ready("bam")(screen) and scale is not None
             and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 

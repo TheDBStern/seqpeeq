@@ -35,5 +35,5 @@
 <text x="0" y="438" textLength="831.6" fill="#d4d4d4" xml:space="preserve">━━▸━━━▸◂━━━◂━━◂━━━━━▸ ◂━━  ━━▸━━▸ ◂━━  ━━━▸                 ◂━━━━━▸  ━━▸ ━━▸ ◂━━ ━━▸ ━━▸◂━━  ◂━━◂━━</text>
 <text x="0" y="455" textLength="831.6" fill="#d4d4d4" xml:space="preserve">━━▸ ◂━━◂━━━  ◂━━━ ◂━━ ◂━━  ◂━━ ━━▸◂━━━  ◂━━                 ◂━━━━━━▸ ◂━━ ━━━▸ ━━▸━━▸ ◂━━◂━━━ ◂━━◂━━</text>
 <text x="0" y="472" textLength="630" fill="#d4d4d4" xml:space="preserve">pair544 · chr1:8953-9102 (−) · MAPQ 60 · 150 bp · 150M · mate chr1:8800 (+)</text>
-<text x="0" y="489" textLength="596.4" fill="#d4d4d4" xml:space="preserve">chr1:9001  mean depth 20.8  64 bp a column  no reference (bam ref FILE)</text>
+<text x="0" y="489" textLength="596.4" fill="#d4d4d4" xml:space="preserve">chr1:9001  mean depth 20.8  column = 64 bp  no reference (bam ref FILE)</text>
 </svg>

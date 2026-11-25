@@ -376,7 +376,7 @@ pub fn info_text(app: &App) -> (String, String) {
             .map(|s| format!("  ·  {s}"))
             .unwrap_or_default();
         left = format!(
-            "{}:{}{depth}  {} bp a column{differs}",
+            "{}:{}{depth}  column = {} bp{differs}",
             contig.name, view.cursor, view.per_col
         );
         if !view.over.is_empty() {

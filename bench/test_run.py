@@ -230,7 +230,7 @@ class Ready(unittest.TestCase):
     def test_bam_ready_needs_the_reads_drawn(self):
         ready = run.seqpeeq_ready("bam")
         self.assertFalse(ready("t.bam\nopened t.bam (bam, 1 contig)\nc1:1"))
-        self.assertTrue(ready("t.bam\nc1:1  depth 7  1 bp a column"))
+        self.assertTrue(ready("t.bam\nc1:1  depth 7  column = 1 bp"))
 
     def test_alignment_ready_needs_the_open_message(self):
         ready = run.seqpeeq_ready("msa")
@@ -277,9 +277,9 @@ class Tools(unittest.TestCase):
     def test_the_window_test_needs_the_window_scale(self):
         shown = run.seqpeeq_steps("bam")[-1][0]
         # A small contig shows a mean depth at open, zoomed out.
-        self.assertFalse(shown("c1:1  mean depth 2.0  20 bp a column"))
-        self.assertTrue(shown("c1:1  mean depth 2.0  10 bp a column"))
-        self.assertTrue(shown("c1:1  depth 2  1 bp a column"))
+        self.assertFalse(shown("c1:1  mean depth 2.0  column = 20 bp"))
+        self.assertTrue(shown("c1:1  mean depth 2.0  column = 10 bp"))
+        self.assertTrue(shown("c1:1  depth 2  column = 1 bp"))
 
     def test_tview_shows_the_window(self):
         bam = self.mid_bam()

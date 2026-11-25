@@ -198,5 +198,5 @@
 <text x="302.4" y="455" textLength="134.4" fill="#d75fd7" xml:space="preserve">━━━━━━━━━━━━━━━▸</text>
 <text x="436.8" y="455" textLength="252" fill="#808080" xml:space="preserve">──────────────────────────────</text>
 <text x="0" y="472" textLength="537.6" fill="#d4d4d4" xml:space="preserve">chr1:1,045  ref C   T 16 (53%) · C 14 · del 0 · ins 0 · depth 30</text>
-<text x="0" y="489" textLength="655.2" fill="#d4d4d4" xml:space="preserve">chr1:1045  mean depth 30.0  2 bp a column  ·  mismatches 1.33%  indels 4.31/kb</text>
+<text x="0" y="489" textLength="655.2" fill="#d4d4d4" xml:space="preserve">chr1:1045  mean depth 30.0  column = 2 bp  ·  mismatches 1.33%  indels 4.31/kb</text>
 </svg>

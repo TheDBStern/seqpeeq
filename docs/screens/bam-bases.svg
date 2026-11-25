@@ -260,5 +260,5 @@
 <text x="588" y="455" textLength="8.4" fill="#5f87d7" xml:space="preserve">C</text>
 <text x="596.4" y="455" textLength="243.6" fill="#5fafff" xml:space="preserve">.............................</text>
 <text x="0" y="472" textLength="621.6" fill="#d4d4d4" xml:space="preserve">pair788 · chr1:907-1056 (+) · MAPQ 60 · 150 bp · 150M · mate chr1:1236 (−)</text>
-<text x="0" y="489" textLength="596.4" fill="#d4d4d4" xml:space="preserve">chr1:1001  depth 22  1 bp a column  ·  mismatches 2.57%  indels 8.33/kb</text>
+<text x="0" y="489" textLength="596.4" fill="#d4d4d4" xml:space="preserve">chr1:1001  depth 22  column = 1 bp  ·  mismatches 2.57%  indels 8.33/kb</text>
 </svg>

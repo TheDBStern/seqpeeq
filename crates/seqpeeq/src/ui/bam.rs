@@ -1830,7 +1830,7 @@ mod tests {
         app.bams.get_mut(&id).unwrap().cursor = 125;
         let screen = rows(&render(&app, 80, 14));
         assert!(
-            screen[12].starts_with("c1:125  depth 2  1 bp a column"),
+            screen[12].starts_with("c1:125  depth 2  column = 1 bp"),
             "{}",
             screen[12]
         );
