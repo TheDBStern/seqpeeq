@@ -231,8 +231,10 @@ pub fn strip_bar(strip: Rect, contig: &Contig) -> Rect {
 pub enum BamHit {
     /// The whole-contig strip, at this position.
     Strip(u64),
-    /// The ruler, reference or coverage, at the first position of a column.
+    /// The ruler or reference, at the first position of a column.
     Ruler(u64),
+    /// The coverage row, at the first position of a column.
+    Coverage(u64),
     /// The reads, at a column and a row counted from the first shown.
     Read {
         col: usize,
@@ -256,7 +258,10 @@ pub fn bam_hit(
     }
     let col = (column.saturating_sub(layout.reads.x)) as usize;
     let past_end = view.span_of(col).0 > contig.length;
-    for band in [layout.ruler, layout.reference, layout.coverage] {
+    if layout.coverage.contains(at) && !past_end {
+        return BamHit::Coverage(view.span_of(col).0);
+    }
+    for band in [layout.ruler, layout.reference] {
         if band.contains(at) && !past_end {
             return BamHit::Ruler(view.span_of(col).0);
         }
@@ -656,6 +661,82 @@ fn tally_of(view: &BamView) -> Option<&Tally> {
         .and_then(|l| l.tally.as_ref())
 }
 
+/// The details line in readout mode: the allele counts at the strongest
+/// position in the cursor's column (at the cursor, a base a column).
+pub fn readout_text(view: &BamView, contig: &Contig) -> String {
+    let loaded = view
+        .loaded
+        .as_ref()
+        .filter(|l| l.window.region.contig == view.contig && l.window.reads.is_some());
+    let Some(loaded) = loaded else {
+        return "allele counts appear once the reads are read".to_string();
+    };
+    let Some(tally) = &loaded.tally else {
+        return "allele counts need a reference or MD tags (bam ref FILE)".to_string();
+    };
+    let (pos, more) = match view.col_of(view.cursor).filter(|_| view.per_col > 1) {
+        Some(col) => {
+            let (a, b) = view.span_of(col);
+            let b = b.min(contig.length);
+            let strongest = tally.strongest(a, b).map(|s| s.pos);
+            let more = tally.qualifying(a, b).saturating_sub(1);
+            (strongest.unwrap_or(a), more)
+        }
+        None => (view.cursor, 0),
+    };
+    let here = format!("{}:{}", contig.name, grouped(pos));
+    let Some(counts) = tally.counts(pos).filter(|c| c.depth() > 0) else {
+        return format!("{here}  no reads here");
+    };
+    let depth = counts.depth();
+    let pct = |n: u32| {
+        if n > 0 {
+            format!(" ({:.0}%)", f64::from(n) * 100.0 / f64::from(depth))
+        } else {
+            String::new()
+        }
+    };
+    let matching = counts.aligned - counts.alt.iter().sum::<u32>();
+    // Each allele with reads: (base, count, whether it is the reference's).
+    let mut alleles: Vec<(char, u32, bool)> = b"ACGT"
+        .iter()
+        .zip(counts.alt)
+        .map(|(&base, alt)| match counts.reference {
+            Some(r) if r == base => (base as char, matching, true),
+            _ => (base as char, alt, false),
+        })
+        .collect();
+    if counts.reference.is_none_or(|r| !b"ACGT".contains(&r)) {
+        alleles.push(('?', matching, true));
+    }
+    alleles.retain(|&(_, n, _)| n > 0);
+    alleles.sort_by_key(|&(_, n, _)| std::cmp::Reverse(n));
+    let alleles: Vec<String> = alleles
+        .iter()
+        .map(|&(base, n, reference)| {
+            if reference {
+                format!("{base} {n}")
+            } else {
+                format!("{base} {n}{}", pct(n))
+            }
+        })
+        .collect();
+    let reference = counts.reference.map_or('?', char::from);
+    let more = if more > 0 {
+        format!("   (+{more} more in column)")
+    } else {
+        String::new()
+    };
+    format!(
+        "{here}  ref {reference}   {} · del {}{} · ins {}{} · depth {depth}{more}",
+        alleles.join(" · "),
+        counts.deleted,
+        pct(counts.deleted),
+        counts.inserted,
+        pct(counts.inserted),
+    )
+}
+
 /// The details line: the read under the cursor.
 fn draw_details(
     buf: &mut Buffer,
@@ -663,7 +744,16 @@ fn draw_details(
     view: &BamView,
     source: &seqpeeq_core::bam::BamSource,
 ) {
-    if area.height > 0
+    if area.height > 0 && view.readout {
+        let contig = &source.contigs()[view.contig];
+        buf.set_stringn(
+            area.x,
+            area.y,
+            readout_text(view, contig),
+            area.width as usize,
+            Style::new(),
+        );
+    } else if area.height > 0
         && let Some(read) = view.cursor_read()
     {
         buf.set_stringn(
@@ -1286,6 +1376,83 @@ mod tests {
         let (app, _dir) = with_sam(sam);
         let view = app.bams.get(&id(&app)).unwrap();
         assert_eq!(variant_summary_text(view, 1_000_000), None);
+    }
+
+    /// Thirty reads at 1: `c_at_20` of them read C at 20 and `c_at_15` at 15.
+    fn readout_app(c_at_20: usize, c_at_15: usize) -> (App, TempDir) {
+        let at: Vec<Vec<u64>> = (0..30)
+            .map(|i| {
+                let mut at = Vec::new();
+                if i < c_at_15 {
+                    at.push(15);
+                }
+                if i < c_at_20 {
+                    at.push(20);
+                }
+                at
+            })
+            .collect();
+        let entries: Vec<_> = at.iter().map(|a| (1, a.as_slice(), None)).collect();
+        with_sam(&variant_sam(&entries))
+    }
+
+    /// The readout for the current BAM with the cursor at `cursor`.
+    fn readout_at(app: &mut App, cursor: u64) -> String {
+        let id = id(app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.cursor = cursor;
+        view.readout = true;
+        let (_, doc, view) = app.bam().unwrap();
+        readout_text(view, &doc.source().contigs()[view.contig])
+    }
+
+    #[test]
+    fn readout_text_for_the_strongest_position() {
+        let (mut app, _dir) = readout_app(29, 0);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(
+            readout_at(&mut app, 11),
+            "c:20  ref A   C 29 (97%) · A 1 · del 0 · ins 0 · depth 30"
+        );
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[11].starts_with("c:20  ref A"), "{screen:#?}");
+    }
+
+    #[test]
+    fn readout_counts_other_positions_in_the_column() {
+        let (mut app, _dir) = readout_app(29, 10);
+        zoomed_at(&mut app, 1, 10);
+        let text = readout_at(&mut app, 11);
+        assert!(text.starts_with("c:20  "), "{text}");
+        assert!(text.ends_with("depth 30   (+1 more in column)"), "{text}");
+    }
+
+    #[test]
+    fn readout_at_base_level_is_the_cursor() {
+        let (mut app, _dir) = readout_app(29, 0);
+        base_level_at(&mut app, 1);
+        let text = readout_at(&mut app, 5);
+        assert!(text.starts_with("c:5  ref A   A 30 · del 0"), "{text}");
+    }
+
+    #[test]
+    fn readout_without_counts_says_why() {
+        let sam = format!("{HEAD}a\t0\tc\t1\t60\t5M\t*\t0\t0\tACGTA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(
+            readout_at(&mut app, 1),
+            "allele counts need a reference or MD tags (bam ref FILE)"
+        );
+
+        let (mut app, _dir) = readout_app(29, 0);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(readout_at(&mut app, 5_000), "c:5,000  no reads here");
+        app.bams.get_mut(&id(&app)).unwrap().loaded = None;
+        assert_eq!(
+            readout_at(&mut app, 11),
+            "allele counts appear once the reads are read"
+        );
     }
 
     fn sized(app: &mut App, width: u16, height: u16) {

@@ -1087,6 +1087,10 @@ impl App {
                     if self.bam_esc() {
                         return;
                     }
+                    if let Some((_, view)) = self.bam_mut().filter(|(_, view)| view.readout) {
+                        view.readout = false;
+                        return;
+                    }
                     if let Some((_, view)) = self.tree_view_mut()
                         && !view.picked.is_empty()
                     {

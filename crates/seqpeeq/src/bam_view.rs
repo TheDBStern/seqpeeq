@@ -422,6 +422,9 @@ pub struct BamView {
     /// with the reference view as it was then.
     pub parked: Vec<Over>,
     pub parked_from: Option<Parked>,
+    /// The details line shows the allele counts in the cursor's column (a
+    /// click on the coverage row) instead of the read under the cursor.
+    pub readout: bool,
 }
 
 impl BamView {
@@ -452,6 +455,7 @@ impl BamView {
             over: Vec::new(),
             parked: Vec::new(),
             parked_from: None,
+            readout: false,
         }
     }
 
@@ -630,6 +634,7 @@ impl BamView {
     /// screen may scroll one row past the last, to show what was not
     /// drawn.
     pub fn move_row(&mut self, by: isize) {
+        self.readout = false;
         let rows = self.packed.rows.len();
         self.row = self
             .row
