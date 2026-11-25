@@ -1,6 +1,6 @@
 //! A session: the open datasets, and the one place commands are executed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1539,15 +1539,14 @@ impl Session {
     /// that of the first row of the alignment at `aln_at` with its name,
     /// given each row's score in `scores`; `None` for a tip with no row.
     fn tip_scores(&self, aln_at: usize, tree_at: usize, scores: &[f64]) -> Vec<Option<f64>> {
-        let alignment = self.datasets[aln_at].msa().expect("an alignment");
-        let mut by_name: HashMap<&str, f64> = HashMap::new();
-        for (row, &score) in scores.iter().enumerate() {
-            by_name.entry(alignment.name(row)).or_insert(score);
-        }
+        let names = NameMatch::new(self.datasets[aln_at].msa().expect("an alignment"));
         let tree = self.datasets[tree_at].tree().expect("a tree").tree();
         let mut by_node = vec![None; tree.node_slots()];
         for tip in tree.tips() {
-            by_node[tip as usize] = tree.label(tip).and_then(|name| by_name.get(name).copied());
+            by_node[tip as usize] = tree
+                .label(tip)
+                .and_then(|name| names.rows(name).first())
+                .map(|&row| scores[row]);
         }
         by_node
     }
@@ -1586,23 +1585,20 @@ impl Session {
             {
                 self.realigns += 1;
             }
-            // The place of each row name's first tip, found by walking the
-            // tips once: the map holds the rows' names, not the tips', as a
+            // The place of each row's first tip, found by walking the tips
+            // once: the index holds the rows' names, not the tips', as a
             // tree may have many more tips than the alignment has rows.
             let tree = doc.tree();
             let rows = alignment.rows();
-            let mut place: HashMap<&str, usize> = HashMap::with_capacity(rows);
-            for row in 0..rows {
-                place.insert(alignment.name(row), usize::MAX);
-            }
+            let names = NameMatch::new(alignment);
+            let mut keys = vec![usize::MAX; rows];
             for (at, tip) in tree.tips().into_iter().enumerate() {
-                if let Some(slot) = tree.label(tip).and_then(|name| place.get_mut(name))
-                    && *slot == usize::MAX
-                {
-                    *slot = at;
+                for &row in tree.label(tip).map_or(&[][..], |name| names.rows(name)) {
+                    if keys[row] == usize::MAX {
+                        keys[row] = at;
+                    }
                 }
             }
-            let keys: Vec<usize> = (0..rows).map(|row| place[alignment.name(row)]).collect();
             let mut order: Vec<u32> = (0..rows as u32).collect();
             order.sort_by_key(|&row| keys[row as usize]);
             let Content::Msa(alignment) = &mut self.datasets[aln_at].content else {
@@ -1661,18 +1657,20 @@ impl Session {
             .expect("a tree")
             .clade_tip_names(at)?;
         let alignment = self.datasets[aln_at].msa().expect("an alignment");
-        let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
-        let rows = alignment.rows_named(&wanted);
+        let matched = NameMatch::new(alignment);
+        let mut rows: Vec<usize> = names
+            .iter()
+            .flat_map(|name| matched.rows(name))
+            .copied()
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
         if !rows.is_empty() && rows.len() == alignment.rows() {
             return Err(Error::Invalid(format!(
                 "{aln_name}: that would delete every sequence"
             )));
         }
-        let found: HashSet<&str> = rows.iter().map(|&row| alignment.name(row)).collect();
-        let without = names
-            .iter()
-            .filter(|name| !found.contains(name.as_str()))
-            .count();
+        let without = names.iter().filter(|name| !matched.contains(name)).count();
         let mut applied = self.current_tree()?.apply(cmd)?;
         if rows.is_empty() {
             applied
@@ -3195,6 +3193,48 @@ mod tests {
     }
 
     #[test]
+    fn prune_deletes_rows_matched_by_id() {
+        let (_keep, dir) = described();
+        let mut s = opened(&dir, &["d.fa", "l.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/d.fa").unwrap();
+        let out = ex(&mut s, "tree prune --tip A --seqs").unwrap();
+        assert!(
+            out.message.contains("deleted 1 row from d.fa"),
+            "{}",
+            out.message
+        );
+        let a = s.datasets()[0].msa().unwrap();
+        assert_eq!(
+            (0..a.rows()).map(|r| a.name(r)).collect::<Vec<_>>(),
+            ["B\ttwo", "C"]
+        );
+    }
+
+    #[test]
+    fn prune_takes_only_the_full_match() {
+        let (_keep, dir) = described();
+        fs::write(dir.join("x.fa"), ">A\nAC\n>A old\nGG\n>B\nTT\n").unwrap();
+        let mut s = opened(&dir, &["x.fa", "l.nwk"]);
+        ex_in(&mut s, &dir, "tree link {}/x.fa").unwrap();
+        ex(&mut s, "tree prune --tip A --seqs").unwrap();
+        let a = s.datasets()[0].msa().unwrap();
+        let mut left: Vec<&str> = (0..a.rows()).map(|r| a.name(r)).collect();
+        left.sort_unstable();
+        assert_eq!(left, ["A old", "B"]);
+    }
+
+    #[test]
+    fn extract_writes_rows_matched_by_id() {
+        let (_keep, dir) = described();
+        let mut s = opened(&dir, &["d.fa", "t.nwk"]);
+        ex_in(&mut s, &dir, "tree extract --out {}/s.nwk --seqs {}/s.fa").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("s.fa")).unwrap(),
+            ">A one\nAC-T\n>B\ttwo\nACGT\n>C\nTTTT\n"
+        );
+    }
+
+    #[test]
     fn prune_with_seqs_deletes_every_copy_and_is_refused_whole() {
         let (_keep, dir) = trees();
         let mut s = opened(&dir, &["two.fa", "l.nwk"]);
@@ -3880,6 +3920,34 @@ mod tests {
                     "rows {names:?}, tips {tips:?}"
                 );
             }
+        }
+
+        /// SORTABLE with a description after each name.
+        fn described_sortable() -> String {
+            SORTABLE
+                .replace(">r1", ">r1 one")
+                .replace(">r2", ">r2 two")
+                .replace(">r3", ">r3\tthree")
+        }
+
+        #[test]
+        fn an_id_only_link_reorders_rows_by_the_tree() {
+            let (_keep, dir) = linked_dir();
+            fs::write(dir.join("s.fa"), described_sortable()).unwrap();
+            let mut s = opened(&dir, &["s.fa"]);
+            s.execute(open(&dir.join("t.nwk"))).unwrap();
+            assert_eq!(names(&s, 0), ["r2 two", "r3\tthree", "r1 one"]);
+        }
+
+        #[test]
+        fn sorting_rows_matched_by_id_reorders_the_tree() {
+            let (_keep, dir) = linked_dir();
+            fs::write(dir.join("s.fa"), described_sortable()).unwrap();
+            let mut s = opened(&dir, &["s.fa", "t.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "msa sort --by identity").unwrap();
+            assert_eq!(tips(&s, 1), ["r3", "r2", "r1"]);
+            assert_eq!(names(&s, 0), ["r3\tthree", "r2 two", "r1 one"]);
         }
 
         #[test]

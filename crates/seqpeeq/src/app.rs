@@ -2136,13 +2136,16 @@ impl App {
             );
             return;
         }
-        let found: std::collections::HashSet<&str> =
-            matches.iter().map(|&row| alignment.name(row)).collect();
+        let matched = seqpeeq_core::NameMatch::new(alignment);
+        let found = search
+            .names
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .filter(|name| matched.contains(name))
+            .count();
         let have = if tips == 1 { "tip has" } else { "tips have" };
-        let message = format!(
-            "{} of {tips} {have} a sequence; e extract  d delete  n N step",
-            found.len()
-        );
+        let message = format!("{found} of {tips} {have} a sequence; e extract  d delete  n N step");
         let first = matches[0];
         let rows = Ranges::new(matches.iter().map(|&row| row..row + 1));
         self.active = index;
@@ -5504,6 +5507,20 @@ mod tests {
         app.handle_event(&press(KeyCode::Esc));
         type_str(&mut app, "d");
         assert_eq!(last(&app), "msa delete-rows --rows 1,3");
+    }
+
+    #[test]
+    fn a_marks_rows_matched_by_id() {
+        let (mut app, dir) = with_tree("((A,B),(C,X));");
+        link_alignment(&mut app, &dir, ">A one\nAA\n>B\ttwo\nCC\n>C\nGG\n");
+        select_node(&mut app, "A", "B");
+        type_str(&mut app, "a");
+        let (_, view) = app.alignment().expect("the alignment's tab is visible");
+        assert_eq!(view.search.as_ref().unwrap().matches, [0, 1]);
+        assert_eq!(
+            app.status,
+            "2 of 2 tips have a sequence; e extract  d delete  n N step"
+        );
     }
 
     #[test]

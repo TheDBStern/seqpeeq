@@ -441,13 +441,6 @@ impl Alignment {
         Ok(renames)
     }
 
-    /// The rows whose names are in `names`, ascending.
-    pub(crate) fn rows_named(&self, names: &HashSet<&str>) -> Vec<usize> {
-        (0..self.rows())
-            .filter(|&row| names.contains(self.name(row)))
-            .collect()
-    }
-
     /// Give rows new names, as one undo step called `step`.
     pub(crate) fn commit_renames(&mut self, step: &'static str, renames: Vec<(usize, String)>) {
         self.edit(step, |layer, _| {
@@ -1590,14 +1583,12 @@ mod tests {
 
     #[test]
     fn renames_and_deletions_by_name_touch_every_copy() {
-        use std::collections::HashSet;
         let mut a = Alignment::from_text(">x\nAC\n>y\nAC\n>x\nGG\n");
         let map = HashMap::from([("x".to_string(), "z".to_string())]);
         assert_eq!(
             a.renames_for(&map),
             [(0, "z".to_string()), (2, "z".to_string())]
         );
-        assert_eq!(a.rows_named(&HashSet::from(["x"])), [0, 2]);
         assert_eq!(a.regex_renames("^q", "r").unwrap(), []);
         assert_eq!(
             a.regex_renames("^y$", "").unwrap_err().to_string(),
