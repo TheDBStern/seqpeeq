@@ -1,7 +1,7 @@
 # Benchmarks
 
-Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal for
-alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,
+Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal and alv
+for alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,
 FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,
 so trees are compared with FigTree only.
 
@@ -27,6 +27,9 @@ is timed until the file is on screen, then sent `q` to quit.
     timed until that window's reads have been read and drawn.
 - **termal** is timed until its first screen is drawn, down to the help line at its bottom. It
   draws nothing until it has read the whole file, so its time includes reading all of it.
+- **alv** prints the whole alignment and exits, so it is timed the way it is used, piped into
+  `less -R`, until less has drawn its first screen. alv reads the whole file before it prints,
+  so its time includes reading all of it.
 - **samtools tview** is opened at `c1:1`, the start of IGV's window, with the reference. It is
   timed until the reads under its ruler and reference are drawn. It shows one screen's width of
   bases, one to a column.
@@ -62,7 +65,7 @@ The GUI programs are run in their script modes and timed until they exit:
 - **Limits:** each run stops after 10 minutes. If a tool runs out of memory, crashes
   or hits the limit, that's recorded as such, with the reason in a note.
 - **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both with Cargo's
-  default release settings and for the machine's own CPU. All seven tools run natively.
+  default release settings and for the machine's own CPU. All eight tools run natively.
 
 ## Results
 
@@ -124,7 +127,7 @@ behind the zoomed-out overview.
 ## How to rerun
 
 ```sh
-conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte
+conda env create -f bench/env.yml        # FigTree, Jalview, samtools, alv, numpy, pyte
 conda env create -f bench/env-igv.yml    # IGV, with Java 21
 conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later
 cargo install termal-msa@2.1.0 --locked --root bench/tools

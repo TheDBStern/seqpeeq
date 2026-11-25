@@ -81,9 +81,10 @@ class Page(unittest.TestCase):
     def test_columns_put_terminal_tools_before_the_gui(self):
         page = report.page({**RESULTS, "results": [
             result("jalview", "msa", "aln_1k.fa", "ok", 2.5, 412_000_000),
+            result("alv", "msa", "aln_1k.fa", "ok", 1.3, 53_000_000),
             result("termal", "msa", "aln_1k.fa", "ok", 0.3, 20_000_000),
             result("seqpeeq", "msa", "aln_1k.fa", "ok", 0.21, 9_000_000)]}, ONLY)
-        self.assertIn("| Alignment | File | seqpeeq | termal | Jalview |", page)
+        self.assertIn("| Alignment | File | seqpeeq | termal | alv | Jalview |", page)
 
     def test_only_java_tools_get_the_heap_note(self):
         page = report.page({**RESULTS, "results": [
@@ -96,7 +97,11 @@ class Page(unittest.TestCase):
         self.assertIn("ASCIIGenome on `reads_10x.bam` reached its 16 GB heap limit", page)
 
     def test_page_describes_every_tool(self):
-        for bullet in ["- **termal**", "- **samtools tview**", "- **ASCIIGenome**"]:
+        self.assertIn("(termal and alv\nfor alignments", self.page)
+        self.assertIn("piped into\n  `less -R`", self.page)
+        self.assertIn("samtools, alv,", self.page)
+        self.assertIn("All eight tools run natively", self.page)
+        for bullet in ["- **termal**", "- **alv**", "- **samtools tview**", "- **ASCIIGenome**"]:
             self.assertIn(bullet, self.page)
         self.assertIn("env-asciigenome.yml", self.page)
         self.assertIn("cargo install termal-msa@", self.page)

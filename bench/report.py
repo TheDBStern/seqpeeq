@@ -9,10 +9,10 @@ import json
 from pathlib import Path
 
 KINDS = [("msa", "Alignment"), ("tree", "Tree"), ("bam", "BAM")]
-NAMES = {"seqpeeq": "seqpeeq", "termal": "termal", "tview": "samtools tview", "asciigenome": "ASCIIGenome",
+NAMES = {"seqpeeq": "seqpeeq", "termal": "termal", "alv": "alv", "tview": "samtools tview", "asciigenome": "ASCIIGenome",
          "samtools": "samtools", "jalview": "Jalview", "figtree": "FigTree", "igv": "IGV"}
 # The columns of each table: seqpeeq, then the terminal tools, then the GUIs.
-ORDER = ["seqpeeq", "termal", "tview", "asciigenome", "jalview", "figtree", "igv"]
+ORDER = ["seqpeeq", "termal", "alv", "tview", "asciigenome", "jalview", "figtree", "igv"]
 # The tools run on Java, which grow toward the heap limit they are given.
 JAVA = {"jalview", "figtree", "igv", "asciigenome"}
 FILES = {
@@ -112,8 +112,8 @@ def page(results, only):
     lines = [
         "# Benchmarks",
         "",
-        "Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal for",
-        "alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,",
+        "Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal and alv",
+        "for alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,",
         "FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,",
         "so trees are compared with FigTree only.",
         "",
@@ -140,6 +140,9 @@ def page(results, only):
         "    timed until that window's reads have been read and drawn.",
         "- **termal** is timed until its first screen is drawn, down to the help line at its bottom. It",
         "  draws nothing until it has read the whole file, so its time includes reading all of it.",
+        "- **alv** prints the whole alignment and exits, so it is timed the way it is used, piped into",
+        "  `less -R`, until less has drawn its first screen. alv reads the whole file before it prints,",
+        "  so its time includes reading all of it.",
         f"- **samtools tview** is opened at `{WINDOW_TEXT.split('-')[0]}`, the start of IGV's window, with the reference. It is",
         "  timed until the reads under its ruler and reference are drawn. It shows one screen's width of",
         "  bases, one to a column.",
@@ -175,7 +178,7 @@ def page(results, only):
         f"- **Limits:** each run stops after {timeout / 60:g} minutes. If a tool runs out of memory, crashes",
         "  or hits the limit, that's recorded as such, with the reason in a note.",
         "- **Build:** seqpeeq is built with `--release` and termal with `cargo install`, both with Cargo's",
-        "  default release settings and for the machine's own CPU. All seven tools run natively.",
+        "  default release settings and for the machine's own CPU. All eight tools run natively.",
         "",
         "## Results",
         "",
@@ -197,7 +200,7 @@ def page(results, only):
         "## How to rerun",
         "",
         "```sh",
-        "conda env create -f bench/env.yml        # FigTree, Jalview, samtools, numpy, pyte",
+        "conda env create -f bench/env.yml        # FigTree, Jalview, samtools, alv, numpy, pyte",
         "conda env create -f bench/env-igv.yml    # IGV, with Java 21",
         "conda env create -f bench/env-asciigenome.yml    # ASCIIGenome, with Java 17 or later",
         f"{termal_install} --locked --root bench/tools",
