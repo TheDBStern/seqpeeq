@@ -107,24 +107,24 @@ behind the zoomed-out overview.
 
 | Step | Time |
 |---|---:|
-| open and first frame | 4.75 s |
-| *background:* count the columns | 4.18 s |
+| open and first frame | 0.59 s |
+| *background:* count the columns | 4.43 s |
 | frame after PageDown | 0.5 ms |
 | frame after a zoom-out step | 2.4 ms |
 | *background:* summary for the overview | 0.62 s |
-| delete 1,000 columns | 0.7 ms |
-| *background:* count the columns again | 3.96 s |
+| delete 1,000 columns | 0.6 ms |
+| *background:* count the columns again | 3.95 s |
 | delete 1,000 rows | 0.7 ms |
-| search names | 8.3 ms |
+| search names | 7.7 ms |
 
 **On the 1,000,000-tip tree:**
 
 | Step | Time |
 |---|---:|
-| open and first frame | 0.40 s |
-| frame after PageDown | 0.3 ms |
+| open and first frame | 0.38 s |
+| frame after PageDown | 0.4 ms |
 | prune a clade | 0.14 s |
-| tip search | 50 ms |
+| tip search | 48 ms |
 
 ## How to rerun
 
