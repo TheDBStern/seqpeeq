@@ -10,7 +10,7 @@ use crate::bam::{BamDoc, BamExport, Contig, Reference};
 use crate::log::stamp;
 use crate::msa::layer::Layer;
 use crate::msa::sort::{Sorted, Sorting};
-use crate::msa::{Alignment, Applied, Extraction, count, write};
+use crate::msa::{Alignment, Applied, Extraction, NameMatch, count, write};
 use crate::pair::Pair;
 use crate::progress::Progress;
 use crate::tree::newick::save_newick;
@@ -920,7 +920,7 @@ impl Session {
     pub fn shared_tips(&self, tree: u64, alignment: u64) -> Option<(usize, usize)> {
         let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
         let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
-        let names: HashSet<&str> = (0..msa.rows()).map(|row| msa.name(row)).collect();
+        let names = NameMatch::new(msa);
         let tree = doc.tree();
         let tips = tree.tips();
         let shared = tips
@@ -1727,8 +1727,7 @@ impl Session {
         let alignment = *self.links.get(&tree)?;
         let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
         let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
-        let names: std::collections::HashSet<&str> =
-            (0..msa.rows()).map(|row| msa.name(row)).collect();
+        let names = NameMatch::new(msa);
         let tree = doc.tree();
         let matched = tree
             .tips()
@@ -1748,20 +1747,23 @@ impl Session {
         let tree = tree_set.tree()?.tree();
         let aln_id = self.links.get(&tree_set.id)?;
         let alignment = self.datasets.iter().find(|d| d.id == *aln_id)?.msa()?;
-        let names: std::collections::HashSet<&str> = (0..alignment.rows())
-            .map(|row| alignment.name(row))
-            .collect();
+        let names = NameMatch::new(alignment);
         let tips = tree.tips();
-        let tip_names: std::collections::HashSet<&str> =
-            tips.iter().filter_map(|&n| tree.label(n)).collect();
-        let without: Vec<&str> = tips
-            .iter()
-            .map(|&n| tree.label(n).unwrap_or_default())
-            .filter(|name| !names.contains(name))
-            .collect();
+        let mut has_tip = vec![false; alignment.rows()];
+        let mut without: Vec<&str> = Vec::new();
+        for &n in &tips {
+            let label = tree.label(n).unwrap_or_default();
+            let rows = names.rows(label);
+            if rows.is_empty() {
+                without.push(label);
+            }
+            for &row in rows {
+                has_tip[row] = true;
+            }
+        }
         let no_tip: Vec<&str> = (0..alignment.rows())
+            .filter(|&row| !has_tip[row])
             .map(|row| alignment.name(row))
-            .filter(|name| !tip_names.contains(name))
             .collect();
         let have = if tips.len() == 1 {
             "tip has"
@@ -3626,6 +3628,43 @@ mod tests {
     }
 
     // Issue 7: linking by name, and by itself.
+
+    /// `trees()` with alignments whose headers carry descriptions:
+    /// `d.fa` has every tip of `t.nwk` by ID, `part.fa` only `A`.
+    fn described() -> (TempDir, PathBuf) {
+        let (keep, dir) = trees();
+        fs::write(dir.join("d.fa"), ">A one\nAC-T\n>B\ttwo\nACGT\n>C\nTTTT\n").unwrap();
+        fs::write(dir.join("part.fa"), ">A one\nAAAA\n>Q three\nCCCC\n").unwrap();
+        (keep, dir)
+    }
+
+    #[test]
+    fn a_tree_links_by_id_to_described_rows() {
+        let (_keep, dir) = described();
+        let mut s = opened(&dir, &["d.fa"]);
+        let out = s.execute(open(&dir.join("t.nwk"))).unwrap();
+        assert!(
+            out.message.ends_with("; linked to d.fa; rows follow t.nwk"),
+            "{}",
+            out.message
+        );
+        let got = s.link_summary(s.datasets()[1].id).unwrap();
+        assert_eq!((got.matched, got.tips), (3, 3));
+    }
+
+    #[test]
+    fn link_counts_name_rows_with_no_tip_by_full_name() {
+        let (_keep, dir) = described();
+        let mut s = opened(&dir, &["part.fa", "t.nwk"]);
+        let out = ex_in(&mut s, &dir, "tree link {}/part.fa").unwrap();
+        for part in [
+            "1 of 3 tips have a sequence",
+            "1 sequence has no tip: Q three",
+        ] {
+            assert!(out.message.contains(part), "{}", out.message);
+        }
+        assert!(!out.message.contains("A one"), "{}", out.message);
+    }
 
     #[test]
     fn a_tree_links_to_the_one_alignment_that_has_every_tip() {
