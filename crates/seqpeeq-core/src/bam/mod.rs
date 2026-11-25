@@ -11,6 +11,7 @@ mod read;
 mod reference;
 mod region;
 mod stretch;
+mod tally;
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
 pub mod testing;
@@ -36,6 +37,7 @@ pub use read::{Alt, Part, Place, Read};
 pub use reference::Reference;
 pub use region::{Region, parse_region};
 pub use stretch::{Direction, Stretch, next_start};
+pub use tally::{Counts, Edit, MIN_FRACTION, MIN_READS, RefSlice, Signal, Summary, Tally, edits};
 pub use window::Window;
 
 /// A reference sequence named in a BAM's header, with the read counts its
