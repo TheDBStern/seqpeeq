@@ -9,7 +9,7 @@ import report
 ROOT = Path(__file__).resolve().parent.parent
 
 MACHINE = {"chip": "Apple M9", "cores": 8, "memory_bytes": 24 * 2**30, "os": "macOS 99"}
-VERSIONS = {"seqpeeq": "0.1.0", "jalview": "2.11.5.1", "igv": "2.19.8", "figtree": "1.4.4"}
+VERSIONS = {"seqpeeq": "0.1.0", "termal": "2.1.0 (arm64)", "jalview": "2.11.5.1", "igv": "2.19.8", "figtree": "1.4.4"}
 
 
 def result(tool, kind, file, outcome, seconds, rss, detail=""):
@@ -31,6 +31,7 @@ RESULTS = {
 }
 ONLY = {"alignment": {"open and first frame": 1.86, "delete 1,000 columns": 0.0011},
         "tree": {"prune a clade": 0.153}}
+COLD = {"results": [result("seqpeeq", "msa", "aln_100k.fa", "ok", 4.6, 3_000_000_000)]}
 
 
 class Format(unittest.TestCase):
@@ -78,6 +79,41 @@ class Page(unittest.TestCase):
         self.assertIn("[^", row)
         self.assertIn("16 GB heap limit", page)
 
+    def test_columns_put_terminal_tools_before_the_gui(self):
+        page = report.page({**RESULTS, "results": [
+            result("jalview", "msa", "aln_1k.fa", "ok", 2.5, 412_000_000),
+            result("alv", "msa", "aln_1k.fa", "ok", 1.3, 53_000_000),
+            result("termal", "msa", "aln_1k.fa", "ok", 0.3, 20_000_000),
+            result("seqpeeq", "msa", "aln_1k.fa", "ok", 0.21, 9_000_000)]}, ONLY)
+        self.assertIn("| Alignment | File | seqpeeq | termal | alv | Jalview |", page)
+
+    def test_only_java_tools_get_the_heap_note(self):
+        page = report.page({**RESULTS, "results": [
+            result("seqpeeq", "bam", "reads_10x.bam", "ok", 0.1, 9_000_000),
+            result("tview", "bam", "reads_10x.bam", "ok", 0.1, 16_400_000_000)]}, ONLY)
+        self.assertNotIn("heap limit", page)
+        page = report.page({**RESULTS, "results": [
+            result("seqpeeq", "bam", "reads_10x.bam", "ok", 0.1, 9_000_000),
+            result("asciigenome", "bam", "reads_10x.bam", "ok", 9.0, 16_400_000_000)]}, ONLY)
+        self.assertIn("ASCIIGenome on `reads_10x.bam` reached its 16 GB heap limit", page)
+
+    def test_page_says_files_were_already_in_memory(self):
+        self.assertIn("files already in memory", self.page)
+        self.assertIn("first open from disk is slower", self.page)
+
+    def test_page_describes_every_tool(self):
+        self.assertIn("(termal and alv\nfor alignments", self.page)
+        self.assertIn("piped into\n  `less -R`", self.page)
+        self.assertIn("samtools, alv,", self.page)
+        self.assertIn("All eight tools run natively", self.page)
+        for bullet in ["- **termal**", "- **alv**", "- **samtools tview**", "- **ASCIIGenome**"]:
+            self.assertIn(bullet, self.page)
+        self.assertIn("env-asciigenome.yml", self.page)
+        self.assertIn("cargo install termal-msa@", self.page)
+        # Built like seqpeeq, with the default release settings.
+        self.assertNotIn("target-cpu", self.page)
+        self.assertIn("no interactive terminal tree viewer", self.page)
+
     def test_page_names_the_machine_and_versions(self):
         self.assertIn("Apple M9", self.page)
         for version in VERSIONS.values():
@@ -88,13 +124,23 @@ class Page(unittest.TestCase):
         self.assertIn("1.1 ms", self.page)
         self.assertIn("0.15 s", self.page)
 
+    def test_from_disk_sits_beside_in_memory(self):
+        page = report.page(RESULTS, ONLY, COLD)
+        self.assertIn("### From disk", page)
+        self.assertIn("`sudo purge`", page)
+        self.assertIn("| 100,000 × 30,000 | 1 MB | 4.60 s | 1.90 s |", page)
+
+    def test_no_from_disk_without_cold_runs(self):
+        self.assertNotIn("From disk", report.page(RESULTS, ONLY))
+
 
 class Committed(unittest.TestCase):
     def test_the_committed_results_give_the_committed_page(self):
         results = json.loads((ROOT / "bench" / "results.json").read_text())
         only = json.loads((ROOT / "bench" / "seqpeeq_only.json").read_text())
+        cold = json.loads((ROOT / "bench" / "cold.json").read_text())
         expected = (ROOT / "docs" / "benchmarks.md").read_text()
-        self.assertEqual(report.page(results, only), expected,
+        self.assertEqual(report.page(results, only, cold), expected,
                          "docs/benchmarks.md differs from what report.py writes: edit report.py "
                          "and regenerate the page, rather than editing the page by hand")
 

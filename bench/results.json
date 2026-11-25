@@ -3,15 +3,20 @@
   "chip": "Apple M2",
   "cores": 8,
   "memory_bytes": 25769803776,
-  "os": "macOS 26.6.2"
+  "os": "macOS 27.2.1"
  },
  "versions": {
-  "seqpeeq": "0.1.0 (arm64)",
+  "seqpeeq": "0.4.0 (arm64)",
+  "termal": "2.1.0 (arm64)",
+  "samtools": "1.25",
+  "alv": "1.8.3",
   "figtree": "1.4.4",
   "jalview": "2.11.5.1",
   "java (FigTree, Jalview)": "11.0.30",
   "igv": "2.19.8",
-  "java (IGV)": "21.0.13.1"
+  "java (IGV)": "21.0.13.1",
+  "asciigenome": "1.21.1",
+  "java (ASCIIGenome)": "27.0.1.1"
  },
  "timeout_seconds": 600,
  "memory_limit": "16g",
@@ -23,27 +28,85 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 0.06118570800026646,
-     "max_rss": 5226496,
+     "seconds": 0.06253158301115036,
+     "max_rss": 5832704,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.06350720899899898,
-     "max_rss": 5226496,
+     "seconds": 0.06131520798953716,
+     "max_rss": 5832704,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.06574183300108416,
-     "max_rss": 5242880,
+     "seconds": 0.062171333003789186,
+     "max_rss": 5799936,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.06350720899899898,
-   "max_rss": 5242880
+   "median_seconds": 0.062171333003789186,
+   "max_rss": 5832704
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "tiny.fa",
+   "file_bytes": 150,
+   "runs": [
+    {
+     "seconds": 0.01586200000019744,
+     "max_rss": 4308992,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.015571999989333563,
+     "max_rss": 4325376,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.015650332992663607,
+     "max_rss": 4358144,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.015650332992663607,
+   "max_rss": 4358144
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "tiny.fa",
+   "file_bytes": 150,
+   "runs": [
+    {
+     "seconds": 0.16801937499258202,
+     "max_rss": 50462720,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.159433958993759,
+     "max_rss": 49397760,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.16026012500515208,
+     "max_rss": 50380800,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.16026012500515208,
+   "max_rss": 50462720
   },
   {
    "tool": "jalview",
@@ -52,27 +115,27 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 1.3840761249994102,
-     "max_rss": 266780672,
+     "seconds": 1.3825214999960735,
+     "max_rss": 284901376,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.3491804580007738,
-     "max_rss": 283082752,
+     "seconds": 1.3434642090142006,
+     "max_rss": 271187968,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.3255964170002699,
-     "max_rss": 281296896,
+     "seconds": 1.3340562500088708,
+     "max_rss": 271155200,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.3491804580007738,
-   "max_rss": 283082752
+   "median_seconds": 1.3434642090142006,
+   "max_rss": 284901376
   },
   {
    "tool": "seqpeeq",
@@ -81,27 +144,27 @@
    "file_bytes": 80,
    "runs": [
     {
-     "seconds": 0.061237541000082274,
-     "max_rss": 5390336,
+     "seconds": 0.062239042003056966,
+     "max_rss": 6012928,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.06028008300017973,
-     "max_rss": 5406720,
+     "seconds": 0.062266000008094124,
+     "max_rss": 6078464,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.061653708000449114,
-     "max_rss": 5455872,
+     "seconds": 0.06135087499569636,
+     "max_rss": 6029312,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.061237541000082274,
-   "max_rss": 5455872
+   "median_seconds": 0.062239042003056966,
+   "max_rss": 6078464
   },
   {
    "tool": "figtree",
@@ -110,27 +173,27 @@
    "file_bytes": 80,
    "runs": [
     {
-     "seconds": 1.1450288340001862,
-     "max_rss": 225968128,
+     "seconds": 0.8833469170058379,
+     "max_rss": 232570880,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.1777850829985255,
-     "max_rss": 221380608,
+     "seconds": 1.244033708004281,
+     "max_rss": 234422272,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.1477889159996266,
-     "max_rss": 225918976,
+     "seconds": 1.2011092080065282,
+     "max_rss": 231489536,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.1477889159996266,
-   "max_rss": 225968128
+   "median_seconds": 1.2011092080065282,
+   "max_rss": 234422272
   },
   {
    "tool": "seqpeeq",
@@ -139,27 +202,85 @@
    "file_bytes": 1329,
    "runs": [
     {
-     "seconds": 0.13935570900139282,
-     "max_rss": 5914624,
+     "seconds": 0.1204918750008801,
+     "max_rss": 6569984,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.13396141699922737,
-     "max_rss": 5914624,
+     "seconds": 0.11916362500051036,
+     "max_rss": 6553600,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.13213962500049092,
-     "max_rss": 5947392,
+     "seconds": 0.12603133299853653,
+     "max_rss": 6569984,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.13396141699922737,
-   "max_rss": 5947392
+   "median_seconds": 0.1204918750008801,
+   "max_rss": 6569984
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 0.0814628329972038,
+     "max_rss": 38813696,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.10103791700385045,
+     "max_rss": 38649856,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07870095799444243,
+     "max_rss": 38649856,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.0814628329972038,
+   "max_rss": 38813696
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 0.7526439580105944,
+     "max_rss": 175734784,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7192134170036297,
+     "max_rss": 176799744,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.737006166993524,
+     "max_rss": 184877056,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.737006166993524,
+   "max_rss": 184877056
   },
   {
    "tool": "igv",
@@ -168,27 +289,27 @@
    "file_bytes": 1329,
    "runs": [
     {
-     "seconds": 3.3595843330003845,
-     "max_rss": 314507264,
+     "seconds": 3.583866125001805,
+     "max_rss": 320421888,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 3.704407541999899,
-     "max_rss": 314081280,
+     "seconds": 3.576894041005289,
+     "max_rss": 321863680,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 2.3251724999990984,
-     "max_rss": 321945600,
+     "seconds": 1.5734653330000583,
+     "max_rss": 325533696,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 3.3595843330003845,
-   "max_rss": 321945600
+   "median_seconds": 3.576894041005289,
+   "max_rss": 325533696
   },
   {
    "tool": "seqpeeq",
@@ -197,525 +318,813 @@
    "file_bytes": 1010000,
    "runs": [
     {
-     "seconds": 0.08098504100053106,
-     "max_rss": 6520832,
+     "seconds": 0.07869191699137446,
+     "max_rss": 7045120,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08157937499890977,
-     "max_rss": 6438912,
+     "seconds": 0.07727658399380744,
+     "max_rss": 7077888,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08387908300028357,
-     "max_rss": 6455296,
+     "seconds": 0.07720595799037255,
+     "max_rss": 7028736,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08157937499890977,
-   "max_rss": 6520832
+   "median_seconds": 0.07727658399380744,
+   "max_rss": 7077888
   },
   {
-   "tool": "jalview",
+   "tool": "termal",
    "kind": "msa",
    "file": "aln_1k.fa",
    "file_bytes": 1010000,
    "runs": [
     {
-     "seconds": 1.4271432909990835,
-     "max_rss": 290390016,
+     "seconds": 0.22427854100533295,
+     "max_rss": 7307264,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.42544000000089,
-     "max_rss": 296124416,
+     "seconds": 0.23004129200126044,
+     "max_rss": 7372800,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4276487500010262,
-     "max_rss": 303890432,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.4271432909990835,
-   "max_rss": 303890432
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_10k.fa",
-   "file_bytes": 100100000,
-   "runs": [
-    {
-     "seconds": 0.1856008329996257,
-     "max_rss": 107102208,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07706241699997918,
-     "max_rss": 107085824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07846120800058998,
-     "max_rss": 107036672,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07846120800058998,
-   "max_rss": 107102208
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_10k.fa",
-   "file_bytes": 100100000,
-   "runs": [
-    {
-     "seconds": 5.934932417001619,
-     "max_rss": 1245773824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 6.210342250000394,
-     "max_rss": 1274445824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 6.1340102080012,
-     "max_rss": 1349074944,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 6.1340102080012,
-   "max_rss": 1349074944
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_30k.fa",
-   "file_bytes": 900300000,
-   "runs": [
-    {
-     "seconds": 1.3311342080014583,
-     "max_rss": 910786560,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.12693929099987145,
-     "max_rss": 910639104,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.13394091699956334,
-     "max_rss": 910606336,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.13394091699956334,
-   "max_rss": 910786560
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_30k.fa",
-   "file_bytes": 900300000,
-   "runs": [
-    {
-     "seconds": 75.71971208299874,
-     "max_rss": 5196234752,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 75.71971208299874,
-   "max_rss": 5196234752
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_100k.fa",
-   "file_bytes": 3001000000,
-   "runs": [
-    {
-     "seconds": 4.5674904999996215,
-     "max_rss": 3017162752,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.6496755000007397,
-     "max_rss": 3017129984,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.6495834160014056,
-     "max_rss": 3017080832,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.6496755000007397,
-   "max_rss": 3017162752
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_100k.fa",
-   "file_bytes": 3001000000,
-   "runs": [
-    {
-     "seconds": 390.18437308300054,
-     "max_rss": 14736162816,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 390.18437308300054,
-   "max_rss": 14736162816
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_1k.nwk",
-   "file_bytes": 20878,
-   "runs": [
-    {
-     "seconds": 0.08435758299856388,
-     "max_rss": 5767168,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.0768511660007789,
-     "max_rss": 5799936,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07889854099994409,
-     "max_rss": 5783552,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07889854099994409,
-   "max_rss": 5799936
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_1k.nwk",
-   "file_bytes": 20878,
-   "runs": [
-    {
-     "seconds": 1.2867019169989362,
-     "max_rss": 254312448,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.2752175000005082,
-     "max_rss": 253984768,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.2726947920000384,
-     "max_rss": 251789312,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.2752175000005082,
-   "max_rss": 254312448
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_10k.nwk",
-   "file_bytes": 218879,
-   "runs": [
-    {
-     "seconds": 0.09286495800006378,
-     "max_rss": 7700480,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.08197062499857566,
-     "max_rss": 7700480,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07996258399907674,
-     "max_rss": 7700480,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.08197062499857566,
-   "max_rss": 7700480
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_10k.nwk",
-   "file_bytes": 218879,
-   "runs": [
-    {
-     "seconds": 1.5683337910013506,
-     "max_rss": 428736512,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.5984600000010687,
-     "max_rss": 434520064,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.602287041998352,
-     "max_rss": 435044352,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.5984600000010687,
-   "max_rss": 435044352
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_100k.nwk",
-   "file_bytes": 2288880,
-   "runs": [
-    {
-     "seconds": 0.08240195799953653,
-     "max_rss": 31375360,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07381166599952849,
-     "max_rss": 31375360,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07375237499945797,
-     "max_rss": 31440896,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07381166599952849,
-   "max_rss": 31440896
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_100k.nwk",
-   "file_bytes": 2288880,
-   "runs": [
-    {
-     "seconds": 3.8205817500002013,
-     "max_rss": 2314027008,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 3.9622291670002596,
-     "max_rss": 1927380992,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 3.819106458000533,
-     "max_rss": 1942061056,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 3.8205817500002013,
-   "max_rss": 2314027008
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_1m.nwk",
-   "file_bytes": 23888881,
-   "runs": [
-    {
-     "seconds": 0.44315016600012314,
-     "max_rss": 308379648,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.4402249999984633,
-     "max_rss": 308396032,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.4383132080001815,
-     "max_rss": 308412416,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.4402249999984633,
-   "max_rss": 308412416
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_1m.nwk",
-   "file_bytes": 23888881,
-   "runs": [
-    {
-     "seconds": 26.330888000000414,
-     "max_rss": 10234445824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 26.274660249999215,
-     "max_rss": 11795021824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 26.238270124998962,
-     "max_rss": 11149754368,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 26.274660249999215,
-   "max_rss": 11795021824
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 0.1329823750002106,
-     "max_rss": 6356992,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.1342262500002107,
-     "max_rss": 6455296,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.13448091600002954,
-     "max_rss": 6389760,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.1342262500002107,
-   "max_rss": 6455296
-  },
-  {
-   "tool": "igv",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 3.9047818340004596,
-     "max_rss": 361873408,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 3.4063704590007546,
-     "max_rss": 342933504,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.5027209999989282,
-     "max_rss": 346374144,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 3.4063704590007546,
-   "max_rss": 361873408
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "bam",
-   "file": "reads_100x.bam",
-   "file_bytes": 7660221,
-   "runs": [
-    {
-     "seconds": 0.15959487500003888,
-     "max_rss": 7553024,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.15817583299940452,
-     "max_rss": 7503872,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.15809475000060047,
+     "seconds": 0.22424195799976587,
      "max_rss": 7471104,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.15817583299940452,
-   "max_rss": 7553024
+   "median_seconds": 0.22427854100533295,
+   "max_rss": 7471104
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 1.1809457919880515,
+     "max_rss": 51494912,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.1704501659987727,
+     "max_rss": 52412416,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2119407080026576,
+     "max_rss": 51298304,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.1809457919880515,
+   "max_rss": 52412416
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 1.500022500011255,
+     "max_rss": 300433408,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.4662167499918723,
+     "max_rss": 288423936,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.4412448329967447,
+     "max_rss": 295305216,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.4662167499918723,
+   "max_rss": 300433408
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 0.18010612500074785,
+     "max_rss": 107741184,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07693724999262486,
+     "max_rss": 107626496,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07676504200208001,
+     "max_rss": 107642880,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07693724999262486,
+   "max_rss": 107741184
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 4.18178570800228,
+     "max_rss": 229195776,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 4.150171957997372,
+     "max_rss": 229228544,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 4.13468683398969,
+     "max_rss": 229277696,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 4.150171957997372,
+   "max_rss": 229277696
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 81.18133054199279,
+     "max_rss": 163151872,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 81.18133054199279,
+   "max_rss": 163151872
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 6.425029791003908,
+     "max_rss": 1235648512,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 6.599977500009118,
+     "max_rss": 1248231424,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 7.276520125000388,
+     "max_rss": 1251213312,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 6.599977500009118,
+   "max_rss": 1251213312
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 1.4089962500002002,
+     "max_rss": 911327232,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.12843374999647494,
+     "max_rss": 911245312,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.12822862499160692,
+     "max_rss": 911212544,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.12843374999647494,
+   "max_rss": 911327232
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 71.14617904199986,
+     "max_rss": 1992769536,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 71.14617904199986,
+   "max_rss": 1992769536
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 600.0025794579997,
+     "max_rss": 2359296,
+     "outcome": "timed out",
+     "detail": "after 600 s"
+    }
+   ],
+   "outcome": "timed out",
+   "median_seconds": null,
+   "max_rss": 2359296
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 97.6859610840038,
+     "max_rss": 6667108352,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 97.6859610840038,
+   "max_rss": 6667108352
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 4.6446052079991205,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.6915363339940086,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.6391314170032274,
+     "max_rss": 3017687040,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.6915363339940086,
+   "max_rss": 3017687040
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 277.2955737919983,
+     "max_rss": 6594756608,
+     "outcome": "failed",
+     "detail": "exit 101: \nthread 'main' (927796) panicked at ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termal-msa-2.1.0/src/app.rs:195:45:\ncalled `Result::unwrap()` on an `Err` value: TryFromIntError(PosOverflow)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    }
+   ],
+   "outcome": "failed",
+   "median_seconds": null,
+   "max_rss": 6594756608
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 600.0111244580039,
+     "max_rss": 2359296,
+     "outcome": "timed out",
+     "detail": "after 600 s"
+    }
+   ],
+   "outcome": "timed out",
+   "median_seconds": null,
+   "max_rss": 2359296
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 359.6706796249928,
+     "max_rss": 12738789376,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 359.6706796249928,
+   "max_rss": 12738789376
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_1k.nwk",
+   "file_bytes": 20878,
+   "runs": [
+    {
+     "seconds": 0.08148170899949037,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07577812499948777,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07657462499628309,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07657462499628309,
+   "max_rss": 6356992
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_1k.nwk",
+   "file_bytes": 20878,
+   "runs": [
+    {
+     "seconds": 1.3828084999986459,
+     "max_rss": 257622016,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.255111874997965,
+     "max_rss": 261259264,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2891379999928176,
+     "max_rss": 265961472,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.2891379999928176,
+   "max_rss": 265961472
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_10k.nwk",
+   "file_bytes": 218879,
+   "runs": [
+    {
+     "seconds": 0.08757604198763147,
+     "max_rss": 8290304,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.08182887500151992,
+     "max_rss": 8273920,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07826745799684431,
+     "max_rss": 8273920,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.08182887500151992,
+   "max_rss": 8290304
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_10k.nwk",
+   "file_bytes": 218879,
+   "runs": [
+    {
+     "seconds": 1.606767374993069,
+     "max_rss": 383418368,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.6079718330001924,
+     "max_rss": 376995840,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.6535222499951487,
+     "max_rss": 382926848,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.6079718330001924,
+   "max_rss": 383418368
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_100k.nwk",
+   "file_bytes": 2288880,
+   "runs": [
+    {
+     "seconds": 0.07694312500825617,
+     "max_rss": 31997952,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07351379199826624,
+     "max_rss": 31997952,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07401937499525957,
+     "max_rss": 32030720,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07401937499525957,
+   "max_rss": 32030720
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_100k.nwk",
+   "file_bytes": 2288880,
+   "runs": [
+    {
+     "seconds": 4.0568351250112755,
+     "max_rss": 1888845824,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.8055391249945387,
+     "max_rss": 1672691712,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.759107709003729,
+     "max_rss": 1594540032,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 3.8055391249945387,
+   "max_rss": 1888845824
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_1m.nwk",
+   "file_bytes": 23888881,
+   "runs": [
+    {
+     "seconds": 0.43400579199078493,
+     "max_rss": 309035008,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.4323702910041902,
+     "max_rss": 309002240,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.43358345799788367,
+     "max_rss": 308953088,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.43358345799788367,
+   "max_rss": 309035008
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_1m.nwk",
+   "file_bytes": 23888881,
+   "runs": [
+    {
+     "seconds": 26.636838417005492,
+     "max_rss": 9561194496,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 26.729544874993735,
+     "max_rss": 10386898944,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 26.634694917011075,
+     "max_rss": 11996889088,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 26.636838417005492,
+   "max_rss": 11996889088
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 0.1326111250091344,
+     "max_rss": 7012352,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.13324366700544488,
+     "max_rss": 6897664,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.13399033399764448,
+     "max_rss": 6979584,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.13324366700544488,
+   "max_rss": 7012352
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 0.11291845899540931,
+     "max_rss": 38993920,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07515962500474416,
+     "max_rss": 38797312,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07392062500002794,
+     "max_rss": 38486016,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07515962500474416,
+   "max_rss": 38993920
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 1.0587698750023264,
+     "max_rss": 166494208,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7617496250022668,
+     "max_rss": 173539328,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7612815830070758,
+     "max_rss": 181436416,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.7617496250022668,
+   "max_rss": 181436416
+  },
+  {
+   "tool": "igv",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 3.8446536249975907,
+     "max_rss": 361529344,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.4333917499898234,
+     "max_rss": 366493696,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.643120042004739,
+     "max_rss": 359120896,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 3.4333917499898234,
+   "max_rss": 366493696
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "bam",
+   "file": "reads_100x.bam",
+   "file_bytes": 7660221,
+   "runs": [
+    {
+     "seconds": 0.16675229200336616,
+     "max_rss": 8175616,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.15645433400641195,
+     "max_rss": 8126464,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.15732354200736154,
+     "max_rss": 8159232,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.15732354200736154,
+   "max_rss": 8175616
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "reads_100x.bam",
+   "file_bytes": 7660221,
+   "runs": [
+    {
+     "seconds": 0.0752725000056671,
+     "max_rss": 38502400,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07447300000058021,
+     "max_rss": 38502400,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.074179124989314,
+     "max_rss": 38502400,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07447300000058021,
+   "max_rss": 38502400
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "reads_100x.bam",
+   "file_bytes": 7660221,
+   "runs": [
+    {
+     "seconds": 0.9008112500014249,
+     "max_rss": 183713792,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.8954252080002334,
+     "max_rss": 182386688,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.892261957997107,
+     "max_rss": 182435840,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.8954252080002334,
+   "max_rss": 183713792
   },
   {
    "tool": "igv",
@@ -724,27 +1133,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 1.5726052499994694,
-     "max_rss": 354664448,
+     "seconds": 1.7350116669986164,
+     "max_rss": 367411200,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.406017665998661,
-     "max_rss": 370671616,
+     "seconds": 1.777630083000986,
+     "max_rss": 361103360,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4161447080005019,
-     "max_rss": 356646912,
+     "seconds": 1.7148671250033658,
+     "max_rss": 360988672,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.4161447080005019,
-   "max_rss": 370671616
+   "median_seconds": 1.7350116669986164,
+   "max_rss": 367411200
   },
   {
    "tool": "seqpeeq",
@@ -753,27 +1162,85 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 0.17361520800113794,
-     "max_rss": 18907136,
+     "seconds": 0.16164658300112933,
+     "max_rss": 19955712,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.16179366600044887,
-     "max_rss": 18857984,
+     "seconds": 0.16156212500936817,
+     "max_rss": 19464192,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.1612815420012339,
-     "max_rss": 18972672,
+     "seconds": 0.16090987500501797,
+     "max_rss": 19480576,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.16179366600044887,
-   "max_rss": 18972672
+   "median_seconds": 0.16156212500936817,
+   "max_rss": 19955712
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "reads_1000x.bam",
+   "file_bytes": 43903154,
+   "runs": [
+    {
+     "seconds": 0.0791571669979021,
+     "max_rss": 39206912,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07865274998766836,
+     "max_rss": 39534592,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07841345899214502,
+     "max_rss": 39206912,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07865274998766836,
+   "max_rss": 39534592
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "reads_1000x.bam",
+   "file_bytes": 43903154,
+   "runs": [
+    {
+     "seconds": 1.0077388749923557,
+     "max_rss": 212746240,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.0030938339914428,
+     "max_rss": 216989696,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.986673499995959,
+     "max_rss": 209616896,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.0030938339914428,
+   "max_rss": 216989696
   },
   {
    "tool": "igv",
@@ -782,27 +1249,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 1.5541197080001439,
-     "max_rss": 388153344,
+     "seconds": 1.8969740419997834,
+     "max_rss": 389251072,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.548943750000035,
-     "max_rss": 386236416,
+     "seconds": 1.7525773749948712,
+     "max_rss": 392232960,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.5616249579998112,
-     "max_rss": 375635968,
+     "seconds": 3.751725375012029,
+     "max_rss": 394395648,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.5541197080001439,
-   "max_rss": 388153344
+   "median_seconds": 1.8969740419997834,
+   "max_rss": 394395648
   }
  ]
 }

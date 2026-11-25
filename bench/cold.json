@@ -1,0 +1,112 @@
+{
+ "machine": {
+  "chip": "Apple M2",
+  "cores": 8,
+  "memory_bytes": 25769803776,
+  "os": "macOS 27.2.1"
+ },
+ "versions": {
+  "seqpeeq": "0.4.0 (arm64)",
+  "termal": "2.1.0 (arm64)",
+  "samtools": "1.25",
+  "alv": "1.8.3",
+  "figtree": "1.4.4",
+  "jalview": "2.11.5.1",
+  "java (FigTree, Jalview)": "11.0.30",
+  "igv": "2.19.8",
+  "java (IGV)": "21.0.13.1",
+  "asciigenome": "1.21.1",
+  "java (ASCIIGenome)": "27.0.1.1"
+ },
+ "timeout_seconds": 600,
+ "memory_limit": "16g",
+ "results": [
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 1.5447163339995313,
+     "max_rss": 911360000,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.4983690420049243,
+     "max_rss": 911310848,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.48745100000815,
+     "max_rss": 911360000,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.4983690420049243,
+   "max_rss": 911360000
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 5.29480516599142,
+     "max_rss": 3017654272,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 5.0798028749995865,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 5.02249433399993,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 5.0798028749995865,
+   "max_rss": 3017670656
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_1m.nwk",
+   "file_bytes": 23888881,
+   "runs": [
+    {
+     "seconds": 0.571242792007979,
+     "max_rss": 309084160,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.5683822089922614,
+     "max_rss": 308985856,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.5661228750104783,
+     "max_rss": 309084160,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.5683822089922614,
+   "max_rss": 309084160
+  }
+ ]
+}

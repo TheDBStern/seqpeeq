@@ -1,10 +1,17 @@
-"""Time seqpeeq, IGV, FigTree and Jalview opening the benchmark files.
+"""Time seqpeeq and its peers opening the benchmark files: the terminal
+viewers termal, alv, samtools tview and ASCIIGenome, and the GUI programs
+IGV, FigTree and Jalview.
 
 Each run is timed from launch until the tool has shown the file:
-- the Java tools until their script mode has finished and they exit;
-- seqpeeq until its first screen of data is drawn in a pseudo-terminal.
+- IGV, FigTree and Jalview until their script mode has finished and they exit;
+- the terminal viewers until their first screen of data is drawn in a
+  pseudo-terminal; alv, which prints the whole alignment and exits, is piped
+  into `less -R`, the way it is used.
 
-Its peak memory is read from the operating system when it exits.
+Peak memory is read from the operating system when each run exits.
+
+With --cold, seqpeeq alone is timed on the largest files, with the file
+cache emptied (`sudo purge`) before each run: run `sudo -v` first.
 
     python bench/run.py --data bench/data --out bench/results.json --only all
 """
@@ -34,7 +41,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENVS = Path(os.environ.get("SEQPEEQ_BENCH_ENVS", Path.home() / "miniconda3" / "envs"))
 BENCH = ENVS / "seqpeeq-bench"
 BENCH_IGV = ENVS / "seqpeeq-bench-igv"
+BENCH_ASCII = ENVS / "seqpeeq-bench-asciigenome"
 SEQPEEQ = ROOT / "target" / "release" / "seqpeeq"
+# termal is not on Bioconda: `cargo install termal-msa --root bench/tools`.
+TERMAL = ROOT / "bench" / "tools" / "bin" / "termal"
 MEMORY = "-Xmx16g"
 TIMEOUT = 600
 LONG_RUN = 60
@@ -45,9 +55,12 @@ WINDOW = "c1:1-1000"
 # contig opens zoomed out with a depth already shown, at a coarser scale.
 WINDOW_SCALE = 10
 LEFT_BEHIND_GRACE = 0.5
+# What each terminal tool is sent to quit, when it isn't `q`: ASCIIGenome
+# reads a command line, ended by Enter.
+QUIT = {"asciigenome": b"q\r"}
 
 # Which tools are timed on which kind of file.
-TOOLS = {"msa": ["seqpeeq", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "igv"]}
+TOOLS = {"msa": ["seqpeeq", "termal", "alv", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
 FILES = {
     "tiny": [("msa", "tiny.fa"), ("tree", "tiny.nwk"), ("bam", "tiny.bam")],
     "small": [("msa", "aln_1k.fa"), ("tree", "tree_1k.nwk"), ("bam", "reads_10x.bam")],
@@ -71,8 +84,17 @@ def _rss_bytes(rusage):
     return rusage.ru_maxrss if sys.platform == "darwin" else rusage.ru_maxrss * 1024
 
 
+# A terminal escape sequence: CSI (ESC [ … final byte) or ESC and one character.
+ESCAPE = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|.)")
+
+
+def publishable(text) -> str:
+    """`text` fit for the public page: no escape codes, and ~ for the home folder."""
+    return ESCAPE.sub("", text).replace(str(Path.home()), "~")
+
+
 def _ended(status, output, seconds, rusage):
-    text = output.decode(errors="replace")
+    text = publishable(output.decode(errors="replace"))
     if "OutOfMemoryError" in text:
         return Run(seconds, _rss_bytes(rusage), "out of memory", text[-300:])
     code = os.waitstatus_to_exitcode(status)
@@ -84,7 +106,8 @@ def _ended(status, output, seconds, rusage):
 def _kill(pid):
     try:
         os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # Gone, or (on macOS) only its unreaped leader is left.
         pass
 
 
@@ -104,7 +127,7 @@ def _left_behind(pgid):
         time.sleep(0.02)
 
 
-def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS)) -> Run:
+def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS), quit=b"q") -> Run:
     """Run `argv` once in its own process group and say how it went.
 
     Without `ready`, the time is until the program exits. With `ready`,
@@ -112,12 +135,13 @@ def measure(argv, *, timeout, env=None, ready=None, pty_size=(PTY_ROWS, PTY_COLS
     passes the last of its steps; it is then sent `q` to quit. `ready` is a
     test of the screen's text, or a list of (test, keys) steps: when a
     step's test holds its keys are typed, and the last step has keys None.
+    `quit` is what is typed once the last step holds.
     On `timeout` the whole process group is killed, and a group that
     outlives its leader is a failure.
     """
     if ready is None:
         return _measure_exit(argv, timeout, env)
-    return _measure_screen(argv, timeout, env, ready, pty_size)
+    return _measure_screen(argv, timeout, env, ready, pty_size, quit)
 
 
 def _measure_exit(argv, timeout, env):
@@ -144,7 +168,7 @@ def _measure_exit(argv, timeout, env):
         return _ended(status, out.read(), seconds, rusage)
 
 
-def _measure_screen(argv, timeout, env, ready, size):
+def _measure_screen(argv, timeout, env, ready, size, quit):
     steps = ready if isinstance(ready, list) else [(ready, None)]
     step = 0
     rows, cols = size
@@ -189,7 +213,7 @@ def _measure_screen(argv, timeout, env, ready, size):
                     if keys is None:
                         shown = time.monotonic() - started
                         quit_sent = time.monotonic()
-                        os.write(master, b"q")
+                        os.write(master, quit)
                     else:
                         os.write(master, keys)
                         step += 1
@@ -203,7 +227,8 @@ def _measure_screen(argv, timeout, env, ready, size):
         run = _ended(status, bytes(output), time.monotonic() - started, rusage)
         if run.outcome == "ok":
             return Run(run.seconds, run.max_rss, "failed",
-                       "exited before showing the file: " + "\n".join(screen.display).strip()[-300:])
+                       "exited before showing the file: "
+                       + publishable("\n".join(screen.display).strip())[-300:])
         return run
     return Run(shown, _rss_bytes(rusage), "ok")
 
@@ -237,6 +262,35 @@ def _window_shown(screen):
             and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 
 
+def alv_ready(screen) -> bool:
+    """When less shows alv's first screen: a sequence row above less's
+    prompt, which is drawn last."""
+    rows = [row.rstrip() for row in screen.splitlines() if row.strip()]
+    if not rows or rows[-1] not in (":", "(END)"):
+        return False
+    return any(re.fullmatch(r"\S+ +[A-Za-z*.-]+", row) for row in rows[:-1])
+
+
+def termal_ready(screen) -> bool:
+    """When termal has drawn its first frame: the first sequence's row, and
+    the help line at the bottom, which is drawn last."""
+    return re.search(r"│ *1│", screen) is not None and "Press '?' for help" in screen
+
+
+def tview_ready(screen) -> bool:
+    """When samtools tview has drawn the window: its ruler, the reference
+    under it, and reads below those."""
+    lines = screen.splitlines()
+    return (len(lines) > 2 and lines[0][:1].isdigit() and lines[1].strip() != ""
+            and any(line.strip() for line in lines[2:]))
+
+
+def asciigenome_ready(screen) -> bool:
+    """When ASCIIGenome has drawn the window: its read track, and the footer
+    naming the window, which is drawn after the tracks."""
+    return "; Reads: " in screen and f"\n{WINDOW}; " in screen
+
+
 def _java(env):
     return str(env / "lib" / "jvm" / "bin" / "java")
 
@@ -252,12 +306,29 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
     scratch.mkdir(parents=True, exist_ok=True)
     if tool == "seqpeeq":
         return [str(SEQPEEQ), "--no-log", str(file)]
+    if tool == "termal":
+        return [str(TERMAL), str(file)]
+    if tool == "alv":
+        # alv prints the whole alignment and exits, so it is piped into less,
+        # as it is used. less reads no settings from the environment and
+        # writes no history. The file is an argument, never part of the script.
+        script = ('LESS= LESSOPEN= LESSHISTFILE=-; export LESS LESSOPEN LESSHISTFILE; '
+                  'exec "$0" -k "$1" | less -R')
+        return ["sh", "-c", script, str(BENCH / "bin" / "alv"), str(file)]
+    if tool == "tview":
+        start = WINDOW.split("-")[0]
+        return [str(BENCH / "bin" / "samtools"), "tview", "-p", start, str(file), str(_reference(file))]
+    if tool == "asciigenome":
+        # The jar run directly: Bioconda's wrapper script would be timed, and
+        # it sets its own heap size. Its history goes to the scratch folder.
+        return [_java(BENCH_ASCII), MEMORY, f"-Duser.home={scratch}", "-jar",
+                str(BENCH_ASCII / "bin" / "ASCIIGenome.jar"), "-r", WINDOW, "-fa", str(_reference(file)), str(file)]
     if tool == "figtree":
-        jar = next((BENCH / "share").glob("figtree-*/figtree.jar"))
+        jar = _jar("figtree-*/figtree.jar")
         return [_java(BENCH), MEMORY, "-jar", str(jar), "-graphic", "PNG", "-width", "1200",
                 "-height", "800", str(file), str(scratch / "figtree.png")]
     if tool == "jalview":
-        jar = next((BENCH / "share").glob("jalview-*/jalview-all-j11.jar"))
+        jar = _jar("jalview-*/jalview-all-j11.jar")
         # The jar's own entry point is a launcher that starts Jalview in a
         # second JVM and exits; this is the command it runs.
         # Its settings and recent files go to the scratch folder, not ~.
@@ -282,7 +353,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return seqpeeq_steps(kind) if tool == "seqpeeq" else None
+    return {"seqpeeq": seqpeeq_steps(kind), "termal": termal_ready, "alv": alv_ready, "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
 
 
 def _output(argv):
@@ -310,22 +381,66 @@ def architecture(program) -> str:
 
 
 def versions():
-    version = _output([str(SEQPEEQ), "--version"]).removeprefix("seqpeeq ")
-    found = {"seqpeeq": f"{version} ({architecture(SEQPEEQ)})"}
-    for env, names in [(BENCH, ["figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"])]:
+    found = {}
+    for name, program in [("seqpeeq", SEQPEEQ), ("termal", TERMAL)]:
+        if not program.exists():
+            continue
+        version = _output([str(program), "--version"]).split()[-1:]
+        found[name] = f"{' '.join(version)} ({architecture(program)})"
+    javas = {BENCH: "FigTree, Jalview", BENCH_IGV: "IGV", BENCH_ASCII: "ASCIIGenome"}
+    for env, names in [(BENCH, ["samtools", "alv", "figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"]),
+                       (BENCH_ASCII, ["asciigenome", "openjdk"])]:
         for name in names:
             meta = sorted((env / "conda-meta").glob(f"{name}-[0-9]*.json"))
             if meta:
                 version = meta[-1].name.removeprefix(f"{name}-").rsplit("-", 1)[0]
-                key = name if name != "openjdk" else f"java ({'IGV' if env == BENCH_IGV else 'FigTree, Jalview'})"
-                found[key] = version
+                found[name if name != "openjdk" else f"java ({javas[env]})"] = version
     return found
 
 
-def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout):
+def _jar(pattern) -> Path:
+    """The jar in the bench environment matching `pattern`, or where it would be."""
+    return next((BENCH / "share").glob(pattern), BENCH / "share" / pattern)
+
+
+def _programs(tool) -> list[Path]:
+    """The files `tool` needs to run."""
+    return {
+        "seqpeeq": [SEQPEEQ],
+        "termal": [TERMAL],
+        "alv": [BENCH / "bin" / "alv"],
+        "tview": [BENCH / "bin" / "samtools"],
+        "asciigenome": [Path(_java(BENCH_ASCII)), BENCH_ASCII / "bin" / "ASCIIGenome.jar"],
+        "jalview": [Path(_java(BENCH)), _jar("jalview-*/jalview-all-j11.jar")],
+        "figtree": [Path(_java(BENCH)), _jar("figtree-*/figtree.jar")],
+        "igv": [Path(_java(BENCH_IGV)), BENCH_IGV / "lib" / "igv" / "igv.args"],
+    }[tool]
+
+
+def missing_tools(tools) -> list[str]:
+    """The tools among `tools` that are not installed."""
+    return [tool for tool in tools if not all(p.exists() for p in _programs(tool))]
+
+
+# The files --cold times seqpeeq on, each read from disk.
+COLD_FILES = [("msa", "aln_30k.fa"), ("msa", "aln_100k.fa"), ("tree", "tree_1m.nwk")]
+PURGE = ["sudo", "-n", "/usr/sbin/purge"]
+
+
+def purge():
+    """Empty the file cache, so the next run reads its file from disk."""
+    done = subprocess.run(PURGE, capture_output=True)
+    if done.returncode != 0:
+        sys.exit("--cold empties the file cache with `sudo purge`: run `sudo -v` first, then this again")
+
+
+def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout, before=None):
     runs = []
     for _ in range(repeats):
-        got = measure(commands(tool, file, scratch), timeout=timeout, ready=_ready_for(tool, kind))
+        if before is not None:
+            before()
+        got = measure(commands(tool, file, scratch), timeout=timeout, ready=_ready_for(tool, kind),
+                      quit=QUIT.get(tool, b"q"))
         runs.append(got)
         print(f"  {tool:8} {file.name:16} {got.outcome:13} {got.seconds:8.2f} s "
               f"{got.max_rss / 1e6:9.0f} MB", flush=True)
@@ -346,11 +461,23 @@ def main(argv=None):
     args.add_argument("--data", required=True, type=Path)
     args.add_argument("--out", required=True, type=Path)
     args.add_argument("--only", choices=list(FILES), default="all")
-    args.add_argument("--tools", nargs="*", default=["seqpeeq", "igv", "figtree", "jalview"])
+    args.add_argument("--tools", nargs="*", default=["seqpeeq", "termal", "alv", "tview", "asciigenome", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
+    args.add_argument("--cold", action="store_true",
+                      help="time seqpeeq on the largest files read from disk (needs `sudo -v` first)")
     args = args.parse_args(argv)
-    files = FILES["tiny"] + (FILES[args.only] if args.only != "tiny" else [])
+    if args.cold:
+        purge()
+        args.tools = ["seqpeeq"]
+    known = {tool for tools in TOOLS.values() for tool in tools}
+    unknown = [tool for tool in args.tools if tool not in known]
+    if unknown:
+        sys.exit(f"no such tool: {', '.join(unknown)}")
+    missing = missing_tools(args.tools)
+    if missing:
+        sys.exit(f"missing: {', '.join(missing)}")
+    files = COLD_FILES if args.cold else FILES["tiny"] + (FILES[args.only] if args.only != "tiny" else [])
     report = {"machine": machine(), "versions": versions(), "timeout_seconds": args.timeout,
               "memory_limit": MEMORY.removeprefix("-Xmx"), "results": []}
     with tempfile.TemporaryDirectory(prefix="seqpeeq-bench-") as scratch:
@@ -359,7 +486,7 @@ def main(argv=None):
                 if tool not in args.tools:
                     continue
                 result = time_one(tool, kind, args.data / name, Path(scratch) / tool,
-                                  args.repeats, args.timeout)
+                                  args.repeats, args.timeout, before=purge if args.cold else None)
                 report["results"].append(result)
                 args.out.write_text(json.dumps(report, indent=1) + "\n")
 
