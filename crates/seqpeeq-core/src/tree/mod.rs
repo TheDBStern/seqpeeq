@@ -779,6 +779,7 @@ impl TreeExtraction {
     pub(crate) fn add_seqs(
         &mut self,
         alignment: &Alignment,
+        ids: bool,
         name: &str,
         out: &Path,
         wrap: Option<usize>,
@@ -789,7 +790,7 @@ impl TreeExtraction {
         if out == self.out {
             return invalid("the tree and its sequences need two different files");
         }
-        let names = NameMatch::new(alignment);
+        let names = NameMatch::with_ids(alignment, ids);
         let (mut rows, mut missing, mut repeated) = (Vec::new(), Vec::new(), 0);
         for tip in self.tree.preorder_from(self.from) {
             if !self.tree.is_tip(tip) {

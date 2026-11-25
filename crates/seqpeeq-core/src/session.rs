@@ -1,6 +1,6 @@
 //! A session: the open datasets, and the one place commands are executed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -405,6 +405,9 @@ pub struct Session {
     /// Whether a linked alignment's rows follow its tree: off only while
     /// replaying a log from before that rule.
     follow_trees: bool,
+    /// Whether a tip matches a row by its ID as well as its whole name: off
+    /// only while replaying a log from before that rule.
+    match_ids: bool,
 }
 
 /// `$XDG_CACHE_HOME/seqpeeq`, else `~/.cache/seqpeeq`, else a folder in
@@ -464,6 +467,7 @@ impl Session {
             cache_dir: default_cache_dir(),
             replay_dir: None,
             follow_trees: true,
+            match_ids: true,
         }
     }
 
@@ -486,6 +490,15 @@ impl Session {
         self.follow_trees = follow;
         if let Some(log) = &mut self.log {
             log.set_follows_trees(follow);
+        }
+    }
+
+    /// Whether tips match rows by ID as well as by whole name, and whether
+    /// the log says so. Off for replaying a log written before they did.
+    pub(crate) fn set_match_ids(&mut self, ids: bool) {
+        self.match_ids = ids;
+        if let Some(log) = &mut self.log {
+            log.set_matches_ids(ids);
         }
     }
 
@@ -579,7 +592,13 @@ impl Session {
                                     .to_string(),
                             ));
                         };
-                        extraction.add_seqs(alignment, &linked.file_name(), seqs, wrap)?;
+                        extraction.add_seqs(
+                            alignment,
+                            self.match_ids,
+                            &linked.file_name(),
+                            seqs,
+                            wrap,
+                        )?;
                     }
                 }
                 extraction.check_outputs()?;
@@ -920,7 +939,7 @@ impl Session {
     pub fn shared_tips(&self, tree: u64, alignment: u64) -> Option<(usize, usize)> {
         let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
         let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
-        let names = NameMatch::new(msa);
+        let names = NameMatch::with_ids(msa, self.match_ids);
         let tree = doc.tree();
         let tips = tree.tips();
         let shared = tips
@@ -1293,7 +1312,7 @@ impl Session {
         // A tip whose name other tips share is renamed with them, as every
         // row carrying the name is, so no tip loses its sequence.
         let mut shared = None;
-        let names = NameMatch::new(alignment);
+        let names = NameMatch::with_ids(alignment, self.match_ids);
         let rows = match (to, regex, replace) {
             (Some(to), _, _) => {
                 let old = doc.tip_name(at)?;
@@ -1423,21 +1442,58 @@ impl Session {
         )?;
         let mut plan = alignment.renames_for(&map);
         // A row its tip matches by ID: `--to` replaces its ID and keeps its
-        // description, and the tip takes the row's new ID.
-        let names = NameMatch::new(alignment);
-        let doc = self.datasets[tree_at].tree().expect("a tree");
+        // description (a name with a space is used whole), every row
+        // sharing the ID is renamed with it, and the tip takes the new ID.
+        let names = NameMatch::with_ids(alignment, self.match_ids);
+        let tree = self.datasets[tree_at].tree().expect("a tree").tree();
+        let tip_names: HashSet<&str> = tree
+            .tips()
+            .into_iter()
+            .filter_map(|n| tree.label(n))
+            .collect();
         let mut map = map;
+        let mut new_ids: HashMap<&str, String> = HashMap::new();
         for (row, new) in &mut plan {
             let old = alignment.name(*row);
             let id = sequence_id(old);
-            if !names.by_id(*row) || doc.tips_named(id) == 0 || doc.tips_named(old) > 0 {
+            if !names.by_id(*row) || !tip_names.contains(id) || tip_names.contains(old) {
                 continue;
             }
             if to.is_some() {
-                *new = names.renamed(*row, id, sequence_id(new));
+                *new = names.renamed(*row, id, new);
             }
             map.remove(old);
-            map.insert(id.to_string(), sequence_id(new).to_string());
+            let new_id = sequence_id(new).to_string();
+            if new_ids
+                .insert(id, new_id.clone())
+                .is_some_and(|was| was != new_id)
+            {
+                return Err(id_split(&aln_name, id));
+            }
+        }
+        if let Some(to) = to.as_deref().map(str::trim) {
+            let planned: HashSet<usize> = plan.iter().map(|(row, _)| *row).collect();
+            for &id in new_ids.keys() {
+                for &row in names.rows(id) {
+                    if !planned.contains(&row) {
+                        plan.push((row, names.renamed(row, id, to)));
+                    }
+                }
+            }
+            plan.sort_unstable();
+        }
+        let now: HashMap<usize, &str> =
+            plan.iter().map(|(row, new)| (*row, new.as_str())).collect();
+        for (&id, new_id) in &new_ids {
+            let left = names.rows(id).iter().any(|&row| {
+                sequence_id(now.get(&row).copied().unwrap_or(alignment.name(row))) != new_id
+            });
+            if left {
+                return Err(id_split(&aln_name, id));
+            }
+        }
+        for (id, new_id) in new_ids {
+            map.insert(id.to_string(), new_id);
         }
         if let Some(name) = alignment
             .name_clash(&plan)
@@ -1591,7 +1647,10 @@ impl Session {
     /// that of the first row of the alignment at `aln_at` with its name,
     /// given each row's score in `scores`; `None` for a tip with no row.
     fn tip_scores(&self, aln_at: usize, tree_at: usize, scores: &[f64]) -> Vec<Option<f64>> {
-        let names = NameMatch::new(self.datasets[aln_at].msa().expect("an alignment"));
+        let names = NameMatch::with_ids(
+            self.datasets[aln_at].msa().expect("an alignment"),
+            self.match_ids,
+        );
         let tree = self.datasets[tree_at].tree().expect("a tree").tree();
         let mut by_node = vec![None; tree.node_slots()];
         for tip in tree.tips() {
@@ -1642,7 +1701,7 @@ impl Session {
             // tree may have many more tips than the alignment has rows.
             let tree = doc.tree();
             let rows = alignment.rows();
-            let names = NameMatch::new(alignment);
+            let names = NameMatch::with_ids(alignment, self.match_ids);
             let mut keys = vec![usize::MAX; rows];
             for (at, tip) in tree.tips().into_iter().enumerate() {
                 for &row in tree.label(tip).map_or(&[][..], |name| names.rows(name)) {
@@ -1709,7 +1768,7 @@ impl Session {
             .expect("a tree")
             .clade_tip_names(at)?;
         let alignment = self.datasets[aln_at].msa().expect("an alignment");
-        let matched = NameMatch::new(alignment);
+        let matched = NameMatch::with_ids(alignment, self.match_ids);
         let mut rows: Vec<usize> = names
             .iter()
             .flat_map(|name| matched.rows(name))
@@ -1777,7 +1836,7 @@ impl Session {
         let alignment = *self.links.get(&tree)?;
         let doc = self.datasets.iter().find(|d| d.id == tree)?.tree()?;
         let msa = self.datasets.iter().find(|d| d.id == alignment)?.msa()?;
-        let names = NameMatch::new(msa);
+        let names = NameMatch::with_ids(msa, self.match_ids);
         let tree = doc.tree();
         let matched = tree
             .tips()
@@ -1797,7 +1856,7 @@ impl Session {
         let tree = tree_set.tree()?.tree();
         let aln_id = self.links.get(&tree_set.id)?;
         let alignment = self.datasets.iter().find(|d| d.id == *aln_id)?.msa()?;
-        let names = NameMatch::new(alignment);
+        let names = NameMatch::with_ids(alignment, self.match_ids);
         let tips = tree.tips();
         let mut has_tip = vec![false; alignment.rows()];
         let mut without: Vec<&str> = Vec::new();
@@ -2054,6 +2113,14 @@ impl Session {
     }
 }
 
+/// A linked rename refused because rows a tip matches by their shared ID
+/// would end with different IDs, leaving some without the tip.
+fn id_split(alignment: &str, id: &str) -> Error {
+    Error::Invalid(format!(
+        "{alignment}: the sequences with ID '{id}' would not all keep one ID, and tip '{id}' matches them all"
+    ))
+}
+
 /// A linked rename refused because it would give one name to several rows.
 fn row_clash(alignment: &str, name: &str) -> Error {
     Error::Invalid(format!(
@@ -2106,14 +2173,15 @@ mod tests {
         assert_eq!(lines[1], "# started 2026-11-15T16:05:03-08:00");
         assert!(lines[2].starts_with("# cwd /"), "{}", lines[2]);
         assert_eq!(lines[3], "# rows follow linked trees");
-        assert_eq!(lines[4], "# 2026-11-15T16:05:03-08:00");
-        assert_eq!(lines[5], format!("open {}", fa.display()));
+        assert_eq!(lines[4], "# tips match sequences by ID");
+        assert_eq!(lines[5], "# 2026-11-15T16:05:03-08:00");
+        assert_eq!(lines[6], format!("open {}", fa.display()));
         assert!(
-            lines[6].starts_with("# input /") && lines[6].contains(" size=4 mtime="),
+            lines[7].starts_with("# input /") && lines[7].contains(" size=4 mtime="),
             "{}",
-            lines[6]
+            lines[7]
         );
-        assert_eq!(lines.len(), 7);
+        assert_eq!(lines.len(), 8);
     }
 
     #[test]
@@ -2134,7 +2202,7 @@ mod tests {
         assert!(matches!(err, Error::Io { .. }), "{err}");
         assert!(s.datasets().is_empty());
         assert!(s.history().is_empty());
-        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 4);
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 5);
     }
 
     #[test]
@@ -2193,7 +2261,7 @@ mod tests {
         let mut s = Session::with_clock(Some(SessionLog::new(log.clone())), fixed);
         s.execute(open(&link)).unwrap();
         let text = fs::read_to_string(&log).unwrap();
-        assert_eq!(text.lines().count(), 7, "{text}");
+        assert_eq!(text.lines().count(), 8, "{text}");
 
         let mut again = Session::new(None);
         let report = crate::replay(&text, &mut again).unwrap();
@@ -4034,6 +4102,53 @@ mod tests {
             .unwrap();
             assert_eq!(names(&s, 0), ["Z uno", "B\ttwo", "C"]);
             assert_eq!(tips(&s, 1), ["Z", "B", "C"]);
+        }
+
+        #[test]
+        fn an_msa_rename_to_a_name_with_a_description_uses_it_whole() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "use 1").unwrap();
+            ex(&mut s, "msa rename --tree --rows 1 --to 'Z zed'").unwrap();
+            assert_eq!(names(&s, 0), ["Z zed", "B\ttwo", "C"]);
+            assert_eq!(tips(&s, 1), ["Z", "B", "C"]);
+        }
+
+        #[test]
+        fn a_tree_rename_to_a_name_with_a_space_keeps_the_link() {
+            let (_keep, mut s) = described_pair();
+            ex(&mut s, "tree rename --tip B --to 'Q new' --seqs").unwrap();
+            assert_eq!(names(&s, 0), ["A one", "Q new", "C"]);
+            assert_eq!(tips(&s, 1), ["A", "Q new", "C"]);
+        }
+
+        /// sh.fa, whose first two rows share the ID `x`, linked to sh.nwk.
+        fn shared_id() -> (TempDir, Session) {
+            let (keep, dir) = super::described();
+            fs::write(dir.join("sh.fa"), ">x a\nA\n>x b\nC\n>y\nG\n").unwrap();
+            fs::write(dir.join("sh.nwk"), "(x,y);").unwrap();
+            let mut s = opened(&dir, &["sh.fa", "sh.nwk"]);
+            ex(&mut s, "use 1").unwrap();
+            (keep, s)
+        }
+
+        #[test]
+        fn an_msa_rename_of_rows_sharing_an_id_renames_them_all() {
+            let (_keep, mut s) = shared_id();
+            ex(&mut s, "msa rename --tree --rows 1 --to z").unwrap();
+            assert_eq!(names(&s, 0), ["z a", "z b", "y"]);
+            assert_eq!(tips(&s, 1), ["z", "y"]);
+        }
+
+        #[test]
+        fn rows_sharing_an_id_cannot_be_given_different_ones() {
+            let (_keep, mut s) = shared_id();
+            let err = ex(
+                &mut s,
+                "msa rename --tree --rows 1-2 --regex '^x a' --replace 'q a'",
+            );
+            assert!(err.is_err(), "{err:?}");
+            assert_eq!(names(&s, 0), ["x a", "x b", "y"]);
+            assert_eq!(tips(&s, 1), ["x", "y"]);
         }
 
         #[test]

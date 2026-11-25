@@ -22,13 +22,19 @@ pub struct NameMatch<'a> {
 
 impl<'a> NameMatch<'a> {
     pub fn new(alignment: &'a Alignment) -> Self {
+        Self::with_ids(alignment, true)
+    }
+
+    /// Rows matched by whole name and, if `ids`, by ID; without IDs, as
+    /// tips matched rows before IDs were (a replayed older log).
+    pub fn with_ids(alignment: &'a Alignment, ids: bool) -> Self {
         let mut full: HashMap<&str, Vec<usize>> = HashMap::with_capacity(alignment.rows());
         let mut id: HashMap<&str, Vec<usize>> = HashMap::new();
         for row in 0..alignment.rows() {
             let name = alignment.name(row);
             full.entry(name).or_default().push(row);
             let short = sequence_id(name);
-            if short != name {
+            if ids && short != name {
                 id.entry(short).or_default().push(row);
             }
         }
@@ -54,56 +60,53 @@ impl<'a> NameMatch<'a> {
     }
 
     /// The new name of `row`, a row the tip named `tip` matches, when that
-    /// tip is renamed `to`: `to` for a row of that whole name, otherwise
-    /// `to` in place of its ID, its description kept.
+    /// tip is renamed `to`: `to` for a row of that whole name, or when `to`
+    /// itself has a space; otherwise `to` in place of its ID, its
+    /// description kept.
     pub fn renamed(&self, row: usize, tip: &str, to: &str) -> String {
         let name = self.alignment.name(row);
-        if name == tip {
+        if name == tip || sequence_id(to) != to {
             return to.to_string();
         }
         format!("{to}{}", &name[sequence_id(name).len()..])
     }
 
-    /// Whether `row` is matched by its ID alone: it has a description, and
-    /// no row's whole name is its ID.
+    /// Whether `row` would be matched by its ID alone: it has a
+    /// description, IDs are matched, and no row's whole name is its ID.
     pub fn by_id(&self, row: usize) -> bool {
         let name = self.alignment.name(row);
         let id = sequence_id(name);
-        id != name && !self.full.contains_key(id)
+        id != name && !self.full.contains_key(id) && self.id.contains_key(id)
     }
 
-    /// The ID, if any, that `renames` would give to rows with different
+    /// The ID, if any, that `renames` would give to rows that had different
     /// IDs, when a renamed row keeps a description and so would be matched
-    /// by that ID: a tip of that name would then match several rows.
+    /// by that ID: a tip of that name would then match several rows. Rows
+    /// that share an ID may go on sharing one.
     pub fn id_clash(&self, renames: &[(usize, String)]) -> Option<String> {
-        let renamed: HashMap<usize, &str> = renames.iter().map(|(r, n)| (*r, n.as_str())).collect();
-        let id_now = |row: usize| {
-            sequence_id(
-                renamed
-                    .get(&row)
-                    .copied()
-                    .unwrap_or(self.alignment.name(row)),
-            )
-        };
+        let old_id = |row: usize| sequence_id(self.alignment.name(row));
+        // Each new ID a renamed row with a description takes, with the old
+        // ID of the first row to take it.
+        let mut taken: HashMap<&str, &str> = HashMap::new();
         for (row, new) in renames {
             let new_id = sequence_id(new);
-            if new_id == new || new_id == sequence_id(self.alignment.name(*row)) {
+            if new_id == new || new_id == old_id(*row) {
                 continue;
             }
-            let others = self
-                .full
-                .get(new_id)
-                .into_iter()
-                .chain(self.id.get(new_id))
+            if *taken.entry(new_id).or_insert(old_id(*row)) != old_id(*row) {
+                return Some(new_id.to_string());
+            }
+        }
+        if taken.is_empty() {
+            return None;
+        }
+        let renamed: std::collections::HashSet<usize> = renames.iter().map(|(r, _)| *r).collect();
+        for (new_id, from) in taken {
+            let holders = self.full.get(new_id).into_iter().chain(self.id.get(new_id));
+            if holders
                 .flatten()
-                .chain(renames.iter().map(|(r, _)| r))
-                // Rows that share an ID may go on sharing one.
-                .filter(|&&other| {
-                    other != *row
-                        && sequence_id(self.alignment.name(other))
-                            != sequence_id(self.alignment.name(*row))
-                });
-            if others.into_iter().any(|&other| id_now(other) == new_id) {
+                .any(|&other| !renamed.contains(&other) && old_id(other) != from)
+            {
                 return Some(new_id.to_string());
             }
         }
@@ -162,5 +165,10 @@ mod tests {
         let names = NameMatch::new(&a);
         assert_eq!(names.renamed(0, "seqA", "seqC"), "seqC\tHomo sapiens");
         assert_eq!(names.renamed(1, "seqB", "seqD"), "seqD");
+        assert_eq!(
+            names.renamed(0, "seqA", "Q new"),
+            "Q new",
+            "a name with a space is used whole"
+        );
     }
 }

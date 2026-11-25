@@ -5588,6 +5588,34 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored many_described"]
+    fn a_linked_rename_of_many_described_rows_is_quick() {
+        use std::time::Instant;
+        let n = 10_000;
+        let tips: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
+        let (mut app, dir) = with_tree(&format!("({});", tips.join(",")));
+        let fasta: String = (0..n)
+            .map(|i| format!(">s{i} desc number {i}\nACGT\n"))
+            .collect();
+        link_alignment(&mut app, &dir, &fasta);
+        for line in [
+            "use 2",
+            "msa rename --tree --rows 1-10000 --regex ^s --replace t",
+            "use 1",
+            "tree rename --regex ^t --replace u --seqs",
+        ] {
+            let started = Instant::now();
+            run_typed(&mut app, line);
+            assert!(!app.status.starts_with("error"), "{line}: {}", app.status);
+            assert!(
+                started.elapsed() < crate::time_budget(500),
+                "{line}: {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "timing; run with: cargo test --release -p seqpeeq -- --ignored keys_on"]
     fn keys_on_a_large_linked_tree_stay_fast() {
         use std::time::Instant;

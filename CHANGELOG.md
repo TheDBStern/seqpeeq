@@ -16,8 +16,12 @@ All notable changes to seqpeeq are listed here. The format follows
 - A linked rename of a sequence matched by its ID changes the ID and keeps the description, from either side:
   `tree rename --seqs` or `msa rename --tree`. A rename that would leave a tip matching two sequences by one ID is
   refused.
-- A session logged with 0.4.0 or earlier whose tips matched sequences only by ID now replays with them linked: their
-  rows follow the tree, and pruning deletes them.
+- A linked rename to a name with a space uses it whole: from the alignment, the tip takes its ID; from the tree, the
+  sequence takes the tip's new name. A rename from the alignment of one of several sequences sharing an ID renames
+  them all, as a rename from the tree does.
+- Session logs now say `# tips match sequences by ID`. A log without that line, written by 0.4.0 or earlier, replays
+  matching tips to sequences by whole name only, as it did when it was written, so its row numbers name the same
+  sequences.
 
 ## [0.4.0] - 2026-11-22
 
