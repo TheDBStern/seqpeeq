@@ -372,8 +372,11 @@ pub fn info_text(app: &App) -> (String, String) {
         let depth = bam::depth_text(view, contig.length)
             .map(|d| format!("  {d}"))
             .unwrap_or_default();
+        let differs = bam::variant_summary_text(view, contig.length)
+            .map(|s| format!("  ·  {s}"))
+            .unwrap_or_default();
         left = format!(
-            "{}:{}{depth}  {} bp a column",
+            "{}:{}{depth}  column = {} bp{differs}",
             contig.name, view.cursor, view.per_col
         );
         if !view.over.is_empty() {
@@ -397,7 +400,7 @@ pub fn info_text(app: &App) -> (String, String) {
                 1 => left.push_str("  1 read selected  e export  Esc clear"),
                 n => left.push_str(&format!("  {n} reads selected  e export  Esc clear")),
             }
-            if view.per_col == 1 && !bam::knows_reference(app) {
+            if !bam::knows_reference(app) {
                 left.push_str("  no reference (bam ref FILE)");
             }
         }
@@ -679,9 +682,9 @@ const HELP_BAM: &[&str] = &[
     "          click, drag, Space select   Esc clear",
     "          Tab next BAM in a stack   :bam stack  unstack",
     "          drag the coordinates, v v  select a region",
+    "          click the coverage  allele counts there",
     "          e export reads   E export reference",
-    "          a visualize all alignments for a read",
-    "          A list all alignments for a read",
+    "          a visualize, A list all alignments for a read",
     "          in those: S search the BAM   g go   / filter",
     "          bam ref export-region export-reads export-ref",
 ];
@@ -1914,6 +1917,7 @@ pub(crate) mod tests {
             "click, drag, Space select   Esc clear",
             "Tab next BAM in a stack",
             "v v  select a region",
+            "click the coverage  allele counts there",
             "e export reads",
             "E export reference",
         ] {
@@ -1925,8 +1929,7 @@ pub(crate) mod tests {
     fn help_has_a_read_axis_section() {
         let help = HELP_BAM.join("\n");
         for text in [
-            "a visualize all alignments for a read",
-            "A list all alignments for a read",
+            "a visualize, A list all alignments for a read",
             "S search the BAM",
         ] {
             assert!(help.contains(text), "{text}");

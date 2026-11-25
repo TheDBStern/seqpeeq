@@ -1127,6 +1127,7 @@ impl App {
             MouseEventKind::Down(button) => {
                 self.bam_drag = None;
                 self.ruler_drag = None;
+                view.readout = false;
                 match hit {
                     BamHit::Strip(pos) if button == MouseButton::Left => {
                         view.go(view.contig, pos, length);
@@ -1134,6 +1135,13 @@ impl App {
                     BamHit::Ruler(pos) if button == MouseButton::Left => {
                         view.cursor = pos;
                         self.ruler_drag = view.col_of(pos).map(|c| view.span_of(c));
+                    }
+                    // As the ruler, and the details line reads out the
+                    // allele counts there until a click elsewhere.
+                    BamHit::Coverage(pos) if button == MouseButton::Left => {
+                        view.cursor = pos;
+                        self.ruler_drag = view.col_of(pos).map(|c| view.span_of(c));
+                        view.readout = true;
                     }
                     BamHit::Read { col, row } => {
                         view.clear_stretch();
@@ -1170,7 +1178,9 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) if self.ruler_drag.is_some() => {
-                let (Some((a1, b1)), BamHit::Ruler(pos)) = (self.ruler_drag, hit) else {
+                let (Some((a1, b1)), BamHit::Ruler(pos) | BamHit::Coverage(pos)) =
+                    (self.ruler_drag, hit)
+                else {
                     return;
                 };
                 let Some((a2, b2)) = view.col_of(pos).map(|c| view.span_of(c)) else {
@@ -1397,6 +1407,40 @@ pub(crate) mod tests {
 
     pub(crate) fn id(app: &App) -> u64 {
         app.session.datasets()[app.active].id
+    }
+
+    /// The fixture at a base a column from 101, with or without its reference.
+    fn tallied(with_ref: bool) -> (App, TempDir) {
+        let (mut app, dir) = with_bam();
+        if with_ref {
+            app.enqueue(Command::Bam(BamCmd::Ref {
+                file: dir.path().join("ref.fa"),
+            }));
+        }
+        let id = id(&app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = 1;
+        view.left = 101;
+        view.cursor = 101;
+        view.repack();
+        settle(&mut app);
+        (app, dir)
+    }
+
+    #[test]
+    fn a_loaded_window_carries_a_tally() {
+        for with_ref in [true, false] {
+            let (app, _dir) = tallied(with_ref);
+            let loaded = app.bams[&id(&app)].loaded.as_ref().unwrap();
+            // r1 reads G at 110 where the reference has C; without the
+            // reference its MD tag says so.
+            let tally = loaded.tally.as_ref().expect("a tally");
+            assert_eq!(tally.counts(110).unwrap().alt, [0, 0, 1, 0], "{with_ref}");
+            assert_eq!(
+                loaded.edits.len(),
+                loaded.window.reads.as_ref().unwrap().len()
+            );
+        }
     }
 
     /// Run the queued open, and hold back every other request.
@@ -1872,6 +1916,64 @@ pub(crate) mod tests {
         app.status.clear();
         let body = crate::ui::regions(app, Rect::new(0, 0, 80, 14)).body;
         bam_layout(body, view(app))
+    }
+
+    /// The fixture, zoomed to 2 bases a column from 101, on 80 x 14.
+    fn zoomed_fixture() -> (App, TempDir, BamLayout) {
+        let (mut app, dir) = with_bam();
+        layout_of(&mut app);
+        let id = id(&app);
+        let v = app.bams.get_mut(&id).unwrap();
+        v.per_col = 2;
+        v.left = 101;
+        v.cursor = 101;
+        v.repack();
+        settle(&mut app);
+        let layout = layout_of(&mut app);
+        (app, dir, layout)
+    }
+
+    #[test]
+    fn a_click_on_coverage_starts_the_readout() {
+        let (mut app, _dir, layout) = zoomed_fixture();
+        click(&mut app, (4, layout.coverage.y));
+        assert!(view(&app).readout);
+        assert_eq!(view(&app).cursor, 109, "the column's first position");
+        let screen = crate::ui::tests::rows(&crate::ui::tests::render(&app, 80, 14));
+        // r1's G at 110 is one read, under the floor, so the readout is of
+        // the column's first position.
+        assert!(
+            screen[layout.details.y as usize].starts_with("c1:109  ref A   A 1 · del 0"),
+            "{screen:#?}"
+        );
+    }
+
+    #[test]
+    fn the_readout_follows_the_cursor_and_ends_on_other_clicks() {
+        let (mut app, _dir, layout) = zoomed_fixture();
+        let start = |app: &mut App| {
+            click(app, (4, layout.coverage.y));
+            assert!(view(app).readout);
+        };
+        start(&mut app);
+        keys(&mut app, "l");
+        assert!(view(&app).readout, "sideways keeps it");
+        assert_eq!(view(&app).cursor, 111);
+        keys(&mut app, "j");
+        assert!(!view(&app).readout, "a row move ends it");
+
+        for at in [
+            (4, layout.reads.y),
+            (4, layout.ruler.y),
+            (79, layout.strip.y),
+        ] {
+            start(&mut app);
+            click(&mut app, at);
+            assert!(!view(&app).readout, "a click at {at:?} ends it");
+        }
+        start(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(!view(&app).readout, "Esc ends it");
     }
 
     fn id_of(name: &str, flags: u16, start: u64) -> ReadId {
@@ -3528,6 +3630,62 @@ pub(crate) mod tests {
         settle(&mut app);
         assert_ne!(app.bams[&b].left, left);
         assert_eq!(app.bams[&a].left, app.bams[&b].left);
+    }
+
+    #[test]
+    fn a_click_on_a_stack_members_coverage_reads_it_out() {
+        let (mut app, _dir) = two_stacked();
+        let b = app.session.datasets()[1].id;
+        app.active = 0;
+        app.resize(Size::new(80, 20));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        click(&mut app, (9, layout.members[1].coverage.y));
+        assert_eq!(app.active, 1, "the press focuses b.bam");
+        assert!(app.bams[&b].readout);
+        assert_eq!(app.bams[&b].cursor, app.bams[&b].left + 9);
+    }
+
+    #[test]
+    fn any_other_click_ends_every_readout() {
+        let (mut app, _dir) = two_stacked();
+        let a = app.session.datasets()[0].id;
+        app.active = 0;
+        app.resize(Size::new(80, 20));
+        settle(&mut app);
+        at_base_level(&mut app, 0, 101, 0);
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        click(&mut app, (9, layout.members[0].coverage.y));
+        assert!(app.bams[&a].readout);
+        click(&mut app, (9, layout.members[1].reads.y));
+        assert_eq!(app.active, 1);
+        assert!(
+            !app.bams[&a].readout,
+            "a press on the other member ends a's"
+        );
+
+        app.enqueue(Command::Open {
+            path: "tests/data/aln.fa".into(),
+            kind: None,
+        });
+        settle(&mut app);
+        app.focus(0);
+        settle(&mut app);
+        let body = app.bam_body();
+        let (_, layout) = app.stack_layouts(body).remove(0);
+        click(&mut app, (9, layout.members[0].coverage.y));
+        assert!(app.bams[&a].readout);
+        let ranges = crate::ui::tab_ranges(
+            &crate::ui::tab_labels(&app),
+            app.screen.width,
+            crate::ui::active_tab(&app),
+        );
+        let other = ranges.last().unwrap().start;
+        click(&mut app, (other, 0));
+        assert!(!app.bams[&a].readout, "a press on another tab ends it");
     }
 
     #[test]

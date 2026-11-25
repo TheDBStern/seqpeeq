@@ -22,6 +22,7 @@ It's for getting things done, not making figures
 - Select and export regions of a BAM file in fasta, fastq, and BAM formats
 - Follow multi-mapped and split reads everywhere they align in a BAM
 - Jump to the next covered or 0-coverage region in a BAM
+- See SNPs, indels and their frequencies in a BAM while zoomed out
 
 **Input files are never modified.** Every result is written to a new file and files can't be overwritten.
 
@@ -124,8 +125,9 @@ seqpeeq examples/aln.fa examples/tree.nwk
 
 ![The example tree, linked to the alignment](docs/screens/tree.svg)
 
-**Reads against a reference.** Type `g chr1:1001` and zoom in (`+`) to see SNPs, an insertion (purple), deletions (`***`), split reads
-(magenta), mates on another contig (orange) and pairs too far apart (blue). Put the cursor on a magenta read and press
+**Reads against a reference.** Type `g chr1:1001` and zoom in (`+`) to see SNPs, an insertion (![purple](docs/screens/swatches/insertion.svg) purple),
+deletions (`***`), split reads (![magenta](docs/screens/swatches/read-split.svg) magenta), mates on another contig (![orange](docs/screens/swatches/read-mate-elsewhere.svg) orange) and
+pairs too far apart (![blue](docs/screens/swatches/read-improper.svg) blue). Put the cursor on a magenta read and press
 `a` to see everywhere it aligns. `}` jumps to the stretch with no reads.
 
 ```sh
@@ -135,6 +137,25 @@ seqpeeq examples/reads.bam --ref examples/ref.fa
 ![Reads at base level](docs/screens/bam-bases.svg)
 
 ![Reads zoomed out, with a stretch of no coverage](docs/screens/bam-zoomed.svg)
+
+**Zoomed out.** With a reference (or MD tags), each column of the coverage row is colored
+according to the highest-frequency non-reference variant in it:
+
+| Color | Description |
+|---|---|
+| ![yellow](docs/screens/swatches/snp-15.svg) yellow | SNP in 15–35% of reads |
+| ![amber](docs/screens/swatches/snp-35.svg) amber | SNP in 35–65% of reads |
+| ![orange](docs/screens/swatches/snp-65.svg) orange | SNP in 65–90% of reads |
+| ![red](docs/screens/swatches/snp-90.svg) red | SNP in 90% or more |
+| ![light purple](docs/screens/swatches/indel-15.svg) light purple | insertion or deletion in 15–65% of reads |
+| ![purple](docs/screens/swatches/indel-65.svg) purple | insertion or deletion in 65% or more |
+
+Read ticks show mismatches against the reference: ![tan](docs/screens/swatches/tick-1.svg) one mismatch, ![darker tan](docs/screens/swatches/tick-2.svg) 2–4,
+![brown](docs/screens/swatches/tick-5.svg) 5 or more, ![purple](docs/screens/swatches/tick-indel.svg) an insertion or deletion.
+
+See [Keys](docs/keys.md) for how variants are counted.
+
+![Reads zoomed out with the reference: variants colored, and the counts at the half-and-half SNP](docs/screens/bam-variants.svg)
 
 **Two BAMs stacked.** Opening a second BAM with the same contigs stacks it under the first.
 
@@ -154,8 +175,8 @@ seqpeeq run 'open examples/aln.fa' 'msa delete-cols --cols 611-622' 'msa extract
 
 ## Reference
 
-- [Keys](docs/keys.md): every key, by file type, and what the reads look like.
-- [Commands](docs/commands.md): every command, logs and replay.
+- [Keys](docs/keys.md): shortcut key descriptions and read visualization info.
+- [Commands](docs/commands.md): commands, logs and replay.
 
 In the interface, `?` and `:COMMAND -h` bring up the help menus.
 

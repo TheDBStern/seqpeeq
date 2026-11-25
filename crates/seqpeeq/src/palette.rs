@@ -66,6 +66,34 @@ pub const CLIP: Style = Style::new().fg(Color::Indexed(244));
 /// The coverage row's bars.
 pub const DEPTH: Style = Style::new().fg(Color::Indexed(68));
 
+/// A coverage bar over a column whose strongest departure from the
+/// reference is `signal`: yellow, amber, orange and red as more of the
+/// reads carry a SNP; light purple, then purple, for an indel.
+pub fn variant(signal: &seqpeeq_core::bam::Signal) -> Style {
+    let f = signal.fraction;
+    let colour = match (signal.indel, f) {
+        (true, f) if f >= 0.65 => 129,
+        (true, _) => 183,
+        (false, f) if f >= 0.9 => 160,
+        (false, f) if f >= 0.65 => 202,
+        (false, f) if f >= 0.35 => 214,
+        (false, _) => 226,
+    };
+    Style::new().fg(Color::Indexed(colour))
+}
+
+/// A cell of a zoomed-out read holding `mismatches` of its mismatches, or
+/// an indel: tan, darker for more; purple for an indel.
+pub fn tick(mismatches: u32, indel: bool) -> Style {
+    let colour = match (indel, mismatches) {
+        (true, _) => 135,
+        (false, 0..=1) => 180,
+        (false, 2..=4) => 137,
+        (false, _) => 94,
+    };
+    Style::new().fg(Color::Indexed(colour))
+}
+
 /// A mismatching base's letter, coloured as the residue colours are.
 pub fn base(base: u8) -> Style {
     match base.to_ascii_uppercase() {

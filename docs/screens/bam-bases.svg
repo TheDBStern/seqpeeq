@@ -93,7 +93,17 @@
 <text x="806.4" y="64" textLength="16.8" fill="#d7af00" xml:space="preserve">GG</text>
 <text x="823.2" y="64" textLength="8.4" fill="#5faf5f" xml:space="preserve">A</text>
 <text x="831.6" y="64" textLength="8.4" fill="#d7af00" xml:space="preserve">G</text>
-<text x="0" y="81" textLength="840" fill="#5f87d7" xml:space="preserve">▆▆▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇███▇▇████████▇▇▇▇▇▇███████▇▇████▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▅▅▅███████▇▇▇▇▇▇</text>
+<text x="0" y="81" textLength="159.6" fill="#5f87d7" xml:space="preserve">▆▆▆▆▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇</text>
+<text x="159.6" y="81" textLength="8.4" fill="#d70000" xml:space="preserve">▇</text>
+<text x="168" y="81" textLength="201.6" fill="#5f87d7" xml:space="preserve">▇▇▇▇▇▇▇▇▇▇███▇▇████████▇</text>
+<text x="369.6" y="81" textLength="8.4" fill="#ffaf00" xml:space="preserve">▇</text>
+<text x="378" y="81" textLength="126" fill="#5f87d7" xml:space="preserve">▇▇▇▇███████▇▇██</text>
+<text x="504" y="81" textLength="8.4" fill="#d7afff" xml:space="preserve">█</text>
+<text x="512.4" y="81" textLength="75.6" fill="#5f87d7" xml:space="preserve">█▇▇▇▇▇▇▇▇</text>
+<text x="588" y="81" textLength="8.4" fill="#d70000" xml:space="preserve">▇</text>
+<text x="596.4" y="81" textLength="109.2" fill="#5f87d7" xml:space="preserve">▇▇▇▇▇▇▇▇▇▇▇▇▇</text>
+<text x="705.6" y="81" textLength="25.2" fill="#d7afff" xml:space="preserve">▅▅▅</text>
+<text x="730.8" y="81" textLength="109.2" fill="#5f87d7" xml:space="preserve">███████▇▇▇▇▇▇</text>
 <text x="0" y="98" textLength="159.6" fill="#d4d4d4" xml:space="preserve">...................</text>
 <text x="159.6" y="98" textLength="8.4" fill="#5faf5f" xml:space="preserve">A</text>
 <text x="168" y="98" textLength="201.6" fill="#d4d4d4" xml:space="preserve">........................</text>
@@ -250,5 +260,5 @@
 <text x="588" y="455" textLength="8.4" fill="#5f87d7" xml:space="preserve">C</text>
 <text x="596.4" y="455" textLength="243.6" fill="#5fafff" xml:space="preserve">.............................</text>
 <text x="0" y="472" textLength="621.6" fill="#d4d4d4" xml:space="preserve">pair788 · chr1:907-1056 (+) · MAPQ 60 · 150 bp · 150M · mate chr1:1236 (−)</text>
-<text x="0" y="489" textLength="285.6" fill="#d4d4d4" xml:space="preserve">chr1:1001  depth 22  1 bp a column</text>
+<text x="0" y="489" textLength="596.4" fill="#d4d4d4" xml:space="preserve">chr1:1001  depth 22  column = 1 bp  ·  mismatches 2.57%  indels 8.33/kb</text>
 </svg>

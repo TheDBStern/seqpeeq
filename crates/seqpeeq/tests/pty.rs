@@ -299,7 +299,7 @@ fn a_read_opens_along_its_own_bases() {
     run.send("g");
     run.send("g1:101-160\r");
     // `depth N` joins the status line once the reads are read.
-    run.wait_for_all(&["g1:101  ", "1 bp a column"]);
+    run.wait_for_all(&["g1:101  ", "column = 1 bp"]);
     run.send("a");
     run.wait_for("x1 · pair");
     run.wait_for("g1:401 (−)");
@@ -322,7 +322,7 @@ fn a_bam_opens_is_drawn_and_jumps() {
     run.send("g");
     run.send("c1:101-160\r");
     // `depth N` joins the status line once the reads are read.
-    run.wait_for_all(&["c1:101  ", "1 bp a column"]);
+    run.wait_for_all(&["c1:101  ", "column = 1 bp"]);
     run.wait_for(&seqpeeq_core::bam::testing::ref_bases("c1", 101, 140));
     run.send("]");
     run.wait_for("c1:301 ");

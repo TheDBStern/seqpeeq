@@ -1,17 +1,19 @@
 //! Drawing the BAM tab: the whole-contig strip, the ruler, the reference,
 //! coverage, the reads, and the details of the read under the cursor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
-use seqpeeq_core::bam::{Contig, Coverage, Piece, Read, grouped};
+use seqpeeq_core::bam::{Contig, Coverage, Edit, Piece, Read, Tally, grouped};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode};
-use crate::bam_view::{BamView, ContigList, ContigSort, READS_WIDTH, ReadId, details, read_kind};
+use crate::bam_view::{
+    BamView, ContigList, ContigSort, Loaded, READS_WIDTH, ReadId, details, read_kind,
+};
 use crate::palette;
 
 /// Where each row of the BAM tab goes. A row not shown has no height.
@@ -231,8 +233,10 @@ pub fn strip_bar(strip: Rect, contig: &Contig) -> Rect {
 pub enum BamHit {
     /// The whole-contig strip, at this position.
     Strip(u64),
-    /// The ruler, reference or coverage, at the first position of a column.
+    /// The ruler or reference, at the first position of a column.
     Ruler(u64),
+    /// The coverage row, at the first position of a column.
+    Coverage(u64),
     /// The reads, at a column and a row counted from the first shown.
     Read {
         col: usize,
@@ -256,7 +260,10 @@ pub fn bam_hit(
     }
     let col = (column.saturating_sub(layout.reads.x)) as usize;
     let past_end = view.span_of(col).0 > contig.length;
-    for band in [layout.ruler, layout.reference, layout.coverage] {
+    if layout.coverage.contains(at) && !past_end {
+        return BamHit::Coverage(view.span_of(col).0);
+    }
+    for band in [layout.ruler, layout.reference] {
         if band.contains(at) && !past_end {
             return BamHit::Ruler(view.span_of(col).0);
         }
@@ -638,15 +645,105 @@ fn draw_coverage(
     let length = source.contigs()[view.contig].length;
     let depths = column_depths(view, length, pass, source);
     let most = depths.iter().copied().fold(0.0, f32::max);
+    let tally = tally_of(view, length);
     for (col, &depth) in depths.iter().enumerate() {
-        put(
-            buf,
-            area.x + col as u16,
-            area.y,
-            bar(depth, most),
-            palette::DEPTH,
-        );
+        let (a, b) = view.span_of(col);
+        let style = tally
+            .and_then(|t| t.strongest(a, b.min(length)))
+            .map_or(palette::DEPTH, |signal| palette::variant(&signal));
+        put(buf, area.x + col as u16, area.y, bar(depth, most), style);
     }
+}
+
+/// What was read for the view while it shows reads: the reads of a window
+/// covering what it shows. `None` zoomed out past reads, where a window
+/// read for an earlier view can linger.
+fn reads_loaded(view: &BamView, length: u64) -> Option<&Loaded> {
+    let region = &view.loaded.as_ref()?.window.region;
+    let shown = view.cols() * view.per_col < READS_WIDTH
+        && region.contig == view.contig
+        && region.start <= view.left
+        && region.end >= view.end(length);
+    view.loaded
+        .as_ref()
+        .filter(|l| shown && l.asked_reads && l.window.reads.is_some())
+}
+
+/// The tally of the reads in view, while they are shown.
+fn tally_of(view: &BamView, length: u64) -> Option<&Tally> {
+    reads_loaded(view, length)?.tally.as_ref()
+}
+
+/// The details line in readout mode: the allele counts at the strongest
+/// position in the cursor's column (at the cursor, a base a column).
+pub fn readout_text(view: &BamView, contig: &Contig) -> String {
+    let Some(loaded) = reads_loaded(view, contig.length) else {
+        return "allele counts appear once the reads are read".to_string();
+    };
+    let Some(tally) = &loaded.tally else {
+        return "allele counts need a reference or MD tags (bam ref FILE)".to_string();
+    };
+    let (pos, more) = match view.col_of(view.cursor).filter(|_| view.per_col > 1) {
+        Some(col) => {
+            let (a, b) = view.span_of(col);
+            let b = b.min(contig.length);
+            let strongest = tally.strongest(a, b).map(|s| s.pos);
+            let more = tally.qualifying(a, b).saturating_sub(1);
+            (strongest.unwrap_or(a), more)
+        }
+        None => (view.cursor, 0),
+    };
+    let here = format!("{}:{}", contig.name, grouped(pos));
+    let Some(counts) = tally.counts(pos).filter(|c| c.depth() > 0) else {
+        return format!("{here}  no reads here");
+    };
+    let depth = counts.depth();
+    let pct = |n: u32| {
+        if n > 0 {
+            format!(" ({:.0}%)", f64::from(n) * 100.0 / f64::from(depth))
+        } else {
+            String::new()
+        }
+    };
+    let matching = counts.aligned - counts.alt.iter().sum::<u32>();
+    // Each allele with reads: (base, count, whether it is the reference's).
+    let mut alleles: Vec<(char, u32, bool)> = b"ACGT"
+        .iter()
+        .zip(counts.alt)
+        .map(|(&base, alt)| match counts.reference {
+            Some(r) if r == base => (base as char, matching, true),
+            _ => (base as char, alt, false),
+        })
+        .collect();
+    if counts.reference.is_none_or(|r| !b"ACGT".contains(&r)) {
+        alleles.push(('?', matching, true));
+    }
+    alleles.retain(|&(_, n, _)| n > 0);
+    alleles.sort_by_key(|&(_, n, _)| std::cmp::Reverse(n));
+    let alleles: Vec<String> = alleles
+        .iter()
+        .map(|&(base, n, reference)| {
+            if reference {
+                format!("{base} {n}")
+            } else {
+                format!("{base} {n}{}", pct(n))
+            }
+        })
+        .collect();
+    let reference = counts.reference.map_or('?', char::from);
+    let more = if more > 0 {
+        format!("   (+{more} more in column)")
+    } else {
+        String::new()
+    };
+    format!(
+        "{here}  ref {reference}   {} · del {}{} · ins {}{} · depth {depth}{more}",
+        alleles.join(" · "),
+        counts.deleted,
+        pct(counts.deleted),
+        counts.inserted,
+        pct(counts.inserted),
+    )
 }
 
 /// The details line: the read under the cursor.
@@ -656,7 +753,16 @@ fn draw_details(
     view: &BamView,
     source: &seqpeeq_core::bam::BamSource,
 ) {
-    if area.height > 0
+    if area.height > 0 && view.readout {
+        let contig = &source.contigs()[view.contig];
+        buf.set_stringn(
+            area.x,
+            area.y,
+            readout_text(view, contig),
+            area.width as usize,
+            Style::new(),
+        );
+    } else if area.height > 0
         && let Some(read) = view.cursor_read()
     {
         buf.set_stringn(
@@ -799,6 +905,19 @@ pub fn depth_text(view: &BamView, length: u64) -> Option<String> {
     })
 }
 
+/// How far the reads in view differ from the reference, for the status
+/// line: `mismatches 0.52%  indels 0.32/kb`. Nothing until the reads in
+/// view are read, nor without a reference or MD tags (the status line's
+/// `no reference` note says so then).
+pub fn variant_summary_text(view: &BamView, length: u64) -> Option<String> {
+    let summary = tally_of(view, length)?.summary(view.left, view.end(length))?;
+    Some(format!(
+        "mismatches {:.2}%  indels {:.2}/kb",
+        summary.mismatch_rate * 100.0,
+        summary.indels_per_kb
+    ))
+}
+
 /// The mean depth under each column in view: from the window when it was
 /// read at this zoom, else from the coverage pass, else from the sketch.
 fn column_depths(
@@ -865,6 +984,27 @@ fn draw_reads(buf: &mut Buffer, area: Rect, view: &BamView, length: u64, bases: 
                 };
                 draw_read(buf, line, view, length, read, bases, picked);
             }
+            if view.per_col > 1 {
+                for &i in &view.packed.rows[row] {
+                    if let Some(Some(edits)) = loaded.edits.get(i) {
+                        let read = &reads[i];
+                        let line = Rect {
+                            y,
+                            height: 1,
+                            ..area
+                        };
+                        tick_read(
+                            buf,
+                            line,
+                            view,
+                            length,
+                            read,
+                            edits,
+                            selected.contains(&key(read)),
+                        );
+                    }
+                }
+            }
         } else if row == rows && view.packed.not_drawn > 0 {
             let text = format!("+{} reads not drawn", grouped(view.packed.not_drawn as u64));
             buf.set_stringn(area.x, y, text, area.width as usize, dim);
@@ -879,6 +1019,53 @@ fn key(read: &Read) -> Key<'_> {
     (&read.name, read.flags, read.contig, read.start, read.end)
 }
 
+/// `style` for a cell of `read`: dim when it doesn't count or has mapping
+/// quality 0, and the selection's colours when `selected`.
+fn finish_read(mut style: Style, read: &Read, selected: bool) -> Style {
+    if read.mapq == 0 || !read.counts() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if selected {
+        style = style.patch(palette::SELECTED);
+    }
+    style
+}
+
+/// Colour the cells of zoomed-out `read` on `line` where it differs from
+/// the reference: drawn after every bar of the row, so that no neighbour
+/// covers them. Cells keep their symbols.
+fn tick_read(
+    buf: &mut Buffer,
+    line: Rect,
+    view: &BamView,
+    length: u64,
+    read: &Read,
+    edits: &[(u64, Edit)],
+    selected: bool,
+) {
+    let end = view.end(length);
+    let mut cells: BTreeMap<usize, (u32, bool)> = BTreeMap::new();
+    for &(pos, edit) in edits {
+        if pos < view.left.max(read.start) || pos > end.min(read.end) {
+            continue;
+        }
+        let Some(col) = view.col_of(pos).filter(|&c| (c as u16) < line.width) else {
+            continue;
+        };
+        let cell = cells.entry(col).or_default();
+        match edit {
+            Edit::Mismatch(_) => cell.0 += 1,
+            Edit::Deleted | Edit::Inserted => cell.1 = true,
+        }
+    }
+    for (col, (mismatches, indel)) in cells {
+        let style = finish_read(palette::tick(mismatches, indel), read, selected);
+        if let Some(cell) = buf.cell_mut(Position::new(line.x + col as u16, line.y)) {
+            cell.set_style(style);
+        }
+    }
+}
+
 /// Draw `read` on `line`, one screen row of the reads.
 fn draw_read(
     buf: &mut Buffer,
@@ -890,16 +1077,7 @@ fn draw_read(
     selected: bool,
 ) {
     let (area, y) = (line, line.y);
-    let faint = read.mapq == 0 || !read.counts();
-    let finish = |mut style: Style| {
-        if faint {
-            style = style.add_modifier(Modifier::DIM);
-        }
-        if selected {
-            style = style.patch(palette::SELECTED);
-        }
-        style
-    };
+    let finish = |style: Style| finish_read(style, read, selected);
     let style = finish(palette::read(read_kind(read)));
     let end = view.end(length);
     let at = |pos: u64| {
@@ -996,11 +1174,320 @@ mod tests {
     use crate::palette;
     use crate::ui::tests::{render, rows, settle};
     use ratatui::layout::Size;
+    use ratatui::style::Color;
+    use seqpeeq_core::bam::Signal;
     use seqpeeq_core::bam::testing::{bam_from_sam, ref_bases};
     use seqpeeq_core::{BamCmd, Command, Session};
     use tempfile::TempDir;
 
     /// Tell `app` the screen is `width` by `height` and let it catch up.
+    /// SAM for reads of 50 `A`s on `c` (a reference of `A`s as far as the
+    /// MD tags say): each entry is a read's start, the positions where it
+    /// reads `C`, and a position it deletes.
+    fn variant_sam(reads: &[(u64, &[u64], Option<u64>)]) -> String {
+        let mut sam = HEAD.to_string();
+        for (i, &(start, mismatches, deleted)) in reads.iter().enumerate() {
+            let mut seq = Vec::new();
+            let (mut cigar, mut md, mut run, mut matched) = (String::new(), String::new(), 0, 0);
+            let mut pos = start;
+            while seq.len() < 50 {
+                if Some(pos) == deleted {
+                    cigar.push_str(&format!("{matched}M1D"));
+                    md.push_str(&format!("{run}^A"));
+                    (run, matched) = (0, 0);
+                } else if mismatches.contains(&pos) {
+                    seq.push(b'C');
+                    md.push_str(&format!("{run}A"));
+                    run = 0;
+                    matched += 1;
+                } else {
+                    seq.push(b'A');
+                    run += 1;
+                    matched += 1;
+                }
+                pos += 1;
+            }
+            cigar.push_str(&format!("{matched}M"));
+            md.push_str(&run.to_string());
+            let seq = String::from_utf8(seq).unwrap();
+            sam.push_str(&format!(
+                "v{i}\t0\tc\t{start}\t60\t{cigar}\t*\t0\t0\t{seq}\t*\tMD:Z:{md}\n"
+            ));
+        }
+        sam
+    }
+
+    /// Show `per_col` bases a column from `left`, cursor there.
+    fn zoomed_at(app: &mut App, left: u64, per_col: u64) {
+        let id = id(app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = per_col;
+        view.left = left;
+        view.cursor = left;
+        view.repack();
+        settle(app);
+    }
+
+    /// The BAM tab's layout on an 80 x 14 screen.
+    fn layout_of(app: &App) -> BamLayout {
+        let body = crate::ui::regions(app, Rect::new(0, 0, 80, 14)).body;
+        bam_layout(body, app.bams.get(&id(app)).unwrap())
+    }
+
+    #[test]
+    fn palette_variant_buckets() {
+        let fg = |fraction: f32, indel: bool| {
+            palette::variant(&Signal {
+                pos: 1,
+                fraction,
+                indel,
+            })
+            .fg
+        };
+        let c = |i| Some(Color::Indexed(i));
+        assert_eq!((fg(0.15, false), fg(0.349, false)), (c(226), c(226)));
+        assert_eq!(fg(0.35, false), c(214));
+        assert_eq!(fg(0.65, false), c(202));
+        assert_eq!((fg(0.9, false), fg(1.0, false)), (c(160), c(160)));
+        assert_eq!(fg(0.15, true), c(183));
+        assert_eq!(fg(0.65, true), c(129));
+    }
+
+    #[test]
+    fn coverage_is_coloured_by_allele_fraction() {
+        let entries: Vec<(u64, Vec<u64>, Option<u64>)> = (0..10)
+            .map(|i| {
+                let mut at = vec![10];
+                if i < 5 {
+                    at.push(20);
+                }
+                if i < 2 {
+                    at.push(30);
+                }
+                (1, at, (i < 4).then_some(40))
+            })
+            .collect();
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|(s, at, d)| (*s, at.as_slice(), *d))
+            .collect();
+        let (mut app, _dir) = with_sam(&variant_sam(&entries));
+        zoomed_at(&mut app, 1, 2);
+        let terminal = render(&app, 80, 14);
+        let buffer = terminal.backend().buffer();
+        let y = layout_of(&app).coverage.y;
+        let fg = |col: u16| buffer[(col, y)].fg;
+        assert_eq!(fg(4), Color::Indexed(160), "position 10, every read");
+        assert_eq!(fg(9), Color::Indexed(214), "position 20, half");
+        assert_eq!(fg(14), palette::DEPTH.fg.unwrap(), "position 30, 2 reads");
+        assert_eq!(fg(19), Color::Indexed(183), "position 40, 40% deleted");
+        assert_eq!(fg(2), palette::DEPTH.fg.unwrap(), "no variant");
+    }
+
+    #[test]
+    fn palette_tick_steps() {
+        let fg = |n, indel| palette::tick(n, indel).fg;
+        let c = |i| Some(Color::Indexed(i));
+        assert_eq!(fg(1, false), c(180));
+        assert_eq!((fg(2, false), fg(4, false)), (c(137), c(137)));
+        assert_eq!(fg(5, false), c(94));
+        assert_eq!((fg(0, true), fg(3, true)), (c(135), c(135)));
+    }
+
+    /// The cells of the first row of reads, on an 80 x 14 screen.
+    fn first_read_row(app: &App) -> Vec<ratatui::buffer::Cell> {
+        let terminal = render(app, 80, 14);
+        let buffer = terminal.backend().buffer();
+        let y = layout_of(app).reads.y;
+        (0..80).map(|x| buffer[(x, y)].clone()).collect()
+    }
+
+    #[test]
+    fn zoomed_out_reads_are_ticked() {
+        let at: Vec<u64> = [3, 25].into_iter().chain(41..47).collect();
+        let (mut app, _dir) = with_sam(&variant_sam(&[(1, &at, None)]));
+        zoomed_at(&mut app, 1, 10);
+        let row = first_read_row(&app);
+        assert_eq!(row[0].fg, Color::Indexed(180), "one mismatch");
+        assert_eq!(row[1].fg, Color::Reset, "none");
+        assert_eq!(row[2].fg, Color::Indexed(180), "one mismatch");
+        assert_eq!(row[4].fg, Color::Indexed(94), "six mismatches");
+        assert_eq!(row[4].symbol(), "▸", "the arrowhead keeps its shape");
+    }
+
+    #[test]
+    fn a_tick_survives_a_plain_neighbour_in_its_cell() {
+        let (mut app, _dir) = with_sam(&variant_sam(&[(1, &[48], None), (41, &[], None)]));
+        zoomed_at(&mut app, 1, 10);
+        // Packing keeps reads a column apart; force the plain read into
+        // the same row, drawn after the ticked one, over its last cell.
+        let view = app.bams.get_mut(&id(&app)).unwrap();
+        let reads = view.reads();
+        let ticked = reads.iter().position(|r| r.start == 1).unwrap();
+        let plain = reads.iter().position(|r| r.start == 41).unwrap();
+        view.packed.rows = vec![vec![ticked, plain]];
+        assert_eq!(first_read_row(&app)[4].fg, Color::Indexed(180));
+    }
+
+    #[test]
+    fn ticks_keep_dim_and_selection() {
+        let sam = variant_sam(&[(1, &[3], None)]).replace("\tc\t1\t60\t", "\tc\t1\t0\t");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 10);
+        let cell = &first_read_row(&app)[0];
+        assert_eq!(cell.fg, Color::Indexed(180));
+        assert!(cell.modifier.contains(Modifier::DIM), "MAPQ 0 stays dim");
+
+        let (mut app, _dir) = with_sam(&variant_sam(&[(1, &[3], None)]));
+        zoomed_at(&mut app, 1, 10);
+        let view = app.bams.get_mut(&id(&app)).unwrap();
+        view.selected = vec![ReadId::of(&view.reads()[0])];
+        assert_eq!(first_read_row(&app)[0].bg, palette::SELECTED.bg.unwrap());
+    }
+
+    #[test]
+    fn the_status_line_gives_mismatch_and_indel_rates() {
+        let entries: Vec<(u64, &[u64], Option<u64>)> = (0..10)
+            .map(|i| match i {
+                0 => (1, &[3, 7, 9][..], None),
+                1 => (1, &[12, 30][..], Some(40)),
+                _ => (1, &[][..], None),
+            })
+            .collect();
+        let (mut app, _dir) = with_sam(&variant_sam(&entries));
+        zoomed_at(&mut app, 1, 2);
+        let want = "mismatches 1.00%  indels 2.00/kb";
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1000).as_deref(), Some(want));
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[12].contains(want), "{}", screen[12]);
+    }
+
+    #[test]
+    fn zoomed_out_without_a_reference_the_status_line_says_so() {
+        let sam = format!("{HEAD}a\t0\tc\t1\t60\t5M\t*\t0\t0\tACGTA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 2);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1000), None);
+        let screen = rows(&render(&app, 80, 14));
+        assert!(
+            screen[12].ends_with("no reference (bam ref FILE)"),
+            "{screen:#?}"
+        );
+        assert!(!screen[12].contains("mismatches"), "{}", screen[12]);
+    }
+
+    #[test]
+    fn no_summary_before_reads_load() {
+        let sam = "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:big\tLN:1000000\n\
+                   a\t0\tbig\t1\t60\t10M\t*\t0\t0\t*\t*\n";
+        let (app, _dir) = with_sam(sam);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert_eq!(variant_summary_text(view, 1_000_000), None);
+    }
+
+    /// Thirty reads at 1: `c_at_20` of them read C at 20 and `c_at_15` at 15.
+    fn readout_app(c_at_20: usize, c_at_15: usize) -> (App, TempDir) {
+        let at: Vec<Vec<u64>> = (0..30)
+            .map(|i| {
+                let mut at = Vec::new();
+                if i < c_at_15 {
+                    at.push(15);
+                }
+                if i < c_at_20 {
+                    at.push(20);
+                }
+                at
+            })
+            .collect();
+        let entries: Vec<_> = at.iter().map(|a| (1, a.as_slice(), None)).collect();
+        with_sam(&variant_sam(&entries))
+    }
+
+    /// The readout for the current BAM with the cursor at `cursor`.
+    fn readout_at(app: &mut App, cursor: u64) -> String {
+        let id = id(app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.cursor = cursor;
+        view.readout = true;
+        let (_, doc, view) = app.bam().unwrap();
+        readout_text(view, &doc.source().contigs()[view.contig])
+    }
+
+    #[test]
+    fn readout_text_for_the_strongest_position() {
+        let (mut app, _dir) = readout_app(29, 0);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(
+            readout_at(&mut app, 11),
+            "c:20  ref A   C 29 (97%) · A 1 · del 0 · ins 0 · depth 30"
+        );
+        let screen = rows(&render(&app, 80, 14));
+        assert!(screen[11].starts_with("c:20  ref A"), "{screen:#?}");
+    }
+
+    #[test]
+    fn readout_counts_other_positions_in_the_column() {
+        let (mut app, _dir) = readout_app(29, 10);
+        zoomed_at(&mut app, 1, 10);
+        let text = readout_at(&mut app, 11);
+        assert!(text.starts_with("c:20  "), "{text}");
+        assert!(text.ends_with("depth 30   (+1 more in column)"), "{text}");
+    }
+
+    #[test]
+    fn readout_at_base_level_is_the_cursor() {
+        let (mut app, _dir) = readout_app(29, 0);
+        base_level_at(&mut app, 1);
+        let text = readout_at(&mut app, 5);
+        assert!(text.starts_with("c:5  ref A   A 30 · del 0"), "{text}");
+    }
+
+    #[test]
+    fn readout_without_counts_says_why() {
+        let sam = format!("{HEAD}a\t0\tc\t1\t60\t5M\t*\t0\t0\tACGTA\t*\n");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(
+            readout_at(&mut app, 1),
+            "allele counts need a reference or MD tags (bam ref FILE)"
+        );
+
+        let (mut app, _dir) = readout_app(29, 0);
+        zoomed_at(&mut app, 1, 10);
+        assert_eq!(readout_at(&mut app, 5_000), "c:5,000  no reads here");
+        app.bams.get_mut(&id(&app)).unwrap().loaded = None;
+        assert_eq!(
+            readout_at(&mut app, 11),
+            "allele counts appear once the reads are read"
+        );
+    }
+
+    #[test]
+    fn zoomed_out_past_reads_the_old_tally_is_not_drawn() {
+        let entry: (u64, &[u64], Option<u64>) = (1, &[10], None);
+        let sam = variant_sam(&[entry; 10]).replace("SN:c\tLN:1000", "SN:c\tLN:100000000");
+        let (mut app, _dir) = with_sam(&sam);
+        zoomed_at(&mut app, 1, 2);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert!(variant_summary_text(view, 100_000_000).is_some());
+        // The whole contig: no window is read, so the reads' window stays.
+        let whole = *crate::bam_view::zoom_levels(100_000_000, 80)
+            .last()
+            .unwrap();
+        zoomed_at(&mut app, 1, whole);
+        let view = app.bams.get(&id(&app)).unwrap();
+        assert!(view.loaded.as_ref().is_some_and(|l| l.tally.is_some()));
+        assert_eq!(variant_summary_text(view, 100_000_000), None);
+        let timer = std::time::Instant::now();
+        let terminal = render(&app, 80, 14);
+        assert!(timer.elapsed().as_millis() < 200, "{:?}", timer.elapsed());
+        let y = layout_of(&app).coverage.y;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y)].fg, palette::DEPTH.fg.unwrap());
+    }
+
     fn sized(app: &mut App, width: u16, height: u16) {
         app.resize(Size::new(width, height));
         settle(app);
@@ -1343,7 +1830,7 @@ mod tests {
         app.bams.get_mut(&id).unwrap().cursor = 125;
         let screen = rows(&render(&app, 80, 14));
         assert!(
-            screen[12].starts_with("c1:125  depth 2  1 bp a column"),
+            screen[12].starts_with("c1:125  depth 2  column = 1 bp"),
             "{}",
             screen[12]
         );

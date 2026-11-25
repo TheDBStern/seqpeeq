@@ -6,7 +6,7 @@ use crate::elsewhere::ElsewhereList;
 use crate::read_axis::AxisView;
 use std::cmp::{Ordering, Reverse};
 
-use seqpeeq_core::bam::{Contig, Place, Read, Region, Window};
+use seqpeeq_core::bam::{Contig, Edit, Place, Read, Region, Tally, Window};
 
 use crate::line::LineEdit;
 
@@ -334,6 +334,12 @@ pub struct Loaded {
     pub reference: Option<Vec<u8>>,
     /// Whether a reference was attached when it was read, found or not.
     pub with_reference: bool,
+    /// Where the reads differ from the reference, per position over the
+    /// window; `None` without reads or without a reference or MD tags.
+    pub tally: Option<Tally>,
+    /// Each read's edits, in the order of the window's reads; empty
+    /// without reads. `None` for a read nothing says the reference of.
+    pub edits: Vec<Option<Vec<(u64, Edit)>>>,
 }
 
 /// A view opened over the reference view, drawn in its place.
@@ -416,6 +422,9 @@ pub struct BamView {
     /// with the reference view as it was then.
     pub parked: Vec<Over>,
     pub parked_from: Option<Parked>,
+    /// The details line shows the allele counts in the cursor's column (a
+    /// click on the coverage row) instead of the read under the cursor.
+    pub readout: bool,
 }
 
 impl BamView {
@@ -446,6 +455,7 @@ impl BamView {
             over: Vec::new(),
             parked: Vec::new(),
             parked_from: None,
+            readout: false,
         }
     }
 
@@ -624,6 +634,7 @@ impl BamView {
     /// screen may scroll one row past the last, to show what was not
     /// drawn.
     pub fn move_row(&mut self, by: isize) {
+        self.readout = false;
         let rows = self.packed.rows.len();
         self.row = self
             .row
@@ -1099,6 +1110,8 @@ pub(crate) mod tests {
             asked_reads: true,
             reference: None,
             with_reference: false,
+            tally: None,
+            edits: Vec::new(),
         });
     }
 

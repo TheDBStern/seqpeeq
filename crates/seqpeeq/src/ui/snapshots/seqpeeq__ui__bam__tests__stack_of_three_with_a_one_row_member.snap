@@ -1,6 +1,6 @@
 ---
 source: crates/seqpeeq/src/ui/bam.rs
-assertion_line: 1489
+assertion_line: 2074
 expression: terminal.backend()
 ---
 " reads.bam +2                                                                   "
@@ -25,5 +25,5 @@ expression: terminal.backend()
 "██████████████████████████████████████████████████                              "
 "..................................................                              "
 "r9 · c1:101-150 (+) · MAPQ 60 · 50 bp · 50M                                     "
-"c1:101  depth 1  1 bp a column                                                  "
+"c1:101  depth 1  column = 1 bp  ·  mismatches 0.00%  indels 0.00/kb             "
 "                                                                                "
