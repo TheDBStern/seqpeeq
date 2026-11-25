@@ -99,7 +99,7 @@ class Build(unittest.TestCase):
 
     def test_versions_name_the_terminal_peers(self):
         found = run.versions()
-        for key in ["termal", "samtools", "asciigenome", "java (ASCIIGenome)"]:
+        for key in ["termal", "alv", "samtools", "asciigenome", "java (ASCIIGenome)"]:
             self.assertIn(key, found)
             self.assertTrue(found[key], key)
 
@@ -110,12 +110,17 @@ class Build(unittest.TestCase):
         self.assertNotIn(str(Path.home()), str(found))
 
     def test_missing_tools_are_named(self):
-        everything = ["seqpeeq", "termal", "tview", "asciigenome", "jalview", "figtree", "igv"]
+        everything = ["seqpeeq", "termal", "alv", "tview", "asciigenome", "jalview", "figtree", "igv"]
         self.assertEqual(run.missing_tools(everything), [])
         with mock.patch.object(run, "TERMAL", Path("/nonexistent/termal")):
             self.assertEqual(run.missing_tools(["seqpeeq", "termal"]), ["termal"])
         with mock.patch.object(run, "BENCH_ASCII", Path("/nonexistent/env")):
             self.assertEqual(run.missing_tools(["asciigenome", "tview"]), ["asciigenome"])
+
+    def test_unknown_tool_is_named(self):
+        with self.assertRaises(SystemExit) as stop:
+            run.main(["--data", "x", "--out", "y", "--tools", "seqpeeq", "nosuch"])
+        self.assertIn("nosuch", str(stop.exception.code))
 
 
 # samtools tview on tiny.bam at c1:1, as captured: ruler, reference, reads.
@@ -163,8 +168,34 @@ TERMAL_DRAWN = """\
 └ Press '?' for help ───────────────────────────────────────────────────────────────────────────────
 """
 
+# alv piped into less -R on tiny.fa, as captured: partway through, and drawn
+# with less's prompt; and the prompt of a file longer than the screen.
+ALV_PARTWAY = """\
+s000001 G-ATCCTCGATGCTCCACAC
+s000002 TCG--TGCA-GAGTGTAGCA
+s000003 GTGCTGGTATGTAT
+"""
+ALV_DRAWN = """\
+s000001 G-ATCCTCGATGCTCCACAC
+s000002 TCG--TGCA-GAGTGTAGCA
+s000003 GTGCTGGTATGTATAATTTC
+s000004 CAGTTCAGT-AGTCGAGTTT
+s000005 GCTATATACCGACACCAGCT
+       0^
+(END)
+"""
+ALV_MORE = ALV_DRAWN.replace("(END)", ":")
+
 
 class Ready(unittest.TestCase):
+    def test_alv_ready_needs_a_sequence_row_and_the_prompt(self):
+        self.assertFalse(run.alv_ready(""))
+        self.assertFalse(run.alv_ready(ALV_PARTWAY))
+        self.assertFalse(run.alv_ready(":\n"))
+        self.assertFalse(run.alv_ready("alv: error: no such file: x.fa\n(END)\n"))
+        self.assertTrue(run.alv_ready(ALV_DRAWN))
+        self.assertTrue(run.alv_ready(ALV_MORE))
+
     def test_termal_ready_needs_the_whole_first_frame(self):
         self.assertFalse(run.termal_ready(""))
         self.assertFalse(run.termal_ready(TERMAL_PARTWAY))
@@ -242,6 +273,22 @@ class Tools(unittest.TestCase):
         self.assertEqual(argv[-1], str(run._reference(bam).resolve()))
         got = run.measure(argv, timeout=30, ready=run._ready_for("tview", "bam"))
         self.assertEqual(got.outcome, "ok", got.detail)
+
+    def test_alv_command(self):
+        odd = self.dir / "a b;c.fa"
+        argv = run.commands("alv", odd, self.scratch("a"))
+        self.assertEqual(argv[:2], ["sh", "-c"])
+        self.assertEqual(argv[-1], str(odd.resolve()))
+        self.assertNotIn(str(odd), argv[2])
+        for setting in ["LESS=", "LESSOPEN=", "LESSHISTFILE=-", "less -R", '-k "$1"']:
+            self.assertIn(setting, argv[2])
+
+    def test_alv_shows_an_alignment(self):
+        argv = run.commands("alv", self.dir / "tiny.fa", self.scratch("alv"))
+        started = time.monotonic()
+        got = run.measure(argv, timeout=30, ready=run._ready_for("alv", "msa"))
+        self.assertEqual(got.outcome, "ok", got.detail)
+        self.assertLess(time.monotonic() - started - got.seconds, 3)
 
     def test_termal_shows_an_alignment(self):
         argv = run.commands("termal", self.dir / "tiny.fa", self.scratch("t"))

@@ -1,10 +1,14 @@
-"""Time seqpeeq, IGV, FigTree and Jalview opening the benchmark files.
+"""Time seqpeeq and its peers opening the benchmark files: the terminal
+viewers termal, alv, samtools tview and ASCIIGenome, and the GUI programs
+IGV, FigTree and Jalview.
 
 Each run is timed from launch until the tool has shown the file:
-- the Java tools until their script mode has finished and they exit;
-- seqpeeq until its first screen of data is drawn in a pseudo-terminal.
+- IGV, FigTree and Jalview until their script mode has finished and they exit;
+- the terminal viewers until their first screen of data is drawn in a
+  pseudo-terminal; alv, which prints the whole alignment and exits, is piped
+  into `less -R`, the way it is used.
 
-Its peak memory is read from the operating system when it exits.
+Peak memory is read from the operating system when each run exits.
 
     python bench/run.py --data bench/data --out bench/results.json --only all
 """
@@ -53,7 +57,7 @@ LEFT_BEHIND_GRACE = 0.5
 QUIT = {"asciigenome": b"q\r"}
 
 # Which tools are timed on which kind of file.
-TOOLS = {"msa": ["seqpeeq", "termal", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
+TOOLS = {"msa": ["seqpeeq", "termal", "alv", "jalview"], "tree": ["seqpeeq", "figtree"], "bam": ["seqpeeq", "tview", "asciigenome", "igv"]}
 FILES = {
     "tiny": [("msa", "tiny.fa"), ("tree", "tiny.nwk"), ("bam", "tiny.bam")],
     "small": [("msa", "aln_1k.fa"), ("tree", "tree_1k.nwk"), ("bam", "reads_10x.bam")],
@@ -255,6 +259,15 @@ def _window_shown(screen):
             and int(scale.group(1).replace(",", "")) <= WINDOW_SCALE)
 
 
+def alv_ready(screen) -> bool:
+    """When less shows alv's first screen: a sequence row above less's
+    prompt, which is drawn last."""
+    rows = [row.rstrip() for row in screen.splitlines() if row.strip()]
+    if not rows or rows[-1] not in (":", "(END)"):
+        return False
+    return any(re.fullmatch(r"\S+ +[A-Za-z*.-]+", row) for row in rows[:-1])
+
+
 def termal_ready(screen) -> bool:
     """When termal has drawn its first frame: the first sequence's row, and
     the help line at the bottom, which is drawn last."""
@@ -292,6 +305,13 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
         return [str(SEQPEEQ), "--no-log", str(file)]
     if tool == "termal":
         return [str(TERMAL), str(file)]
+    if tool == "alv":
+        # alv prints the whole alignment and exits, so it is piped into less,
+        # as it is used. less reads no settings from the environment and
+        # writes no history. The file is an argument, never part of the script.
+        script = ('LESS= LESSOPEN= LESSHISTFILE=-; export LESS LESSOPEN LESSHISTFILE; '
+                  'exec "$0" -k "$1" | less -R')
+        return ["sh", "-c", script, str(BENCH / "bin" / "alv"), str(file)]
     if tool == "tview":
         start = WINDOW.split("-")[0]
         return [str(BENCH / "bin" / "samtools"), "tview", "-p", start, str(file), str(_reference(file))]
@@ -330,7 +350,7 @@ def commands(tool, file: Path, scratch: Path) -> list[str]:
 
 
 def _ready_for(tool, kind):
-    return {"seqpeeq": seqpeeq_steps(kind), "termal": termal_ready, "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
+    return {"seqpeeq": seqpeeq_steps(kind), "termal": termal_ready, "alv": alv_ready, "tview": tview_ready, "asciigenome": asciigenome_ready}.get(tool)
 
 
 def _output(argv):
@@ -365,7 +385,7 @@ def versions():
         version = _output([str(program), "--version"]).split()[-1:]
         found[name] = f"{' '.join(version)} ({architecture(program)})"
     javas = {BENCH: "FigTree, Jalview", BENCH_IGV: "IGV", BENCH_ASCII: "ASCIIGenome"}
-    for env, names in [(BENCH, ["samtools", "figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"]),
+    for env, names in [(BENCH, ["samtools", "alv", "figtree", "jalview", "openjdk"]), (BENCH_IGV, ["igv", "openjdk"]),
                        (BENCH_ASCII, ["asciigenome", "openjdk"])]:
         for name in names:
             meta = sorted((env / "conda-meta").glob(f"{name}-[0-9]*.json"))
@@ -385,6 +405,7 @@ def _programs(tool) -> list[Path]:
     return {
         "seqpeeq": [SEQPEEQ],
         "termal": [TERMAL],
+        "alv": [BENCH / "bin" / "alv"],
         "tview": [BENCH / "bin" / "samtools"],
         "asciigenome": [Path(_java(BENCH_ASCII)), BENCH_ASCII / "bin" / "ASCIIGenome.jar"],
         "jalview": [Path(_java(BENCH)), _jar("jalview-*/jalview-all-j11.jar")],
@@ -423,10 +444,14 @@ def main(argv=None):
     args.add_argument("--data", required=True, type=Path)
     args.add_argument("--out", required=True, type=Path)
     args.add_argument("--only", choices=list(FILES), default="all")
-    args.add_argument("--tools", nargs="*", default=["seqpeeq", "termal", "tview", "asciigenome", "igv", "figtree", "jalview"])
+    args.add_argument("--tools", nargs="*", default=["seqpeeq", "termal", "alv", "tview", "asciigenome", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
     args = args.parse_args(argv)
+    known = {tool for tools in TOOLS.values() for tool in tools}
+    unknown = [tool for tool in args.tools if tool not in known]
+    if unknown:
+        sys.exit(f"no such tool: {', '.join(unknown)}")
     missing = missing_tools(args.tools)
     if missing:
         sys.exit(f"missing: {', '.join(missing)}")
