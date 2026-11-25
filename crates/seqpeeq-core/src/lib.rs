@@ -26,7 +26,8 @@ pub use command::{Command, Kind};
 pub use error::{Error, Result};
 pub use log::SessionLog;
 pub use msa::{
-    Alignment, Alphabet, Conservation, SUMMARY_BYTES, Shift, Summary, Tally, View, summary_block,
+    Alignment, Alphabet, Conservation, NameMatch, SUMMARY_BYTES, Shift, Summary, Tally, View,
+    sequence_id, summary_block,
 };
 pub use progress::Progress;
 pub use ranges::Ranges;

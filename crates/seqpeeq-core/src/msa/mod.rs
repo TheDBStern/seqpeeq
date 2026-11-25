@@ -2,6 +2,7 @@
 
 pub(crate) mod conservation;
 pub(crate) mod layer;
+pub mod name_match;
 pub(crate) mod overview;
 pub(crate) mod shift;
 pub(crate) mod sort;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use regex::Regex;
 
 pub use conservation::Conservation;
+pub use name_match::{NameMatch, sequence_id};
 pub use overview::{SUMMARY_BYTES, Summary, Tally, summary_block};
 pub use shift::Shift;
 
