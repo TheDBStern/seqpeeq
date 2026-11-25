@@ -6,6 +6,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use seqpeeq_core::Progress;
+use seqpeeq_core::bam::{RefSlice, Tally, edits};
 
 use crate::app::{Done, Request};
 use crate::bam_view::{Loaded, PASS_BINS, READS_LIMIT};
@@ -111,11 +112,24 @@ pub fn perform(request: Request, send: &mut dyn FnMut(Done)) {
                     .reference()
                     .filter(|_| reads)
                     .and_then(|r| r.fetch(name, region.start, region.end).ok());
+                let slice = reference.as_deref().map(|bases| RefSlice {
+                    start: region.start,
+                    bases,
+                });
+                let (tally, edits) = match &window.reads {
+                    Some(found) => (
+                        Tally::of(found, slice, region.start, region.end),
+                        found.iter().map(|read| edits(read, slice)).collect(),
+                    ),
+                    None => (None, Vec::new()),
+                };
                 Loaded {
                     window,
                     asked_reads: reads,
                     reference,
                     with_reference: source.reference().is_some(),
+                    tally,
+                    edits,
                 }
             });
             send(Done::Window {

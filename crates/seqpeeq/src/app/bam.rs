@@ -1399,6 +1399,40 @@ pub(crate) mod tests {
         app.session.datasets()[app.active].id
     }
 
+    /// The fixture at a base a column from 101, with or without its reference.
+    fn tallied(with_ref: bool) -> (App, TempDir) {
+        let (mut app, dir) = with_bam();
+        if with_ref {
+            app.enqueue(Command::Bam(BamCmd::Ref {
+                file: dir.path().join("ref.fa"),
+            }));
+        }
+        let id = id(&app);
+        let view = app.bams.get_mut(&id).unwrap();
+        view.per_col = 1;
+        view.left = 101;
+        view.cursor = 101;
+        view.repack();
+        settle(&mut app);
+        (app, dir)
+    }
+
+    #[test]
+    fn a_loaded_window_carries_a_tally() {
+        for with_ref in [true, false] {
+            let (app, _dir) = tallied(with_ref);
+            let loaded = app.bams[&id(&app)].loaded.as_ref().unwrap();
+            // r1 reads G at 110 where the reference has C; without the
+            // reference its MD tag says so.
+            let tally = loaded.tally.as_ref().expect("a tally");
+            assert_eq!(tally.counts(110).unwrap().alt, [0, 0, 1, 0], "{with_ref}");
+            assert_eq!(
+                loaded.edits.len(),
+                loaded.window.reads.as_ref().unwrap().len()
+            );
+        }
+    }
+
     /// Run the queued open, and hold back every other request.
     fn open_only(app: &mut App) -> Vec<Request> {
         let mut held = Vec::new();
