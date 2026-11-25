@@ -125,8 +125,9 @@ seqpeeq examples/aln.fa examples/tree.nwk
 
 ![The example tree, linked to the alignment](docs/screens/tree.svg)
 
-**Reads against a reference.** Type `g chr1:1001` and zoom in (`+`) to see SNPs, an insertion (purple), deletions (`***`), split reads
-(magenta), mates on another contig (orange) and pairs too far apart (blue). Put the cursor on a magenta read and press
+**Reads against a reference.** Type `g chr1:1001` and zoom in (`+`) to see SNPs, an insertion (![purple](docs/screens/swatches/insertion.svg) purple),
+deletions (`***`), split reads (![magenta](docs/screens/swatches/read-split.svg) magenta), mates on another contig (![orange](docs/screens/swatches/read-mate-elsewhere.svg) orange) and
+pairs too far apart (![blue](docs/screens/swatches/read-improper.svg) blue). Put the cursor on a magenta read and press
 `a` to see everywhere it aligns. `}` jumps to the stretch with no reads.
 
 ```sh
@@ -137,11 +138,22 @@ seqpeeq examples/reads.bam --ref examples/ref.fa
 
 ![Reads zoomed out, with a stretch of no coverage](docs/screens/bam-zoomed.svg)
 
-**Zoomed out, where the reads differ.** With a reference (or MD tags), the coverage row is colored by the strongest
-variant in each column: yellow when 15–35% of the reads carry it, amber about half, orange most, red all, and light
-purple or purple for insertions and deletions. Read bars are ticked where they differ: tan for one mismatch, darker for
-more, purple for an indel. The status line gives the mismatch and indel rates in view. Click the coverage row to see
-the allele counts there; it stays until you click elsewhere. See [Keys](docs/keys.md) for the exact thresholds.
+**Zoomed out, where the reads differ.** With a reference (or MD tags), each column of the coverage row is colored
+according to the highest-frequency non-reference variant in it:
+
+| Color | Reads carrying the variant |
+|---|---|
+| ![yellow](docs/screens/swatches/snp-15.svg) yellow | a SNP in 15–35% |
+| ![amber](docs/screens/swatches/snp-35.svg) amber | a SNP in 35–65% |
+| ![orange](docs/screens/swatches/snp-65.svg) orange | a SNP in 65–90% |
+| ![red](docs/screens/swatches/snp-90.svg) red | a SNP in 90% or more |
+| ![light purple](docs/screens/swatches/indel-15.svg) light purple | an insertion or deletion in 15–65% |
+| ![purple](docs/screens/swatches/indel-65.svg) purple | an insertion or deletion in 65% or more |
+
+Read bars are ticked where they differ from the reference: ![tan](docs/screens/swatches/tick-1.svg) one mismatch, ![darker tan](docs/screens/swatches/tick-2.svg) 2–4,
+![brown](docs/screens/swatches/tick-5.svg) 5 or more, ![purple](docs/screens/swatches/tick-indel.svg) an insertion or deletion. The status line gives the mismatch and indel rates in
+view. Click the coverage row to see the allele counts there; it stays until you click elsewhere. See
+[Keys](docs/keys.md) for how variants are counted.
 
 ![Reads zoomed out with the reference: variants colored, and the counts at the half-and-half SNP](docs/screens/bam-variants.svg)
 

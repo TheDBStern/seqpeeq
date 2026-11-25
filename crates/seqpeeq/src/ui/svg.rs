@@ -187,6 +187,15 @@ fn runs(buffer: &Buffer, y: u16) -> Vec<Run> {
     runs
 }
 
+/// A small square of `color`, for the legends' color swatches.
+pub(crate) fn swatch_svg(color: Color) -> String {
+    let fill = hex(color).unwrap_or_else(|| FOREGROUND.to_string());
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\">\
+         <rect width=\"12\" height=\"12\" rx=\"2\" fill=\"{fill}\"/></svg>\n"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +204,22 @@ mod tests {
 
     fn buffer(width: u16, height: u16) -> Buffer {
         Buffer::empty(Rect::new(0, 0, width, height))
+    }
+
+    #[test]
+    fn a_swatch_is_a_square_of_its_color() {
+        let svg = swatch_svg(Color::Indexed(160));
+        assert!(
+            svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),
+            "{svg}"
+        );
+        assert!(svg.contains("width=\"12\" height=\"12\""), "{svg}");
+        assert!(svg.contains("fill=\"#d70000\""), "{svg}");
+        assert!(svg.ends_with("</svg>\n"), "{svg}");
+        assert!(
+            swatch_svg(Color::Reset).contains(&format!("fill=\"{FOREGROUND}\"")),
+            "the terminal's own color"
+        );
     }
 
     #[test]

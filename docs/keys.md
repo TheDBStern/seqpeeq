@@ -82,35 +82,36 @@ BAM       ] [ covered   } { no coverage   c list contigs
 | Mark | Meaning |
 |---|---|
 | `.` `,` | a base that matches the reference, on the forward or reverse strand |
-| `A` `c` … | a mismatch relative to the reference; upper case forward, lower case reverse, colored A green, C blue, G yellow, T red |
+| `A` `c` … | a mismatch relative to the reference; upper case forward, lower case reverse, colored A ![green](screens/swatches/base-a.svg) green, C ![blue](screens/swatches/base-c.svg) blue, G ![yellow](screens/swatches/base-g.svg) yellow, T ![red](screens/swatches/base-t.svg) red |
 | `*` | a deletion |
 | `─` | a skipped stretch |
-| purple cell | insertion just before this position |
+| ![purple](screens/swatches/insertion.svg) purple cell | insertion just before this position |
 | faint lower case | soft-clipped bases, colored by base (hide with `S`) |
 | `━━━▸` `◂━━━` | a zoomed-out read |
 | gray `─━━━▸─` | a zoomed-out read's soft-clipped ends (hide with `S`) |
 
 Reads are colored as follows:
 
-- **magenta:** split, with part aligned elsewhere;
-- **orange:** mate is on another contig;
-- **blue:** paired but not a proper pair;
+- ![magenta](screens/swatches/read-split.svg) **magenta:** split, with part aligned elsewhere;
+- ![orange](screens/swatches/read-mate-elsewhere.svg) **orange:** mate is on another contig;
+- ![blue](screens/swatches/read-improper.svg) **blue:** paired but not a proper pair;
 - **no color:** none of these.
 
 A **dimmed** read has mapping quality 0, or is secondary, a duplicate or QC-failed. Dimmed reads don't count towards
-coverage. The blue bars along the top show coverage, and selected reads have a gray background.
+coverage. The ![blue](screens/swatches/coverage.svg) blue bars along the top show coverage, and selected reads have a ![gray](screens/swatches/selected.svg) gray
+background.
 
 **Where the reads differ from the reference.** With a reference attached (`bam ref FILE`) or MD tags in the reads,
-the coverage row takes its color from the strongest variant in each column:
+each column of the coverage row is colored according to the highest-frequency non-reference variant in it:
 
 | Coverage color | Share of the reads at that position |
 |---|---|
-| yellow | 15–35% carry a SNP |
-| amber | 35–65% carry a SNP |
-| orange | 65–90% carry a SNP |
-| red | 90% or more carry a SNP |
-| light purple | 15–65% carry an insertion or deletion |
-| purple | 65% or more carry an insertion or deletion |
+| ![yellow](screens/swatches/snp-15.svg) yellow | 15–35% carry a SNP |
+| ![amber](screens/swatches/snp-35.svg) amber | 35–65% carry a SNP |
+| ![orange](screens/swatches/snp-65.svg) orange | 65–90% carry a SNP |
+| ![red](screens/swatches/snp-90.svg) red | 90% or more carry a SNP |
+| ![light purple](screens/swatches/indel-15.svg) light purple | 15–65% carry an insertion or deletion |
+| ![purple](screens/swatches/indel-65.svg) purple | 65% or more carry an insertion or deletion |
 
 A position counts only when at least 3 reads and 15% of them carry the same change, which keeps random sequencing
 errors from coloring the row. Each alternative base is counted on its own.
@@ -119,10 +120,10 @@ Zoomed out, each read's bar is ticked where that read differs from the reference
 
 | Tick | Meaning |
 |---|---|
-| tan | one mismatch in that cell |
-| darker tan | 2–4 mismatches |
-| brown | 5 or more mismatches |
-| purple | an insertion or deletion |
+| ![tan](screens/swatches/tick-1.svg) tan | one mismatch in that cell |
+| ![darker tan](screens/swatches/tick-2.svg) darker tan | 2–4 mismatches |
+| ![brown](screens/swatches/tick-5.svg) brown | 5 or more mismatches |
+| ![purple](screens/swatches/tick-indel.svg) purple | an insertion or deletion |
 
 Scattered ticks across many reads mean noisy reads; a column of ticks through most reads is a variant. The status
 line gives the mismatch rate and the insertions and deletions per kb over the reads in view.
