@@ -183,6 +183,8 @@ def page(results, only):
         "## Results",
         "",
         "Each cell is the median time of its runs and the highest peak memory among them.",
+        "The times are for files already in memory, which the operating system keeps after a file is read",
+        "and the repeated runs hit: a first open from disk is slower.",
         "",
     ]
     lines += tables(results, notes)

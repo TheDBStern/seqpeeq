@@ -167,12 +167,17 @@ In the interface, `?` and `:COMMAND -h` bring up the help menus.
 
 ## Benchmarks
 
-See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with other terminal viewers (termal, samtools tview
-and ASCIIGenome) and with IGV, FigTree and Jalview on files of different size.
+See [docs/benchmarks.md](docs/benchmarks.md) for how seqpeeq compares with other terminal viewers (termal, alv,
+samtools tview and ASCIIGenome) and with IGV, FigTree and Jalview on files of different size.
 For example, on an Apple M2 laptop:
 
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in 0.39 s; Jalview takes 7.0 minutes and 12.8 GB.
-- **A tree of a million tips:** seqpeeq draws it in 0.44 s; FigTree takes 29 s.
+- **A 30,000 × 30,000 alignment (900 MB):** seqpeeq opens it in 0.13 s; termal takes 71 s.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in about 0.7 s (between 0.4 and 0.7 s across
+  reruns); Jalview takes 6.0 minutes and 12.7 GB.
+- **A tree of a million tips:** seqpeeq draws it in 0.43 s; FigTree takes 27 s.
+
+These times are for files already in memory: a first open from disk is slower (about 4.6 s for seqpeeq on the
+3 GB alignment).
 
 ## Changes
 

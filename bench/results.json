@@ -3,12 +3,13 @@
   "chip": "Apple M2",
   "cores": 8,
   "memory_bytes": 25769803776,
-  "os": "macOS 26.6.2"
+  "os": "macOS 27.2.1"
  },
  "versions": {
-  "seqpeeq": "0.3.0 (arm64)",
+  "seqpeeq": "0.4.0 (arm64)",
   "termal": "2.1.0 (arm64)",
   "samtools": "1.25",
+  "alv": "1.8.3",
   "figtree": "1.4.4",
   "jalview": "2.11.5.1",
   "java (FigTree, Jalview)": "11.0.30",
@@ -27,27 +28,27 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 0.061798834009096026,
-     "max_rss": 5406720,
+     "seconds": 0.06253158301115036,
+     "max_rss": 5832704,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.06006087502464652,
-     "max_rss": 5406720,
+     "seconds": 0.06131520798953716,
+     "max_rss": 5832704,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.06106991699198261,
-     "max_rss": 5390336,
+     "seconds": 0.062171333003789186,
+     "max_rss": 5799936,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.06106991699198261,
-   "max_rss": 5406720
+   "median_seconds": 0.062171333003789186,
+   "max_rss": 5832704
   },
   {
    "tool": "termal",
@@ -56,27 +57,56 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 0.013870209048036486,
-     "max_rss": 3964928,
+     "seconds": 0.01586200000019744,
+     "max_rss": 4308992,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.013657665986102074,
-     "max_rss": 4014080,
+     "seconds": 0.015571999989333563,
+     "max_rss": 4325376,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.014557624992448837,
-     "max_rss": 3964928,
+     "seconds": 0.015650332992663607,
+     "max_rss": 4358144,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.013870209048036486,
-   "max_rss": 4014080
+   "median_seconds": 0.015650332992663607,
+   "max_rss": 4358144
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "tiny.fa",
+   "file_bytes": 150,
+   "runs": [
+    {
+     "seconds": 0.16801937499258202,
+     "max_rss": 50462720,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.159433958993759,
+     "max_rss": 49397760,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.16026012500515208,
+     "max_rss": 50380800,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.16026012500515208,
+   "max_rss": 50462720
   },
   {
    "tool": "jalview",
@@ -85,27 +115,27 @@
    "file_bytes": 150,
    "runs": [
     {
-     "seconds": 1.4477870839764364,
-     "max_rss": 283918336,
+     "seconds": 1.3825214999960735,
+     "max_rss": 284901376,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4082941670203581,
-     "max_rss": 285605888,
+     "seconds": 1.3434642090142006,
+     "max_rss": 271187968,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.425289792008698,
-     "max_rss": 284983296,
+     "seconds": 1.3340562500088708,
+     "max_rss": 271155200,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.425289792008698,
-   "max_rss": 285605888
+   "median_seconds": 1.3434642090142006,
+   "max_rss": 284901376
   },
   {
    "tool": "seqpeeq",
@@ -114,513 +144,581 @@
    "file_bytes": 80,
    "runs": [
     {
-     "seconds": 0.06218145799357444,
-     "max_rss": 5668864,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.062250624992884696,
-     "max_rss": 5685248,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.06111487501766533,
-     "max_rss": 5652480,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.06218145799357444,
-   "max_rss": 5685248
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tiny.nwk",
-   "file_bytes": 80,
-   "runs": [
-    {
-     "seconds": 1.1812294170376845,
-     "max_rss": 225607680,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.1998013749835081,
-     "max_rss": 226770944,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.1938814590102993,
-     "max_rss": 226246656,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.1938814590102993,
-   "max_rss": 226770944
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "bam",
-   "file": "tiny.bam",
-   "file_bytes": 1329,
-   "runs": [
-    {
-     "seconds": 0.12012970796786249,
-     "max_rss": 6111232,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.11933625000528991,
-     "max_rss": 6242304,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.11928570800228044,
-     "max_rss": 6127616,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.11933625000528991,
-   "max_rss": 6242304
-  },
-  {
-   "tool": "tview",
-   "kind": "bam",
-   "file": "tiny.bam",
-   "file_bytes": 1329,
-   "runs": [
-    {
-     "seconds": 0.07855087501229718,
-     "max_rss": 38027264,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07771095796488225,
-     "max_rss": 38027264,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.0777997089899145,
-     "max_rss": 38027264,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.0777997089899145,
-   "max_rss": 38027264
-  },
-  {
-   "tool": "asciigenome",
-   "kind": "bam",
-   "file": "tiny.bam",
-   "file_bytes": 1329,
-   "runs": [
-    {
-     "seconds": 1.015032917028293,
-     "max_rss": 174964736,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.9845048330025747,
-     "max_rss": 199000064,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.9953298750333488,
-     "max_rss": 195690496,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.9953298750333488,
-   "max_rss": 199000064
-  },
-  {
-   "tool": "igv",
-   "kind": "bam",
-   "file": "tiny.bam",
-   "file_bytes": 1329,
-   "runs": [
-    {
-     "seconds": 3.8274390840088017,
-     "max_rss": 314343424,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.7962896659737453,
-     "max_rss": 312016896,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.7991157079814002,
-     "max_rss": 315441152,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.7991157079814002,
-   "max_rss": 315441152
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_1k.fa",
-   "file_bytes": 1010000,
-   "runs": [
-    {
-     "seconds": 0.07781591598177329,
-     "max_rss": 6733824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.0769064580090344,
-     "max_rss": 6684672,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07666249998146668,
-     "max_rss": 6733824,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.0769064580090344,
-   "max_rss": 6733824
-  },
-  {
-   "tool": "termal",
-   "kind": "msa",
-   "file": "aln_1k.fa",
-   "file_bytes": 1010000,
-   "runs": [
-    {
-     "seconds": 0.2354174999636598,
-     "max_rss": 5980160,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.23766750004142523,
-     "max_rss": 7028736,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.2315302500501275,
-     "max_rss": 6029312,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.2354174999636598,
-   "max_rss": 7028736
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_1k.fa",
-   "file_bytes": 1010000,
-   "runs": [
-    {
-     "seconds": 1.5511184589704499,
-     "max_rss": 307904512,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.570502792019397,
-     "max_rss": 309133312,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.5617883750237525,
-     "max_rss": 300810240,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.5617883750237525,
-   "max_rss": 309133312
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_10k.fa",
-   "file_bytes": 100100000,
-   "runs": [
-    {
-     "seconds": 0.180802249989938,
-     "max_rss": 107331584,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07572595903184265,
-     "max_rss": 107315200,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07654179201927036,
-     "max_rss": 107282432,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07654179201927036,
-   "max_rss": 107331584
-  },
-  {
-   "tool": "termal",
-   "kind": "msa",
-   "file": "aln_10k.fa",
-   "file_bytes": 100100000,
-   "runs": [
-    {
-     "seconds": 4.13106287503615,
-     "max_rss": 228720640,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 4.161939458979759,
-     "max_rss": 228982784,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 4.109242459002417,
-     "max_rss": 119422976,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 4.13106287503615,
-   "max_rss": 228982784
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_10k.fa",
-   "file_bytes": 100100000,
-   "runs": [
-    {
-     "seconds": 6.618371042015497,
-     "max_rss": 1290780672,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 6.594861041055992,
-     "max_rss": 1289830400,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 7.260120708029717,
-     "max_rss": 1259814912,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 6.618371042015497,
-   "max_rss": 1290780672
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_30k.fa",
-   "file_bytes": 900300000,
-   "runs": [
-    {
-     "seconds": 1.3812075419700705,
-     "max_rss": 910983168,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.12859579198993742,
-     "max_rss": 910802944,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.12833258300088346,
-     "max_rss": 910868480,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.12859579198993742,
-   "max_rss": 910983168
-  },
-  {
-   "tool": "termal",
-   "kind": "msa",
-   "file": "aln_30k.fa",
-   "file_bytes": 900300000,
-   "runs": [
-    {
-     "seconds": 59.41706099995645,
-     "max_rss": 1992605696,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 58.15114154201001,
-     "max_rss": 1992146944,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 57.95977470901562,
-     "max_rss": 1992605696,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 58.15114154201001,
-   "max_rss": 1992605696
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_30k.fa",
-   "file_bytes": 900300000,
-   "runs": [
-    {
-     "seconds": 84.28127462498378,
-     "max_rss": 5163663360,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 84.28127462498378,
-   "max_rss": 5163663360
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "msa",
-   "file": "aln_100k.fa",
-   "file_bytes": 3001000000,
-   "runs": [
-    {
-     "seconds": 4.521926291054115,
-     "max_rss": 3017342976,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.3900469170184806,
-     "max_rss": 3017293824,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.3897815410164185,
-     "max_rss": 3017244672,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.3900469170184806,
-   "max_rss": 3017342976
-  },
-  {
-   "tool": "termal",
-   "kind": "msa",
-   "file": "aln_100k.fa",
-   "file_bytes": 3001000000,
-   "runs": [
-    {
-     "seconds": 278.8794273750391,
-     "max_rss": 3312074752,
-     "outcome": "failed",
-     "detail": "exit 101: \nthread 'main' (3292332) panicked at ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termal-msa-2.1.0/src/app.rs:195:45:\ncalled `Result::unwrap()` on an `Err` value: TryFromIntError(PosOverflow)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
-    }
-   ],
-   "outcome": "failed",
-   "median_seconds": null,
-   "max_rss": 3312074752
-  },
-  {
-   "tool": "jalview",
-   "kind": "msa",
-   "file": "aln_100k.fa",
-   "file_bytes": 3001000000,
-   "runs": [
-    {
-     "seconds": 421.31744720897404,
-     "max_rss": 12750045184,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 421.31744720897404,
-   "max_rss": 12750045184
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_1k.nwk",
-   "file_bytes": 20878,
-   "runs": [
-    {
-     "seconds": 0.0910363330040127,
+     "seconds": 0.062239042003056966,
      "max_rss": 6012928,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07243995903991163,
-     "max_rss": 5963776,
+     "seconds": 0.062266000008094124,
+     "max_rss": 6078464,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07293445797404274,
+     "seconds": 0.06135087499569636,
      "max_rss": 6029312,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.07293445797404274,
-   "max_rss": 6029312
+   "median_seconds": 0.062239042003056966,
+   "max_rss": 6078464
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tiny.nwk",
+   "file_bytes": 80,
+   "runs": [
+    {
+     "seconds": 0.8833469170058379,
+     "max_rss": 232570880,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.244033708004281,
+     "max_rss": 234422272,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2011092080065282,
+     "max_rss": 231489536,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.2011092080065282,
+   "max_rss": 234422272
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 0.1204918750008801,
+     "max_rss": 6569984,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.11916362500051036,
+     "max_rss": 6553600,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.12603133299853653,
+     "max_rss": 6569984,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.1204918750008801,
+   "max_rss": 6569984
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 0.0814628329972038,
+     "max_rss": 38813696,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.10103791700385045,
+     "max_rss": 38649856,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07870095799444243,
+     "max_rss": 38649856,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.0814628329972038,
+   "max_rss": 38813696
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 0.7526439580105944,
+     "max_rss": 175734784,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7192134170036297,
+     "max_rss": 176799744,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.737006166993524,
+     "max_rss": 184877056,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.737006166993524,
+   "max_rss": 184877056
+  },
+  {
+   "tool": "igv",
+   "kind": "bam",
+   "file": "tiny.bam",
+   "file_bytes": 1329,
+   "runs": [
+    {
+     "seconds": 3.583866125001805,
+     "max_rss": 320421888,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.576894041005289,
+     "max_rss": 321863680,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.5734653330000583,
+     "max_rss": 325533696,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 3.576894041005289,
+   "max_rss": 325533696
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 0.07869191699137446,
+     "max_rss": 7045120,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07727658399380744,
+     "max_rss": 7077888,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07720595799037255,
+     "max_rss": 7028736,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07727658399380744,
+   "max_rss": 7077888
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 0.22427854100533295,
+     "max_rss": 7307264,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.23004129200126044,
+     "max_rss": 7372800,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.22424195799976587,
+     "max_rss": 7471104,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.22427854100533295,
+   "max_rss": 7471104
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 1.1809457919880515,
+     "max_rss": 51494912,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.1704501659987727,
+     "max_rss": 52412416,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.2119407080026576,
+     "max_rss": 51298304,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.1809457919880515,
+   "max_rss": 52412416
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_1k.fa",
+   "file_bytes": 1010000,
+   "runs": [
+    {
+     "seconds": 1.500022500011255,
+     "max_rss": 300433408,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.4662167499918723,
+     "max_rss": 288423936,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.4412448329967447,
+     "max_rss": 295305216,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.4662167499918723,
+   "max_rss": 300433408
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 0.18010612500074785,
+     "max_rss": 107741184,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07693724999262486,
+     "max_rss": 107626496,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07676504200208001,
+     "max_rss": 107642880,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07693724999262486,
+   "max_rss": 107741184
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 4.18178570800228,
+     "max_rss": 229195776,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 4.150171957997372,
+     "max_rss": 229228544,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 4.13468683398969,
+     "max_rss": 229277696,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 4.150171957997372,
+   "max_rss": 229277696
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 81.18133054199279,
+     "max_rss": 163151872,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 81.18133054199279,
+   "max_rss": 163151872
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_10k.fa",
+   "file_bytes": 100100000,
+   "runs": [
+    {
+     "seconds": 6.425029791003908,
+     "max_rss": 1235648512,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 6.599977500009118,
+     "max_rss": 1248231424,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 7.276520125000388,
+     "max_rss": 1251213312,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 6.599977500009118,
+   "max_rss": 1251213312
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 1.4089962500002002,
+     "max_rss": 911327232,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.12843374999647494,
+     "max_rss": 911245312,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.12822862499160692,
+     "max_rss": 911212544,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.12843374999647494,
+   "max_rss": 911327232
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 71.14617904199986,
+     "max_rss": 1992769536,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 71.14617904199986,
+   "max_rss": 1992769536
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 600.0025794579997,
+     "max_rss": 2359296,
+     "outcome": "timed out",
+     "detail": "after 600 s"
+    }
+   ],
+   "outcome": "timed out",
+   "median_seconds": null,
+   "max_rss": 2359296
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_30k.fa",
+   "file_bytes": 900300000,
+   "runs": [
+    {
+     "seconds": 97.6859610840038,
+     "max_rss": 6667108352,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 97.6859610840038,
+   "max_rss": 6667108352
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 4.6446052079991205,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.6915363339940086,
+     "max_rss": 3017670656,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.6391314170032274,
+     "max_rss": 3017687040,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.6915363339940086,
+   "max_rss": 3017687040
+  },
+  {
+   "tool": "termal",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 277.2955737919983,
+     "max_rss": 6594756608,
+     "outcome": "failed",
+     "detail": "exit 101: \nthread 'main' (927796) panicked at ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termal-msa-2.1.0/src/app.rs:195:45:\ncalled `Result::unwrap()` on an `Err` value: TryFromIntError(PosOverflow)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    }
+   ],
+   "outcome": "failed",
+   "median_seconds": null,
+   "max_rss": 6594756608
+  },
+  {
+   "tool": "alv",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 600.0111244580039,
+     "max_rss": 2359296,
+     "outcome": "timed out",
+     "detail": "after 600 s"
+    }
+   ],
+   "outcome": "timed out",
+   "median_seconds": null,
+   "max_rss": 2359296
+  },
+  {
+   "tool": "jalview",
+   "kind": "msa",
+   "file": "aln_100k.fa",
+   "file_bytes": 3001000000,
+   "runs": [
+    {
+     "seconds": 359.6706796249928,
+     "max_rss": 12738789376,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 359.6706796249928,
+   "max_rss": 12738789376
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_1k.nwk",
+   "file_bytes": 20878,
+   "runs": [
+    {
+     "seconds": 0.08148170899949037,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07577812499948777,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07657462499628309,
+     "max_rss": 6356992,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07657462499628309,
+   "max_rss": 6356992
   },
   {
    "tool": "figtree",
@@ -629,27 +727,27 @@
    "file_bytes": 20878,
    "runs": [
     {
-     "seconds": 1.4231318340171129,
-     "max_rss": 248053760,
+     "seconds": 1.3828084999986459,
+     "max_rss": 257622016,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.314440416987054,
-     "max_rss": 244301824,
+     "seconds": 1.255111874997965,
+     "max_rss": 261259264,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.300577540998347,
-     "max_rss": 245006336,
+     "seconds": 1.2891379999928176,
+     "max_rss": 265961472,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.314440416987054,
-   "max_rss": 248053760
+   "median_seconds": 1.2891379999928176,
+   "max_rss": 265961472
   },
   {
    "tool": "seqpeeq",
@@ -658,317 +756,317 @@
    "file_bytes": 218879,
    "runs": [
     {
-     "seconds": 0.07335625000996515,
-     "max_rss": 8093696,
+     "seconds": 0.08757604198763147,
+     "max_rss": 8290304,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07260324998060241,
+     "seconds": 0.08182887500151992,
+     "max_rss": 8273920,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07826745799684431,
+     "max_rss": 8273920,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.08182887500151992,
+   "max_rss": 8290304
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_10k.nwk",
+   "file_bytes": 218879,
+   "runs": [
+    {
+     "seconds": 1.606767374993069,
+     "max_rss": 383418368,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.6079718330001924,
+     "max_rss": 376995840,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.6535222499951487,
+     "max_rss": 382926848,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 1.6079718330001924,
+   "max_rss": 383418368
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_100k.nwk",
+   "file_bytes": 2288880,
+   "runs": [
+    {
+     "seconds": 0.07694312500825617,
+     "max_rss": 31997952,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07351379199826624,
+     "max_rss": 31997952,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07401937499525957,
+     "max_rss": 32030720,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07401937499525957,
+   "max_rss": 32030720
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_100k.nwk",
+   "file_bytes": 2288880,
+   "runs": [
+    {
+     "seconds": 4.0568351250112755,
+     "max_rss": 1888845824,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.8055391249945387,
+     "max_rss": 1672691712,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.759107709003729,
+     "max_rss": 1594540032,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 3.8055391249945387,
+   "max_rss": 1888845824
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "tree",
+   "file": "tree_1m.nwk",
+   "file_bytes": 23888881,
+   "runs": [
+    {
+     "seconds": 0.43400579199078493,
+     "max_rss": 309035008,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.4323702910041902,
+     "max_rss": 309002240,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.43358345799788367,
+     "max_rss": 308953088,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.43358345799788367,
+   "max_rss": 309035008
+  },
+  {
+   "tool": "figtree",
+   "kind": "tree",
+   "file": "tree_1m.nwk",
+   "file_bytes": 23888881,
+   "runs": [
+    {
+     "seconds": 26.636838417005492,
+     "max_rss": 9561194496,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 26.729544874993735,
+     "max_rss": 10386898944,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 26.634694917011075,
+     "max_rss": 11996889088,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 26.636838417005492,
+   "max_rss": 11996889088
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 0.1326111250091344,
+     "max_rss": 7012352,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.13324366700544488,
+     "max_rss": 6897664,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.13399033399764448,
+     "max_rss": 6979584,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.13324366700544488,
+   "max_rss": 7012352
+  },
+  {
+   "tool": "tview",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 0.11291845899540931,
+     "max_rss": 38993920,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07515962500474416,
+     "max_rss": 38797312,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.07392062500002794,
+     "max_rss": 38486016,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.07515962500474416,
+   "max_rss": 38993920
+  },
+  {
+   "tool": "asciigenome",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 1.0587698750023264,
+     "max_rss": 166494208,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7617496250022668,
+     "max_rss": 173539328,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.7612815830070758,
+     "max_rss": 181436416,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 0.7617496250022668,
+   "max_rss": 181436416
+  },
+  {
+   "tool": "igv",
+   "kind": "bam",
+   "file": "reads_10x.bam",
+   "file_bytes": 1392581,
+   "runs": [
+    {
+     "seconds": 3.8446536249975907,
+     "max_rss": 361529344,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 3.4333917499898234,
+     "max_rss": 366493696,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 1.643120042004739,
+     "max_rss": 359120896,
+     "outcome": "ok",
+     "detail": ""
+    }
+   ],
+   "outcome": "ok",
+   "median_seconds": 3.4333917499898234,
+   "max_rss": 366493696
+  },
+  {
+   "tool": "seqpeeq",
+   "kind": "bam",
+   "file": "reads_100x.bam",
+   "file_bytes": 7660221,
+   "runs": [
+    {
+     "seconds": 0.16675229200336616,
+     "max_rss": 8175616,
+     "outcome": "ok",
+     "detail": ""
+    },
+    {
+     "seconds": 0.15645433400641195,
      "max_rss": 8126464,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07224079198203981,
-     "max_rss": 8110080,
+     "seconds": 0.15732354200736154,
+     "max_rss": 8159232,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.07260324998060241,
-   "max_rss": 8126464
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_10k.nwk",
-   "file_bytes": 218879,
-   "runs": [
-    {
-     "seconds": 1.6571137920254841,
-     "max_rss": 354009088,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.7376362499780953,
-     "max_rss": 348717056,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.7494224160327576,
-     "max_rss": 348798976,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.7376362499780953,
-   "max_rss": 354009088
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_100k.nwk",
-   "file_bytes": 2288880,
-   "runs": [
-    {
-     "seconds": 0.07497370900819078,
-     "max_rss": 31588352,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07414262497331947,
-     "max_rss": 31670272,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07416129199555144,
-     "max_rss": 31571968,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07416129199555144,
-   "max_rss": 31670272
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_100k.nwk",
-   "file_bytes": 2288880,
-   "runs": [
-    {
-     "seconds": 4.273025375034194,
-     "max_rss": 2071740416,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 4.072551916004159,
-     "max_rss": 1864695808,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 4.15577333298279,
-     "max_rss": 1651081216,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 4.15577333298279,
-   "max_rss": 2071740416
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "tree",
-   "file": "tree_1m.nwk",
-   "file_bytes": 23888881,
-   "runs": [
-    {
-     "seconds": 0.44135762500809506,
-     "max_rss": 308658176,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.4410817500320263,
-     "max_rss": 308723712,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.4407621250138618,
-     "max_rss": 308592640,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.4410817500320263,
-   "max_rss": 308723712
-  },
-  {
-   "tool": "figtree",
-   "kind": "tree",
-   "file": "tree_1m.nwk",
-   "file_bytes": 23888881,
-   "runs": [
-    {
-     "seconds": 28.849929874995723,
-     "max_rss": 11672584192,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 28.5926452089916,
-     "max_rss": 9663840256,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 28.87675420800224,
-     "max_rss": 9353216000,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 28.849929874995723,
-   "max_rss": 11672584192
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 0.12987120798788965,
-     "max_rss": 6782976,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.12911112501751631,
-     "max_rss": 6684672,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.12947050004731864,
-     "max_rss": 6684672,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.12947050004731864,
-   "max_rss": 6782976
-  },
-  {
-   "tool": "tview",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 0.101981749990955,
-     "max_rss": 38453248,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07727524999063462,
-     "max_rss": 38174720,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.07717162498738617,
-     "max_rss": 38174720,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.07727524999063462,
-   "max_rss": 38453248
-  },
-  {
-   "tool": "asciigenome",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 1.407285416033119,
-     "max_rss": 168869888,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.1461622499627993,
-     "max_rss": 199426048,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.1321870000101626,
-     "max_rss": 198819840,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 1.1461622499627993,
-   "max_rss": 199426048
-  },
-  {
-   "tool": "igv",
-   "kind": "bam",
-   "file": "reads_10x.bam",
-   "file_bytes": 1392581,
-   "runs": [
-    {
-     "seconds": 4.135313041973859,
-     "max_rss": 353484800,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 3.8523446670151316,
-     "max_rss": 331169792,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 1.8511239999788813,
-     "max_rss": 351764480,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 3.8523446670151316,
-   "max_rss": 353484800
-  },
-  {
-   "tool": "seqpeeq",
-   "kind": "bam",
-   "file": "reads_100x.bam",
-   "file_bytes": 7660221,
-   "runs": [
-    {
-     "seconds": 0.1676854999968782,
-     "max_rss": 7897088,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.1595031670294702,
-     "max_rss": 7815168,
-     "outcome": "ok",
-     "detail": ""
-    },
-    {
-     "seconds": 0.15920070797437802,
-     "max_rss": 7929856,
-     "outcome": "ok",
-     "detail": ""
-    }
-   ],
-   "outcome": "ok",
-   "median_seconds": 0.1595031670294702,
-   "max_rss": 7929856
+   "median_seconds": 0.15732354200736154,
+   "max_rss": 8175616
   },
   {
    "tool": "tview",
@@ -977,27 +1075,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 0.07919116603443399,
-     "max_rss": 38191104,
+     "seconds": 0.0752725000056671,
+     "max_rss": 38502400,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07879020797554404,
-     "max_rss": 38191104,
+     "seconds": 0.07447300000058021,
+     "max_rss": 38502400,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.07829704199684784,
-     "max_rss": 38191104,
+     "seconds": 0.074179124989314,
+     "max_rss": 38502400,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.07879020797554404,
-   "max_rss": 38191104
+   "median_seconds": 0.07447300000058021,
+   "max_rss": 38502400
   },
   {
    "tool": "asciigenome",
@@ -1006,27 +1104,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 1.2707341249915771,
-     "max_rss": 211353600,
+     "seconds": 0.9008112500014249,
+     "max_rss": 183713792,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.2369685000157915,
-     "max_rss": 200540160,
+     "seconds": 0.8954252080002334,
+     "max_rss": 182386688,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.2837312080082484,
-     "max_rss": 202637312,
+     "seconds": 0.892261957997107,
+     "max_rss": 182435840,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.2707341249915771,
-   "max_rss": 211353600
+   "median_seconds": 0.8954252080002334,
+   "max_rss": 183713792
   },
   {
    "tool": "igv",
@@ -1035,27 +1133,27 @@
    "file_bytes": 7660221,
    "runs": [
     {
-     "seconds": 1.9404332090052776,
-     "max_rss": 345522176,
+     "seconds": 1.7350116669986164,
+     "max_rss": 367411200,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 2.0104266250273213,
-     "max_rss": 356483072,
+     "seconds": 1.777630083000986,
+     "max_rss": 361103360,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.9928754169959575,
-     "max_rss": 357154816,
+     "seconds": 1.7148671250033658,
+     "max_rss": 360988672,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.9928754169959575,
-   "max_rss": 357154816
+   "median_seconds": 1.7350116669986164,
+   "max_rss": 367411200
   },
   {
    "tool": "seqpeeq",
@@ -1064,27 +1162,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 0.16489237500354648,
-     "max_rss": 19759104,
+     "seconds": 0.16164658300112933,
+     "max_rss": 19955712,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.16659995802910998,
-     "max_rss": 19677184,
+     "seconds": 0.16156212500936817,
+     "max_rss": 19464192,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.16461775003699586,
-     "max_rss": 19677184,
+     "seconds": 0.16090987500501797,
+     "max_rss": 19480576,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.16489237500354648,
-   "max_rss": 19759104
+   "median_seconds": 0.16156212500936817,
+   "max_rss": 19955712
   },
   {
    "tool": "tview",
@@ -1093,27 +1191,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 0.085193416045513,
-     "max_rss": 38895616,
+     "seconds": 0.0791571669979021,
+     "max_rss": 39206912,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08443554199766368,
-     "max_rss": 38895616,
+     "seconds": 0.07865274998766836,
+     "max_rss": 39534592,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 0.08263508399249986,
-     "max_rss": 38895616,
+     "seconds": 0.07841345899214502,
+     "max_rss": 39206912,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 0.08443554199766368,
-   "max_rss": 38895616
+   "median_seconds": 0.07865274998766836,
+   "max_rss": 39534592
   },
   {
    "tool": "asciigenome",
@@ -1122,27 +1220,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 1.4699859580141492,
-     "max_rss": 230834176,
+     "seconds": 1.0077388749923557,
+     "max_rss": 212746240,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4729777080356143,
-     "max_rss": 244285440,
+     "seconds": 1.0030938339914428,
+     "max_rss": 216989696,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 1.4835299580008723,
-     "max_rss": 231931904,
+     "seconds": 0.986673499995959,
+     "max_rss": 209616896,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 1.4729777080356143,
-   "max_rss": 244285440
+   "median_seconds": 1.0030938339914428,
+   "max_rss": 216989696
   },
   {
    "tool": "igv",
@@ -1151,27 +1249,27 @@
    "file_bytes": 43903154,
    "runs": [
     {
-     "seconds": 4.163306958042085,
-     "max_rss": 373161984,
+     "seconds": 1.8969740419997834,
+     "max_rss": 389251072,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 4.133311291981954,
-     "max_rss": 382599168,
+     "seconds": 1.7525773749948712,
+     "max_rss": 392232960,
      "outcome": "ok",
      "detail": ""
     },
     {
-     "seconds": 2.095404541003518,
-     "max_rss": 367689728,
+     "seconds": 3.751725375012029,
+     "max_rss": 394395648,
      "outcome": "ok",
      "detail": ""
     }
    ],
    "outcome": "ok",
-   "median_seconds": 4.133311291981954,
-   "max_rss": 382599168
+   "median_seconds": 1.8969740419997834,
+   "max_rss": 394395648
   }
  ]
 }

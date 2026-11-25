@@ -96,6 +96,10 @@ class Page(unittest.TestCase):
             result("asciigenome", "bam", "reads_10x.bam", "ok", 9.0, 16_400_000_000)]}, ONLY)
         self.assertIn("ASCIIGenome on `reads_10x.bam` reached its 16 GB heap limit", page)
 
+    def test_page_says_files_were_already_in_memory(self):
+        self.assertIn("files already in memory", self.page)
+        self.assertIn("first open from disk is slower", self.page)
+
     def test_page_describes_every_tool(self):
         self.assertIn("(termal and alv\nfor alignments", self.page)
         self.assertIn("piped into\n  `less -R`", self.page)
