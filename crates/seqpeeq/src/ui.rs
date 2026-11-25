@@ -682,9 +682,9 @@ const HELP_BAM: &[&str] = &[
     "          click, drag, Space select   Esc clear",
     "          Tab next BAM in a stack   :bam stack  unstack",
     "          drag the coordinates, v v  select a region",
+    "          click the coverage  allele counts there",
     "          e export reads   E export reference",
-    "          a visualize all alignments for a read",
-    "          A list all alignments for a read",
+    "          a visualize, A list all alignments for a read",
     "          in those: S search the BAM   g go   / filter",
     "          bam ref export-region export-reads export-ref",
 ];
@@ -1917,6 +1917,7 @@ pub(crate) mod tests {
             "click, drag, Space select   Esc clear",
             "Tab next BAM in a stack",
             "v v  select a region",
+            "click the coverage  allele counts there",
             "e export reads",
             "E export reference",
         ] {
@@ -1928,8 +1929,7 @@ pub(crate) mod tests {
     fn help_has_a_read_axis_section() {
         let help = HELP_BAM.join("\n");
         for text in [
-            "a visualize all alignments for a read",
-            "A list all alignments for a read",
+            "a visualize, A list all alignments for a read",
             "S search the BAM",
         ] {
             assert!(help.contains(text), "{text}");

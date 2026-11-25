@@ -68,9 +68,9 @@ BAM       ] [ covered   } { no coverage   c list contigs
           click, drag, Space select   Esc clear
           Tab next BAM in a stack   :bam stack  unstack
           drag the coordinates, v v  select a region
+          click the coverage  allele counts there
           e export reads   E export reference
-          a visualize all alignments for a read
-          A list all alignments for a read
+          a visualize, A list all alignments for a read
           in those: S search the BAM   g go   / filter
           bam ref export-region export-reads export-ref
 ```
@@ -99,6 +99,37 @@ Reads are colored as follows:
 
 A **dimmed** read has mapping quality 0, or is secondary, a duplicate or QC-failed. Dimmed reads don't count towards
 coverage. The blue bars along the top show coverage, and selected reads have a gray background.
+
+**Where the reads differ from the reference.** With a reference attached (`bam ref FILE`) or MD tags in the reads,
+the coverage row takes its color from the strongest variant in each column:
+
+| Coverage color | Share of the reads at that position |
+|---|---|
+| yellow | 15–35% carry a SNP |
+| amber | 35–65% carry a SNP |
+| orange | 65–90% carry a SNP |
+| red | 90% or more carry a SNP |
+| light purple | 15–65% carry an insertion or deletion |
+| purple | 65% or more carry an insertion or deletion |
+
+A position counts only when at least 3 reads and 15% of them carry the same change, which keeps random sequencing
+errors from coloring the row. Each alternative base is counted on its own.
+
+Zoomed out, each read's bar is ticked where that read differs from the reference:
+
+| Tick | Meaning |
+|---|---|
+| tan | one mismatch in that cell |
+| darker tan | 2–4 mismatches |
+| brown | 5 or more mismatches |
+| purple | an insertion or deletion |
+
+Scattered ticks across many reads mean noisy reads; a column of ticks through most reads is a variant. The status
+line gives the mismatch rate and the insertions and deletions per kb over the reads in view.
+
+**Click the coverage row** to read out the allele counts at that column's strongest variant (or at the cursor's base,
+a base a column), e.g. `chr1:1,045  ref C   T 16 (53%) · C 14 · del 0 · ins 0 · depth 30`. `h` and `l` move it
+along; a click anywhere else, a move up or down the reads, or Esc ends it.
 
 **Up to three BAMs can be stacked at once** if their headers share the same contig names.
 

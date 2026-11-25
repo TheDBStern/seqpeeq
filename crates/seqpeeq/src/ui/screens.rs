@@ -132,6 +132,24 @@ fn scene_bam_stack() {
     check("bam-stack", &mut app);
 }
 
+/// Zoomed out with the reference: the coverage row coloured where the reads
+/// differ, ticked reads, and the readout of the half-and-half SNP at 1,045.
+fn scene_bam_variants() {
+    let mut app = showing("reads.bam");
+    open(
+        &mut app,
+        Command::Bam(BamCmd::Ref {
+            file: example("ref.fa").into(),
+        }),
+    );
+    bam_at(&mut app, 1_001, 2);
+    let id = id(&app);
+    let view = app.bams.get_mut(&id).unwrap();
+    view.cursor = 1_045;
+    view.readout = true;
+    check("bam-variants", &mut app);
+}
+
 /// One test draws every scene in turn: five at once, each loading BAMs,
 /// would starve the timing tests running beside them.
 #[test]
@@ -141,11 +159,19 @@ fn screens_match_the_interface() {
     scene_bam_bases();
     scene_bam_zoomed();
     scene_bam_stack();
+    scene_bam_variants();
 }
 
 #[test]
 fn screens_hold_no_machine_paths() {
-    for name in ["alignment", "tree", "bam-bases", "bam-zoomed", "bam-stack"] {
+    for name in [
+        "alignment",
+        "tree",
+        "bam-bases",
+        "bam-zoomed",
+        "bam-stack",
+        "bam-variants",
+    ] {
         let svg = std::fs::read_to_string(screens().join(format!("{name}.svg"))).expect(name);
         for path in ["/Users/", "/home/", "../"] {
             assert!(!svg.contains(path), "{name}.svg holds {path}");

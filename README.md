@@ -22,6 +22,7 @@ It's for getting things done, not making figures
 - Select and export regions of a BAM file in fasta, fastq, and BAM formats
 - Follow multi-mapped and split reads everywhere they align in a BAM
 - Jump to the next covered or 0-coverage region in a BAM
+- See SNPs, indels and their frequencies in a BAM while zoomed out
 
 **Input files are never modified.** Every result is written to a new file and files can't be overwritten.
 
@@ -135,6 +136,14 @@ seqpeeq examples/reads.bam --ref examples/ref.fa
 ![Reads at base level](docs/screens/bam-bases.svg)
 
 ![Reads zoomed out, with a stretch of no coverage](docs/screens/bam-zoomed.svg)
+
+**Zoomed out, where the reads differ.** With a reference (or MD tags), the coverage row is colored by the strongest
+variant in each column: yellow when 15–35% of the reads carry it, amber about half, orange most, red all, and light
+purple or purple for insertions and deletions. Read bars are ticked where they differ: tan for one mismatch, darker for
+more, purple for an indel. The status line gives the mismatch and indel rates in view. Click the coverage row to see
+the allele counts there; it stays until you click elsewhere. See [Keys](docs/keys.md) for the exact thresholds.
+
+![Reads zoomed out with the reference: variants colored, and the counts at the half-and-half SNP](docs/screens/bam-variants.svg)
 
 **Two BAMs stacked.** Opening a second BAM with the same contigs stacks it under the first.
 
