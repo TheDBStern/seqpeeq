@@ -77,9 +77,9 @@ BAM       ] [ covered   } { no coverage   c list contigs
 
 `g` takes a position on this contig, a contig's name, `contig:pos` or `contig:start-end`. If a contig has ':' in its name, put it in braces like: `{HLA:01}:100`. Tab-completion works when selecting a contig name.
 
-**What the reads look like:**
+**Read markings and colors:**
 
-| Mark | Meaning |
+| Mark | Description |
 |---|---|
 | `.` `,` | a base that matches the reference, on the forward or reverse strand |
 | `A` `c` … | a mismatch relative to the reference; upper case forward, lower case reverse, colored A ![green](screens/swatches/base-a.svg) green, C ![blue](screens/swatches/base-c.svg) blue, G ![yellow](screens/swatches/base-g.svg) yellow, T ![red](screens/swatches/base-t.svg) red |
@@ -125,10 +125,9 @@ Zoomed out, each read's bar is ticked where that read differs from the reference
 | ![brown](screens/swatches/tick-5.svg) brown | 5 or more mismatches |
 | ![purple](screens/swatches/tick-indel.svg) purple | an insertion or deletion |
 
-Scattered ticks across many reads mean noisy reads; a column of ticks through most reads is a variant. The status
-line gives the mismatch rate and the insertions and deletions per kb over the reads in view.
+The status line gives the mismatch rate and the insertions and deletions per kb over the reads in view.
 
-**Click the coverage row** to read out the allele counts at that column's strongest variant (or at the cursor's base,
+**Click the coverage row** to see the allele counts at that column's highest-frequency variant (or at the cursor's base,
 a base a column), e.g. `chr1:1,045  ref C   T 16 (53%) · C 14 · del 0 · ins 0 · depth 30`. `h` and `l` move it
 along; a click anywhere else, a move up or down the reads, or Esc ends it.
 

@@ -138,22 +138,22 @@ seqpeeq examples/reads.bam --ref examples/ref.fa
 
 ![Reads zoomed out, with a stretch of no coverage](docs/screens/bam-zoomed.svg)
 
-**Zoomed out, where the reads differ.** With a reference (or MD tags), each column of the coverage row is colored
+**Zoomed out.** With a reference (or MD tags), each column of the coverage row is colored
 according to the highest-frequency non-reference variant in it:
 
-| Color | Reads carrying the variant |
+| Color | Description |
 |---|---|
-| ![yellow](docs/screens/swatches/snp-15.svg) yellow | a SNP in 15–35% |
-| ![amber](docs/screens/swatches/snp-35.svg) amber | a SNP in 35–65% |
-| ![orange](docs/screens/swatches/snp-65.svg) orange | a SNP in 65–90% |
-| ![red](docs/screens/swatches/snp-90.svg) red | a SNP in 90% or more |
-| ![light purple](docs/screens/swatches/indel-15.svg) light purple | an insertion or deletion in 15–65% |
-| ![purple](docs/screens/swatches/indel-65.svg) purple | an insertion or deletion in 65% or more |
+| ![yellow](docs/screens/swatches/snp-15.svg) yellow | SNP in 15–35% of reads |
+| ![amber](docs/screens/swatches/snp-35.svg) amber | SNP in 35–65% of reads |
+| ![orange](docs/screens/swatches/snp-65.svg) orange | SNP in 65–90% of reads |
+| ![red](docs/screens/swatches/snp-90.svg) red | SNP in 90% or more |
+| ![light purple](docs/screens/swatches/indel-15.svg) light purple | insertion or deletion in 15–65% of reads |
+| ![purple](docs/screens/swatches/indel-65.svg) purple | insertion or deletion in 65% or more |
 
-Read bars are ticked where they differ from the reference: ![tan](docs/screens/swatches/tick-1.svg) one mismatch, ![darker tan](docs/screens/swatches/tick-2.svg) 2–4,
-![brown](docs/screens/swatches/tick-5.svg) 5 or more, ![purple](docs/screens/swatches/tick-indel.svg) an insertion or deletion. The status line gives the mismatch and indel rates in
-view. Click the coverage row to see the allele counts there; it stays until you click elsewhere. See
-[Keys](docs/keys.md) for how variants are counted.
+Read ticks show mismatches against the reference: ![tan](docs/screens/swatches/tick-1.svg) one mismatch, ![darker tan](docs/screens/swatches/tick-2.svg) 2–4,
+![brown](docs/screens/swatches/tick-5.svg) 5 or more, ![purple](docs/screens/swatches/tick-indel.svg) an insertion or deletion.
+
+See [Keys](docs/keys.md) for how variants are counted.
 
 ![Reads zoomed out with the reference: variants colored, and the counts at the half-and-half SNP](docs/screens/bam-variants.svg)
 
@@ -175,8 +175,8 @@ seqpeeq run 'open examples/aln.fa' 'msa delete-cols --cols 611-622' 'msa extract
 
 ## Reference
 
-- [Keys](docs/keys.md): every key, by file type, and what the reads look like.
-- [Commands](docs/commands.md): every command, logs and replay.
+- [Keys](docs/keys.md): shortcut key descriptions and read visualization info.
+- [Commands](docs/commands.md): commands, logs and replay.
 
 In the interface, `?` and `:COMMAND -h` bring up the help menus.
 
