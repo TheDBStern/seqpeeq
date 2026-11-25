@@ -1,7 +1,7 @@
-"""Turn bench/results.json and bench/seqpeeq_only.json into docs/benchmarks.md.
+"""Turn bench/results.json, bench/seqpeeq_only.json and bench/cold.json into docs/benchmarks.md.
 
     python bench/report.py --results bench/results.json \\
-        --seqpeeq-only bench/seqpeeq_only.json --out docs/benchmarks.md
+        --seqpeeq-only bench/seqpeeq_only.json --cold bench/cold.json --out docs/benchmarks.md
 """
 
 import argparse
@@ -102,7 +102,25 @@ def only_tables(only):
     return out
 
 
-def page(results, only):
+def cold_table(results, cold):
+    """seqpeeq's times from disk, each beside its time with the file in memory."""
+    warm = {r["file"]: r for r in results["results"] if r["tool"] == "seqpeeq"}
+    out = ["### From disk", "",
+           "seqpeeq on the largest files with the file cache emptied (`sudo purge`) before each run, so each",
+           "run reads its file from disk. This is mostly the time to read the file, which every tool would",
+           "add, so only seqpeeq is timed this way.", "",
+           "| File | Size | From disk | In memory |", "|---|---:|---:|---:|"]
+    for r in cold["results"]:
+        in_memory = warm.get(r["file"], {}).get("median_seconds")
+        cells = [format_seconds(s) if s is not None else r["outcome"]
+                 for s in (r["median_seconds"], in_memory)]
+        out.append(f"| {FILES.get(r['file'], r['file'])} | {format_bytes(r['file_bytes'])} | "
+                   + " | ".join(cells) + " |")
+    out.append("")
+    return out
+
+
+def page(results, only, cold=None):
     machine, versions = results["machine"], results["versions"]
     timeout = results.get("timeout_seconds", 600)
     memory = results.get("memory_limit", "16g").upper().replace("G", " GB")
@@ -114,7 +132,7 @@ def page(results, only):
         "",
         "Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal and alv",
         "for alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,",
-        "FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,",
+        "FigTree for trees and IGV for BAMs). To my knowledge, there is no interactive terminal tree viewer to compare with,",
         "so trees are compared with FigTree only.",
         "",
         "The files are random but seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10×",
@@ -128,7 +146,7 @@ def page(results, only):
         "",
         "## Method",
         "",
-        "**What is timed:** the wall time from launch until the tool has shown the file, and the peak",
+        "**Timing:** the wall time from launch until the tool has shown the file and the peak",
         "memory (the largest resident size the operating system reports for the process).",
         "",
         "The terminal tools run in a hidden 160 × 48 terminal, and the screen is read as it is drawn. Each",
@@ -188,6 +206,8 @@ def page(results, only):
         "",
     ]
     lines += tables(results, notes)
+    if cold:
+        lines += cold_table(results, cold)
     lines += [
         "## seqpeeq only",
         "",
@@ -212,8 +232,9 @@ def page(results, only):
         "$PY bench/run.py --data bench/data --out bench/results.json --only all",
         "SEQPEEQ_BENCH_DATA=$PWD/bench/data SEQPEEQ_BENCH_OUT=$PWD/bench/seqpeeq_only.json \\",
         "    cargo test --release -p seqpeeq -- --ignored bench_timings",
+        "sudo -v && $PY bench/run.py --data bench/data --out bench/cold.json --cold",
         "$PY bench/report.py --results bench/results.json --seqpeeq-only bench/seqpeeq_only.json \\",
-        "    --out docs/benchmarks.md",
+        "    --cold bench/cold.json --out docs/benchmarks.md",
         "```",
         "",
         "`run.py` looks for the three environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the",
@@ -232,11 +253,13 @@ def main(argv=None):
     args = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     args.add_argument("--results", required=True, type=Path)
     args.add_argument("--seqpeeq-only", required=True, type=Path)
+    args.add_argument("--cold", type=Path)
     args.add_argument("--out", required=True, type=Path)
     args = args.parse_args(argv)
     results = json.loads(args.results.read_text())
     only = json.loads(args.seqpeeq_only.read_text())
-    args.out.write_text(page(results, only))
+    cold = json.loads(args.cold.read_text()) if args.cold else None
+    args.out.write_text(page(results, only, cold))
     print(f"wrote {args.out}")
 
 

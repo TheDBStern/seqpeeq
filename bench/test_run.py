@@ -117,6 +117,21 @@ class Build(unittest.TestCase):
         with mock.patch.object(run, "BENCH_ASCII", Path("/nonexistent/env")):
             self.assertEqual(run.missing_tools(["asciigenome", "tview"]), ["asciigenome"])
 
+    def test_cold_runs_empty_the_cache_before_every_run(self):
+        purged = []
+        ok = run.Run(0.1, 1, "ok")
+        with mock.patch.object(run, "measure", return_value=ok):
+            run.time_one("seqpeeq", "msa", Path(__file__), Path(tempfile.gettempdir()), 3, 10,
+                         before=lambda: purged.append(1))
+        self.assertEqual(len(purged), 3)
+
+    def test_cold_needs_purge_without_a_password(self):
+        refused = subprocess.CompletedProcess([], 1, b"", b"sudo: a password is required")
+        with mock.patch.object(run.subprocess, "run", return_value=refused):
+            with self.assertRaises(SystemExit) as stop:
+                run.main(["--data", "x", "--out", "y", "--cold"])
+        self.assertIn("sudo -v", str(stop.exception.code))
+
     def test_unknown_tool_is_named(self):
         with self.assertRaises(SystemExit) as stop:
             run.main(["--data", "x", "--out", "y", "--tools", "seqpeeq", "nosuch"])

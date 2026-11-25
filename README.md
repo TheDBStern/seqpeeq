@@ -172,11 +172,12 @@ samtools tview and ASCIIGenome) and with IGV, FigTree and Jalview on files of di
 For example, on an Apple M2 laptop:
 
 - **A 30,000 × 30,000 alignment (900 MB):** seqpeeq opens it in 0.13 s; termal takes 71 s.
-- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in about 0.7 s (0.6 to 0.7 s across runs);
-  Jalview takes 6.0 minutes and 12.7 GB.
+- **A 100,000 × 30,000 alignment (3 GB):** seqpeeq opens it in about 0.7 s once the file is in memory (0.6 to
+  0.7 s across runs), or about 5.1 s from disk; Jalview takes 6.0 minutes and 12.7 GB.
 - **A tree of a million tips:** seqpeeq draws it in 0.43 s; FigTree takes 27 s.
 
-These times are for files already in memory: a first open from disk is slower.
+Times are for files already in memory unless they say otherwise; the benchmarks page also gives seqpeeq's times
+from disk.
 
 ## Changes
 

@@ -10,6 +10,9 @@ Each run is timed from launch until the tool has shown the file:
 
 Peak memory is read from the operating system when each run exits.
 
+With --cold, seqpeeq alone is timed on the largest files, with the file
+cache emptied (`sudo purge`) before each run: run `sudo -v` first.
+
     python bench/run.py --data bench/data --out bench/results.json --only all
 """
 
@@ -419,9 +422,23 @@ def missing_tools(tools) -> list[str]:
     return [tool for tool in tools if not all(p.exists() for p in _programs(tool))]
 
 
-def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout):
+# The files --cold times seqpeeq on, each read from disk.
+COLD_FILES = [("msa", "aln_30k.fa"), ("msa", "aln_100k.fa"), ("tree", "tree_1m.nwk")]
+PURGE = ["sudo", "-n", "/usr/sbin/purge"]
+
+
+def purge():
+    """Empty the file cache, so the next run reads its file from disk."""
+    done = subprocess.run(PURGE, capture_output=True)
+    if done.returncode != 0:
+        sys.exit("--cold empties the file cache with `sudo purge`: run `sudo -v` first, then this again")
+
+
+def time_one(tool, kind, file: Path, scratch: Path, repeats, timeout, before=None):
     runs = []
     for _ in range(repeats):
+        if before is not None:
+            before()
         got = measure(commands(tool, file, scratch), timeout=timeout, ready=_ready_for(tool, kind),
                       quit=QUIT.get(tool, b"q"))
         runs.append(got)
@@ -447,7 +464,12 @@ def main(argv=None):
     args.add_argument("--tools", nargs="*", default=["seqpeeq", "termal", "alv", "tview", "asciigenome", "igv", "figtree", "jalview"])
     args.add_argument("--repeats", type=int, default=3)
     args.add_argument("--timeout", type=float, default=TIMEOUT)
+    args.add_argument("--cold", action="store_true",
+                      help="time seqpeeq on the largest files read from disk (needs `sudo -v` first)")
     args = args.parse_args(argv)
+    if args.cold:
+        purge()
+        args.tools = ["seqpeeq"]
     known = {tool for tools in TOOLS.values() for tool in tools}
     unknown = [tool for tool in args.tools if tool not in known]
     if unknown:
@@ -455,7 +477,7 @@ def main(argv=None):
     missing = missing_tools(args.tools)
     if missing:
         sys.exit(f"missing: {', '.join(missing)}")
-    files = FILES["tiny"] + (FILES[args.only] if args.only != "tiny" else [])
+    files = COLD_FILES if args.cold else FILES["tiny"] + (FILES[args.only] if args.only != "tiny" else [])
     report = {"machine": machine(), "versions": versions(), "timeout_seconds": args.timeout,
               "memory_limit": MEMORY.removeprefix("-Xmx"), "results": []}
     with tempfile.TemporaryDirectory(prefix="seqpeeq-bench-") as scratch:
@@ -464,7 +486,7 @@ def main(argv=None):
                 if tool not in args.tools:
                     continue
                 result = time_one(tool, kind, args.data / name, Path(scratch) / tool,
-                                  args.repeats, args.timeout)
+                                  args.repeats, args.timeout, before=purge if args.cold else None)
                 report["results"].append(result)
                 args.out.write_text(json.dumps(report, indent=1) + "\n")
 

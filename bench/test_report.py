@@ -31,6 +31,7 @@ RESULTS = {
 }
 ONLY = {"alignment": {"open and first frame": 1.86, "delete 1,000 columns": 0.0011},
         "tree": {"prune a clade": 0.153}}
+COLD = {"results": [result("seqpeeq", "msa", "aln_100k.fa", "ok", 4.6, 3_000_000_000)]}
 
 
 class Format(unittest.TestCase):
@@ -123,13 +124,23 @@ class Page(unittest.TestCase):
         self.assertIn("1.1 ms", self.page)
         self.assertIn("0.15 s", self.page)
 
+    def test_from_disk_sits_beside_in_memory(self):
+        page = report.page(RESULTS, ONLY, COLD)
+        self.assertIn("### From disk", page)
+        self.assertIn("`sudo purge`", page)
+        self.assertIn("| 100,000 × 30,000 | 1 MB | 4.60 s | 1.90 s |", page)
+
+    def test_no_from_disk_without_cold_runs(self):
+        self.assertNotIn("From disk", report.page(RESULTS, ONLY))
+
 
 class Committed(unittest.TestCase):
     def test_the_committed_results_give_the_committed_page(self):
         results = json.loads((ROOT / "bench" / "results.json").read_text())
         only = json.loads((ROOT / "bench" / "seqpeeq_only.json").read_text())
+        cold = json.loads((ROOT / "bench" / "cold.json").read_text())
         expected = (ROOT / "docs" / "benchmarks.md").read_text()
-        self.assertEqual(report.page(results, only), expected,
+        self.assertEqual(report.page(results, only, cold), expected,
                          "docs/benchmarks.md differs from what report.py writes: edit report.py "
                          "and regenerate the page, rather than editing the page by hand")
 

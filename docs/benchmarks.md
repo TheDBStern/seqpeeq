@@ -2,7 +2,7 @@
 
 Comparing times for opening files. seqpeeq is compared with other terminal viewers (termal and alv
 for alignments, samtools tview and ASCIIGenome for BAMs) and with GUI programs (Jalview for alignments,
-FigTree for trees and IGV for BAMs). There is no interactive terminal tree viewer to compare with,
+FigTree for trees and IGV for BAMs). To my knowledge, there is no interactive terminal tree viewer to compare with,
 so trees are compared with FigTree only.
 
 The files are random but seeded, from 1,000 to 100,000 sequences, 1,000 to 1,000,000 tips, and 10×
@@ -15,7 +15,7 @@ to 1,000× read depth.
 
 ## Method
 
-**What is timed:** the wall time from launch until the tool has shown the file, and the peak
+**Timing:** the wall time from launch until the tool has shown the file and the peak
 memory (the largest resident size the operating system reports for the process).
 
 The terminal tools run in a hidden 160 × 48 terminal, and the screen is read as it is drawn. Each
@@ -96,6 +96,18 @@ and the repeated runs hit: a first open from disk is slower.
 | 1 Mb, 100× | 8 MB | 0.16 s · 8 MB | 74 ms · 39 MB | 0.90 s · 184 MB | 1.74 s · 367 MB |
 | 1 Mb, 1,000× | 44 MB | 0.16 s · 20 MB | 79 ms · 40 MB | 1.00 s · 217 MB | 1.90 s · 394 MB |
 
+### From disk
+
+seqpeeq on the largest files with the file cache emptied (`sudo purge`) before each run, so each
+run reads its file from disk. This is mostly the time to read the file, which every tool would
+add, so only seqpeeq is timed this way.
+
+| File | Size | From disk | In memory |
+|---|---:|---:|---:|
+| 30,000 × 30,000 | 900 MB | 1.50 s | 0.13 s |
+| 100,000 × 30,000 | 3.0 GB | 5.08 s | 0.69 s |
+| 1,000,000 tips | 24 MB | 0.57 s | 0.43 s |
+
 ## seqpeeq only
 
 seqpeeq-unique features timed inside seqpeeq (`bench_timings_on_the_benchmark_files`).
@@ -139,8 +151,9 @@ $PY bench/make_data.py --out bench/data --only all          # about 4 GB
 $PY bench/run.py --data bench/data --out bench/results.json --only all
 SEQPEEQ_BENCH_DATA=$PWD/bench/data SEQPEEQ_BENCH_OUT=$PWD/bench/seqpeeq_only.json \
     cargo test --release -p seqpeeq -- --ignored bench_timings
+sudo -v && $PY bench/run.py --data bench/data --out bench/cold.json --cold
 $PY bench/report.py --results bench/results.json --seqpeeq-only bench/seqpeeq_only.json \
-    --out docs/benchmarks.md
+    --cold bench/cold.json --out docs/benchmarks.md
 ```
 
 `run.py` looks for the three environments in `~/miniconda3/envs`; set `SEQPEEQ_BENCH_ENVS` to the
