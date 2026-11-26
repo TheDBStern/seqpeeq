@@ -6,8 +6,26 @@ All notable changes to seqpeeq are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
+### Added
+
+- Variants in a BAM can be seen zoomed out (#16). With a reference (`bam ref FILE`) or MD tags, each column of the
+  coverage row is colored by its highest-frequency non-reference variant: SNPs from yellow (15–35% of reads) to red
+  (90% or more), insertions and deletions in light purple or purple. A position counts only when at least 3 reads
+  and 15% of them carry the same change.
+- Zoomed-out reads are ticked where they differ from the reference: tan to brown by the number of mismatches in the
+  cell, purple for an insertion or deletion.
+- The status line gives the mismatch rate and the insertions and deletions per kb over the reads in view. Without a
+  reference or MD tags, it says so at every zoom.
+- Clicking the coverage row reads out the allele counts at that column's highest-frequency variant (or the cursor's
+  base, a base a column), e.g. `chr1:1,045  ref C   T 16 (53%) · C 14 · del 0 · ins 0 · depth 30`. `h` and `l` move
+  it along; a click elsewhere, a move up or down the reads, or Esc ends it.
+- The README and `docs/keys.md` show each color as a swatch, and a picture of zoomed-out variants.
+
 ### Changed
 
+- The status line's zoom reads `column = N bp` instead of `N bp a column`.
 - A tree links to an alignment whose headers carry a description after the ID: tip `seqA` matches the sequence
   `>seqA Homo sapiens COI` by its ID, the name up to the first space or tab (#17). A sequence whose whole name is
   the tip's still comes first, and tip names are never cut, so `Homo sapiens` still matches only `>Homo sapiens`.
@@ -151,7 +169,8 @@ logged and replayable, and input files never modified.
 - Builds with `cargo install` into a conda environment or anywhere with Rust.
 - Prebuilt programs on each GitHub release: a static Linux x86_64 program and an Apple-silicon macOS program.
 
-[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/TheDBStern/seqpeeq/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/TheDBStern/seqpeeq/compare/v0.1.0...v0.2.0
